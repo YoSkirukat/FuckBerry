@@ -1,15 +1,23 @@
 <nav class="navbar navbar-expand-lg navbar-light bg-light">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="/orders">WB [Analit]</a>
+  <div class="container">
+    <a class="navbar-brand d-flex align-items-center gap-2" href="/orders" style="font-weight: bold;"><img src="/logo.png" alt="logo" width="20" height="20"/> FuckBerry</a>
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
       <span class="navbar-toggler-icon"></span>
     </button>
     <div class="collapse navbar-collapse" id="navbarNav">
       <ul class="navbar-nav">
-        <li class="nav-item"><a class="nav-link {% if request.path.startswith('/orders') %}active{% endif %}" href="/orders">Аналитика заказов</a></li>
-        <li class="nav-item"><a class="nav-link {% if request.path.startswith('/coefficients') %}active{% endif %}" href="/coefficients">Коэффициенты приёмки</a></li>
-        <li class="nav-item"><a class="nav-link {% if request.path.startswith('/fbs') %}active{% endif %}" href="/fbs">Маркетплейс FBS</a></li>
-        <li class="nav-item"><a class="nav-link {% if request.path.startswith('/settings') %}active{% endif %}" href="/settings">Настройки</a></li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/orders') %}active{% endif %}" href="/orders" {% if request.path.startswith('/orders') %}aria-current="page"{% endif %}>Аналитика заказов</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/coefficients') %}active{% endif %}" href="/coefficients" {% if request.path.startswith('/coefficients') %}aria-current="page"{% endif %}>Коэффициенты приёмки</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/fbs') %}active{% endif %}" href="/fbs" {% if request.path.startswith('/fbs') %}aria-current="page"{% endif %}>Маркетплейс FBS</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/settings') %}active{% endif %}" href="/settings" {% if request.path.startswith('/settings') %}aria-current="page"{% endif %}>Настройки</a>
+        </li>
       </ul>
     </div>
   </div>

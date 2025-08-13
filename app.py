@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple
 
 import requests
-from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify
+from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory
 from openpyxl import Workbook
 
 app = Flask(__name__)
@@ -1022,6 +1022,14 @@ def api_acceptance_coefficients():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(app.root_path, 'favicon.ico', mimetype='image/vnd.microsoft.icon')
+
+@app.route('/logo.png')
+def logo():
+    return send_from_directory(os.path.join(app.root_path, 'templates'), 'logo.png', mimetype='image/png')
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True) 
