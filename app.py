@@ -21,6 +21,12 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 if not os.path.isdir(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
+FBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/new"
+
+SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
+
+ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
+
 
 def format_int_thousands(value: Any) -> str:
     try:
@@ -38,6 +44,13 @@ def format_money_ru(value: Any) -> str:
 
 app.jinja_env.filters["num_space"] = format_int_thousands
 app.jinja_env.filters["money_ru"] = format_money_ru
+
+
+def format_dmy(date_str: str) -> str:
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except Exception:
+        return date_str or ""
 
 
 def _get_session_id() -> str:
@@ -398,6 +411,186 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
 
 
+def _extract_created_at(obj: Any) -> datetime:
+    if not isinstance(obj, dict):
+        return datetime.min
+    val = obj.get("createdAt") or obj.get("dateCreated") or obj.get("date") or ""
+    dt = parse_wb_datetime(str(val))
+    return dt or datetime.min
+
+
+def fetch_fbs_new_orders(token: str) -> List[Dict[str, Any]]:
+    # Marketplace API expects the token without 'Bearer'
+    headers = {"Authorization": f"{token}"}
+    resp = get_with_retry(FBS_NEW_URL, headers, params={})
+    data = resp.json()
+    # Normalize to list of orders from various shapes
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if isinstance(data.get("orders"), list):
+            return data["orders"]
+        inner = data.get("data")
+        if isinstance(inner, list):
+            return inner
+        if isinstance(inner, dict) and isinstance(inner.get("orders"), list):
+            return inner["orders"]
+    return []
+
+
+def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for o in orders:
+        if not isinstance(o, dict):
+            order_num = str(o)
+            rows.append({
+                "Номер и дата задания": f"{order_num}",
+                "Наименование товара": "",
+                "Стоимость товара": 0,
+                "Склад": "",
+            })
+            continue
+        # Номер задания — ID
+        order_id = o.get("ID") or o.get("id") or o.get("orderId") or o.get("gNumber") or ""
+        # Дата — createdAt (ГГГГ-ММ-ДД)
+        created_at = str(o.get("createdAt") or "")[:10]
+        # Наименование — article
+        article = o.get("article") or ""
+        # Цена — price без двух последних нулей
+        raw_price = o.get("price")
+        try:
+            price_value = int(raw_price) // 100
+        except Exception:
+            try:
+                price_value = int(float(raw_price)) // 100
+            except Exception:
+                price_value = 0
+        # Склад — offices
+        warehouse = ""
+        offices = o.get("offices")
+        if isinstance(offices, list) and offices:
+            first = offices[0]
+            if isinstance(first, dict):
+                warehouse = first.get("name") or first.get("officeName") or first.get("address") or ""
+            else:
+                warehouse = str(first)
+        elif isinstance(offices, dict):
+            warehouse = offices.get("name") or offices.get("officeName") or offices.get("address") or ""
+        elif isinstance(offices, str):
+            warehouse = offices
+        if not warehouse:
+            warehouse = o.get("warehouseName") or o.get("warehouse") or o.get("warehouseId") or ""
+
+        rows.append({
+            "Номер и дата задания": f"{order_id} | {created_at}".strip(" |"),
+            "Наименование товара": article,
+            "Стоимость товара": price_value,
+            "Склад": warehouse,
+        })
+    return rows
+
+
+def fetch_seller_info(token: str) -> Dict[str, Any] | None:
+    if not token:
+        return None
+    # Try Bearer first
+    headers1 = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(SELLER_INFO_URL, headers1, params={})
+        return resp.json()
+    except Exception:
+        # Fallback: raw token (some WB endpoints expect without Bearer)
+        headers2 = {"Authorization": f"{token}"}
+        try:
+            resp = get_with_retry(SELLER_INFO_URL, headers2, params={})
+            return resp.json()
+        except Exception:
+            return None
+
+
+def fetch_acceptance_coefficients(token: str) -> List[Dict[str, Any]] | None:
+    if not token:
+        return None
+    # Try Bearer first
+    headers1 = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(ACCEPT_COEFS_URL, headers1, params={})
+        return resp.json()
+    except Exception:
+        # Fallback raw token
+        headers2 = {"Authorization": f"{token}"}
+        try:
+            resp = get_with_retry(ACCEPT_COEFS_URL, headers2, params={})
+            return resp.json()
+        except Exception:
+            return None
+
+
+def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
+    # Prepare date list: today + next N days
+    today = datetime.now().date()
+    date_objs = [today + timedelta(days=i) for i in range(days + 1)]
+    date_keys = [d.strftime("%Y-%m-%d") for d in date_objs]
+    date_labels = [d.strftime("%d-%m") for d in date_objs]
+
+    # Filter only box type 'Короба' (boxTypeID == 2) for robustness also match by name
+    filtered: List[Dict[str, Any]] = []
+    for it in items or []:
+        try:
+            bt_id = it.get("boxTypeID")
+            bt_name = str(it.get("boxTypeName") or "").lower()
+            if (bt_id == 2) or ("короб" in bt_name):
+                filtered.append(it)
+        except Exception:
+            continue
+
+    # Unique warehouses from filtered
+    warehouses: List[str] = sorted({str(it.get("warehouseName") or "") for it in filtered if it})
+
+    # Map: (warehouse, date_key) -> record
+    grid: Dict[str, Dict[str, Dict[str, Any]]] = {w: {} for w in warehouses}
+
+    for it in filtered:
+        try:
+            wname = str(it.get("warehouseName") or "")
+            dkey = str(it.get("date") or "")[:10]
+            if wname not in grid or dkey not in date_keys:
+                continue
+            raw_coef = it.get("coefficient")
+            try:
+                coef_val = float(raw_coef)
+            except Exception:
+                coef_val = None
+            grid[wname][dkey] = {
+                "coef": coef_val,
+                "allow": bool(it.get("allowUnload")),
+            }
+        except Exception:
+            continue
+
+    # Fill empty cells
+    for w in warehouses:
+        for dkey in date_keys:
+            if dkey not in grid[w]:
+                grid[w][dkey] = {"coef": None, "allow": None}
+
+    # Sort warehouses by number of non-negative coefficients (>=0) across the horizon
+    def count_non_negative(w: str) -> int:
+        count = 0
+        for dkey in date_keys:
+            coef = grid[w][dkey].get("coef")
+            try:
+                if coef is not None and float(coef) >= 0:
+                    count += 1
+            except Exception:
+                continue
+        return count
+
+    warehouses.sort(key=lambda w: count_non_negative(w), reverse=True)
+
+    return warehouses, date_keys, date_labels, grid
+
+
 @app.route("/", methods=["GET", "POST"]) 
 def root():
     if request.method == "POST":
@@ -433,10 +626,14 @@ def index():
     warehouses: List[str] = []
     selected_warehouse: str = request.args.get("warehouse", "")
 
-    # Токен: берём из формы, иначе из сессии
-    token = (request.form.get("token", "").strip() or session.get("WB_API_TOKEN", ""))
+    updated_at: str = ""
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
+    date_from_fmt = format_dmy(date_from)
+    date_to_fmt = format_dmy(date_to)
+
+    # Токен: берём из формы, иначе из сессии
+    token = (request.form.get("token", "").strip() or session.get("WB_API_TOKEN", ""))
 
     # Если GET — пробуем показать последние результаты из кэша
     if request.method == "GET":
@@ -444,6 +641,8 @@ def index():
         if cached:
             date_from = cached.get("date_from", date_from)
             date_to = cached.get("date_to", date_to)
+            date_from_fmt = format_dmy(date_from)
+            date_to_fmt = format_dmy(date_to)
             orders = cached.get("orders", [])
             total_orders = cached.get("total_orders", 0)
             total_revenue = cached.get("total_revenue", 0.0)
@@ -458,6 +657,7 @@ def index():
             daily_orders_revenue = cached.get("daily_orders_revenue", [])
             daily_sales_revenue = cached.get("daily_sales_revenue", [])
             warehouse_summary_dual = cached.get("warehouse_summary_dual", [])
+            updated_at = cached.get("updated_at", "")
 
     if request.method == "POST":
         if not token:
@@ -499,6 +699,9 @@ def index():
 
                 # Сохраняем токен и результаты
                 session["WB_API_TOKEN"] = token
+                updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                date_from_fmt = format_dmy(date_from)
+                date_to_fmt = format_dmy(date_to)
                 save_last_results({
                     "date_from": date_from,
                     "date_to": date_to,
@@ -515,6 +718,7 @@ def index():
                     "daily_sales_revenue": daily_sales_revenue,
                     "warehouse_summary_dual": warehouse_summary_dual,
                     "top_products": top_products,
+                    "updated_at": updated_at,
                 })
             except requests.HTTPError as http_err:
                 error = f"Ошибка API: {http_err.response.status_code}"
@@ -533,11 +737,14 @@ def index():
         token=token,
         date_from=date_from,
         date_to=date_to,
+        date_from_fmt=date_from_fmt,
+        date_to_fmt=date_to_fmt,
         # Orders table remains orders-only
         orders=orders,
         # KPIs
         total_orders=total_orders,
         total_revenue=total_revenue,
+        updated_at=updated_at,
         # Sales KPIs
         total_sales=total_sales,
         total_sales_revenue=total_sales_revenue,
@@ -557,24 +764,105 @@ def index():
     )
 
 
+@app.route("/api/orders-refresh", methods=["POST"]) 
+def api_orders_refresh():
+    token = session.get("WB_API_TOKEN", "")
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    date_from = request.form.get("date_from", "")
+    date_to = request.form.get("date_to", "")
+    try:
+        parse_date(date_from)
+        parse_date(date_to)
+    except ValueError:
+        return jsonify({"error": "bad_dates"}), 400
+    try:
+        # Orders
+        raw_orders = fetch_orders_range(token, date_from, date_to)
+        orders = to_rows(raw_orders, date_from, date_to)
+        total_orders = len(orders)
+        total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+        # Sales
+        raw_sales = fetch_sales_range(token, date_from, date_to)
+        sales_rows = to_sales_rows(raw_sales, date_from, date_to)
+        # Aggregates
+        o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
+        s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows)
+        daily_labels, daily_orders_counts, daily_sales_counts, daily_orders_revenue, daily_sales_revenue = build_union_series(
+            o_counts_map, s_counts_map, o_rev_map, s_rev_map
+        )
+        # Warehouses and TOPs
+        warehouse_summary_dual = aggregate_by_warehouse_dual(orders, sales_rows)
+        top_products = aggregate_top_products(orders, limit=15)
+        warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders})
+        top_products_orders_filtered = aggregate_top_products_orders(orders, None, limit=50)
+        updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        # Save cache
+        save_last_results({
+            "date_from": date_from,
+            "date_to": date_to,
+            "orders": orders,
+            "total_orders": total_orders,
+            "total_revenue": total_revenue,
+            "sales_rows": sales_rows,
+            "total_sales": len(sales_rows),
+            "total_sales_revenue": round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in sales_rows), 2),
+            "daily_labels": daily_labels,
+            "daily_orders_counts": daily_orders_counts,
+            "daily_sales_counts": daily_sales_counts,
+            "daily_orders_revenue": daily_orders_revenue,
+            "daily_sales_revenue": daily_sales_revenue,
+            "warehouse_summary_dual": warehouse_summary_dual,
+            "top_products": top_products,
+            "updated_at": updated_at,
+        })
+        return jsonify({
+            "total_orders": total_orders,
+            "total_revenue": total_revenue,
+            "daily_labels": daily_labels,
+            "daily_orders_counts": daily_orders_counts,
+            "daily_sales_counts": daily_sales_counts,
+            "daily_orders_revenue": daily_orders_revenue,
+            "daily_sales_revenue": daily_sales_revenue,
+            "warehouse_summary_dual": warehouse_summary_dual,
+            "top_products": top_products,
+            "warehouses": list(warehouses),
+            "top_products_orders_filtered": top_products_orders_filtered,
+            "updated_at": updated_at,
+            "date_from_fmt": format_dmy(date_from),
+            "date_to_fmt": format_dmy(date_to),
+        })
+    except requests.HTTPError as http_err:
+        return jsonify({"error": "http", "status": http_err.response.status_code}), 502
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/settings", methods=["GET", "POST"]) 
 def settings():
     message = None
     current_token = session.get("WB_API_TOKEN", "")
+    seller_info: Dict[str, Any] | None = None
 
     if request.method == "POST":
         new_token = request.form.get("token", "").strip()
         if new_token:
             session["WB_API_TOKEN"] = new_token
+            current_token = new_token
             message = "Токен сохранен"
-            return render_template("settings.html", message=message, token=new_token)
         else:
-            # Очистка токена, если отправили пустым
             session.pop("WB_API_TOKEN", None)
+            current_token = ""
             message = "Токен очищен"
-            return render_template("settings.html", message=message, token="")
 
-    return render_template("settings.html", message=message, token=current_token)
+    # Always try to load seller info if token set
+    if current_token:
+        try:
+            seller_info = fetch_seller_info(current_token)
+        except Exception:
+            seller_info = None
+
+    return render_template("settings.html", message=message, token=current_token, seller_info=seller_info)
 
 
 @app.route("/export", methods=["POST"]) 
@@ -643,6 +931,96 @@ def api_top_products_orders():
     orders = cached.get("orders", [])
     items = aggregate_top_products_orders(orders, warehouse, limit=50)
     return jsonify({"items": [{"product": name, "qty": qty} for name, qty in items]})
+
+
+@app.route("/fbs", methods=["GET", "POST"]) 
+def fbs_page():
+    error = None
+    token = session.get("WB_API_TOKEN", "")
+    rows: List[Dict[str, Any]] = []
+
+    if request.method == "POST":
+        if not token:
+            error = "Укажите токен API на странице Настройки"
+        else:
+            try:
+                raw = fetch_fbs_new_orders(token)
+                # sort by createdAt desc
+                raw_sorted = sorted(raw, key=_extract_created_at, reverse=True)
+                rows = to_fbs_rows(raw_sorted)
+            except requests.HTTPError as http_err:
+                error = f"Ошибка API: {http_err.response.status_code}"
+            except Exception as exc:  # noqa: BLE001
+                error = f"Ошибка: {exc}"
+
+    return render_template("fbs.html", error=error, rows=rows)
+
+
+@app.route("/coefficients", methods=["GET", "POST"]) 
+def coefficients_page():
+    error = None
+    token = session.get("WB_API_TOKEN", "")
+    items: List[Dict[str, Any]] | None = None
+    warehouses: List[str] = []
+    date_keys: List[str] = []
+    date_labels: List[str] = []
+    grid: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    generated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    period_label = None
+
+    if not token:
+        error = "Укажите токен API на странице Настройки"
+    else:
+        try:
+            items = fetch_acceptance_coefficients(token)
+            if not isinstance(items, list):
+                items = []
+            warehouses, date_keys, date_labels, grid = build_acceptance_grid(items, days=14)
+            if date_keys:
+                try:
+                    start = datetime.strptime(date_keys[0], "%Y-%m-%d").date()
+                    end = datetime.strptime(date_keys[-1], "%Y-%m-%d").date()
+                    period_label = f"{start.strftime('%d.%m')} по {end.strftime('%d.%m')}"
+                except Exception:
+                    period_label = None
+        except requests.HTTPError as http_err:
+            error = f"Ошибка API: {http_err.response.status_code}"
+        except Exception as exc:
+            error = f"Ошибка: {exc}"
+
+    return render_template(
+        "coefficients.html",
+        error=error,
+        warehouses=warehouses,
+        date_labels=date_labels,
+        date_keys=date_keys,
+        grid=grid,
+        generated_at=generated_at,
+        period_label=period_label,
+    )
+
+
+@app.route("/api/acceptance-coefficients", methods=["GET"]) 
+def api_acceptance_coefficients():
+    token = session.get("WB_API_TOKEN", "")
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        items = fetch_acceptance_coefficients(token) or []
+        if not isinstance(items, list):
+            items = []
+        warehouses, date_keys, date_labels, grid = build_acceptance_grid(items, days=14)
+        return jsonify({
+            "warehouses": warehouses,
+            "date_keys": date_keys,
+            "date_labels": date_labels,
+            "grid": grid,
+            "lastUpdated": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+        })
+    except requests.HTTPError as http_err:
+        return jsonify({"error": "http", "status": http_err.response.status_code}), 502
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":

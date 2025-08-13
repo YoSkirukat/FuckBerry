@@ -7,26 +7,13 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
-    body { padding: 24px; }
+    h1 { font-size: 1.7rem; }
     .kpi { font-size: 1.1rem; font-weight: 600; }
     .table-responsive { max-height: 60vh; }
   </style>
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg navbar-light bg-light">
-    <div class="container-fluid">
-      <a class="navbar-brand" href="/orders">WB Dashboard</a>
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-        <span class="navbar-toggler-icon"></span>
-      </button>
-      <div class="collapse navbar-collapse" id="navbarNav">
-        <ul class="navbar-nav">
-          <li class="nav-item"><a class="nav-link active" aria-current="page" href="/orders">Заказы</a></li>
-          <li class="nav-item"><a class="nav-link" href="/settings">Настройки</a></li>
-        </ul>
-      </div>
-    </div>
-  </nav>
+  {% include '_navbar.html' %}
 
   <div class="container mt-3">
     <h1 class="mb-4">Аналитика заказов Wildberries</h1>
@@ -38,24 +25,29 @@
     <div class="row g-3 mb-4">
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
-          <form method="post" action="/orders" class="row g-3">
+          <form id="ordersForm" class="row g-3">
             <div class="col-12">
               <label class="form-label">Дата с</label>
-              <input name="date_from" type="date" class="form-control" value="{{ date_from }}" required />
+              <input name="date_from" id="dateFrom" type="date" class="form-control" value="{{ date_from }}" required />
             </div>
             <div class="col-12">
               <label class="form-label">Дата по</label>
-              <input name="date_to" type="date" class="form-control" value="{{ date_to }}" required />
+              <input name="date_to" id="dateTo" type="date" class="form-control" value="{{ date_to }}" required />
             </div>
             <div class="col-12 d-grid">
-              <button class="btn btn-primary" type="submit">Загрузить</button>
+              <button id="refreshOrdersBtn" class="btn btn-primary" type="submit">
+                <span id="ordersSpinner" class="spinner-border spinner-border-sm me-2 d-none" role="status" aria-hidden="true"></span>
+                <span id="ordersBtnText">Загрузить</span>
+              </button>
             </div>
           </form>
+          <div id="ordersMsg" class="text-success mt-2" style="display:none;">Данные обновлены</div>
         </div></div>
       </div>
 
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body d-flex flex-column gap-2">
+          <div class="text-muted">Обновлено: <span id="ordersUpdatedAt">{{ updated_at }}</span></div>
           <div class="kpi">Всего заказов: {{ total_orders | num_space }} шт.</div>
           <div class="kpi">Выручка (итог): {{ total_revenue | money_ru }} руб.</div>
           <form method="post" action="/export" class="mt-auto">
@@ -70,13 +62,13 @@
     <div class="row g-3 mb-4">
       <div class="col-md-6">
         <div class="card"><div class="card-body">
-          <h6>Количество заказов и продаж по дням с {{ date_from }} по {{ date_to }}</h6>
+          <h6 id="titleCount">Количество заказов и продаж по дням с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           <canvas id="countChart"></canvas>
         </div></div>
       </div>
       <div class="col-md-6">
         <div class="card"><div class="card-body">
-          <h6>Выручка по дням (заказы и продажи) с {{ date_from }} по {{ date_to }}</h6>
+          <h6 id="titleRevenue">Выручка по дням (заказы и продажи) с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           <canvas id="revenueChart"></canvas>
         </div></div>
       </div>
@@ -85,7 +77,7 @@
     <div class="row g-3 mb-3">
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
-          <h6 class="mb-3">Продажи по складам с {{ date_from }} по {{ date_to }}</h6>
+          <h6 id="titleWarehouses" class="mb-3">Продажи по складам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           {% if warehouse_summary_dual and warehouse_summary_dual|length %}
             <div class="table-responsive">
               <table class="table table-sm table-striped mb-0">
@@ -96,7 +88,7 @@
                     <th class="text-end">Кол-во продано</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody id="warehouseBody">
                   {% for row in warehouse_summary_dual %}
                     <tr>
                       <td>{{ row.warehouse }}</td>
@@ -114,7 +106,7 @@
       </div>
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
-          <h6 class="mb-3">ТОП товаров по заказам с {{ date_from }} по {{ date_to }}</h6>
+          <h6 id="titleTop" class="mb-3">ТОП товаров по заказам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           {% if top_products and top_products|length %}
             <div class="table-responsive">
               <table class="table table-sm table-striped mb-0">
@@ -124,7 +116,7 @@
                     <th class="text-end">Кол-во единиц</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody id="ordersTopShortBody">
                   {% for product, qty in top_products %}
                     <tr>
                       <td>{{ product }}</td>
@@ -145,11 +137,11 @@
       <div class="card-body">
         <div class="row g-3 align-items-end">
           <div class="col-md-6">
-            <h6 class="mb-2">Сводная таблица: ТОП товаров по заказам с {{ date_from }} по {{ date_to }}</h6>
+            <h6 id="titleTopPivot" class="mb-2">Сводная таблица: ТОП товаров по заказам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           </div>
           <div class="col-md-6">
             <div class="row g-2">
-              <div class="col-8">
+              <div class="col-12">
                 <label class="form-label">Склад</label>
                 <select id="warehouseSelect" class="form-select">
                   <option value="" {% if not selected_warehouse %}selected{% endif %}>Все склады</option>
@@ -157,9 +149,7 @@
                     <option value="{{ w }}" {% if selected_warehouse == w %}selected{% endif %}>{{ w }}</option>
                   {% endfor %}
                 </select>
-              </div>
-              <div class="col-4 d-grid">
-                <button id="applyWarehouse" class="btn btn-outline-primary" type="button">Применить</button>
+                <div class="form-text">Таблица обновляется автоматически при выборе склада</div>
               </div>
             </div>
           </div>
@@ -191,43 +181,161 @@
   </div>
 
   <script>
-    const labels = {{ daily_labels | tojson }};
-    const oCounts = {{ daily_orders_counts | tojson }};
-    const sCounts = {{ daily_sales_counts | tojson }};
-    const oRev = {{ daily_orders_revenue | tojson }};
-    const sRev = {{ daily_sales_revenue | tojson }};
+    // AJAX refresh for orders
+    const form = document.getElementById('ordersForm');
+    const btn = document.getElementById('refreshOrdersBtn');
+    const btnText = document.getElementById('ordersBtnText');
+    const spinner = document.getElementById('ordersSpinner');
+    const msg = document.getElementById('ordersMsg');
+    const updatedAtEl = document.getElementById('ordersUpdatedAt');
 
-    if (labels.length) {
-      const ctx1 = document.getElementById('countChart');
-      new Chart(ctx1, {
-        type: 'bar',
-        data: {
-          labels: labels,
-          datasets: [
+    // Existing charts init moved below to function
+    let countChart = null;
+    let revenueChart = null;
+
+    function initCharts(labels, oCounts, sCounts, oRev, sRev) {
+      if (countChart) countChart.destroy();
+      if (revenueChart) revenueChart.destroy();
+      if (labels && labels.length) {
+        const formatMoney = (v) => (Number(v) || 0).toLocaleString('ru-RU') + ' руб.';
+        const ctx1 = document.getElementById('countChart');
+        countChart = new Chart(ctx1, {
+          type: 'bar',
+          data: { labels, datasets: [
             { label: 'Заказы', data: oCounts, backgroundColor: 'rgba(54, 162, 235, 0.6)' },
             { label: 'Продажи', data: sCounts, backgroundColor: 'rgba(255, 159, 64, 0.6)' }
-          ]
-        },
-        options: { responsive: true, scales: { y: { beginAtZero: true } } }
-      });
-      const ctx2 = document.getElementById('revenueChart');
-      new Chart(ctx2, {
-        type: 'line',
-        data: {
-          labels: labels,
-          datasets: [
+          ]},
+          options: {
+            responsive: true,
+            scales: { y: { beginAtZero: true } },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: function(ctx) {
+                    const base = `${ctx.dataset.label}: ${ctx.formattedValue}`;
+                    const idx = ctx.dataIndex;
+                    const sum = ctx.datasetIndex === 0 ? (oRev?.[idx] ?? 0) : (sRev?.[idx] ?? 0);
+                    const sumLine = `Сумма: ${formatMoney(sum)}`;
+                    return [base, sumLine];
+                  }
+                }
+              }
+            }
+          }
+        });
+        const ctx2 = document.getElementById('revenueChart');
+        revenueChart = new Chart(ctx2, {
+          type: 'line',
+          data: { labels, datasets: [
             { label: 'Заказы', data: oRev, borderColor: 'rgba(75, 192, 192, 1)', fill: false },
             { label: 'Продажи', data: sRev, borderColor: 'rgba(255, 99, 132, 1)', fill: false }
-          ]
-        },
-        options: { responsive: true, scales: { y: { beginAtZero: true } } }
-      });
+          ]},
+          options: {
+            responsive: true,
+            scales: { y: { beginAtZero: true } },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: function(ctx) {
+                    const sum = formatMoney(ctx.parsed.y);
+                    const idx = ctx.dataIndex;
+                    const cnt = ctx.datasetIndex === 0 ? (oCounts?.[idx] ?? 0) : (sCounts?.[idx] ?? 0);
+                    const cntLine = `Кол-во: ${(Number(cnt)||0).toLocaleString('ru-RU')} шт.`;
+                    const base = `${ctx.dataset.label}: ${sum}`;
+                    return [base, cntLine];
+                  }
+                }
+              }
+            }
+          }
+        });
+      }
     }
 
+    // Initialize charts from server-rendered JSON (wrap with JSON.parse to avoid linters)
+    initCharts(
+      JSON.parse('{{ daily_labels | tojson | replace("'", "\\'") }}'),
+      JSON.parse('{{ daily_orders_counts | tojson | replace("'", "\\'") }}'),
+      JSON.parse('{{ daily_sales_counts | tojson | replace("'", "\\'") }}'),
+      JSON.parse('{{ daily_orders_revenue | tojson | replace("'", "\\'") }}'),
+      JSON.parse('{{ daily_sales_revenue | tojson | replace("'", "\\'") }}')
+    );
+
+    form?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.style.display = 'none';
+      btn.disabled = true; const prevText = btnText.textContent; spinner.classList.remove('d-none'); btnText.textContent = 'Загрузка...';
+      try {
+        const fd = new FormData();
+        const dFrom = document.getElementById('dateFrom').value;
+        const dTo = document.getElementById('dateTo').value;
+        fd.set('date_from', dFrom);
+        fd.set('date_to', dTo);
+        const res = await fetch('/api/orders-refresh', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
+        // KPI
+        document.querySelectorAll('.kpi')[0].textContent = 'Всего заказов: ' + (data.total_orders || 0).toLocaleString('ru-RU') + ' шт.';
+        document.querySelectorAll('.kpi')[1].textContent = 'Выручка (итог): ' + (data.total_revenue || 0).toLocaleString('ru-RU') + ',00 руб.';
+        if (updatedAtEl) updatedAtEl.textContent = data.updated_at || '';
+        // Titles with formatted dates
+        const df = data.date_from_fmt || dFrom; const dt = data.date_to_fmt || dTo;
+        const dfmt = df; const dtmt = dt;
+        const tCount = document.getElementById('titleCount'); if (tCount) tCount.textContent = `Количество заказов и продаж по дням с ${dfmt} по ${dtmt}`;
+        const tRev = document.getElementById('titleRevenue'); if (tRev) tRev.textContent = `Выручка по дням (заказы и продажи) с ${dfmt} по ${dtmt}`;
+        const tWh = document.getElementById('titleWarehouses'); if (tWh) tWh.textContent = `Продажи по складам с ${dfmt} по ${dtmt}`;
+        const tTop = document.getElementById('titleTop'); if (tTop) tTop.textContent = `ТОП товаров по заказам с ${dfmt} по ${dtmt}`;
+        const tTopPivot = document.getElementById('titleTopPivot'); if (tTopPivot) tTopPivot.textContent = `Сводная таблица: ТОП товаров по заказам с ${dfmt} по ${dtmt}`;
+        // Charts
+        initCharts(data.daily_labels, data.daily_orders_counts, data.daily_sales_counts, data.daily_orders_revenue, data.daily_sales_revenue);
+        // Warehouse table
+        const wtbody = document.getElementById('warehouseBody');
+        if (wtbody && Array.isArray(data.warehouse_summary_dual)) {
+          wtbody.innerHTML = '';
+          for (const row of data.warehouse_summary_dual) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${row.warehouse}</td><td class=\"text-end\">${(row.orders||0).toLocaleString('ru-RU')}</td><td class=\"text-end\">${(row.sales||0).toLocaleString('ru-RU')}</td>`;
+            wtbody.appendChild(tr);
+          }
+        }
+        // TOP products (orders)
+        const topTBody = document.getElementById('ordersTopBody');
+        if (topTBody && Array.isArray(data.top_products_orders_filtered || data.top_products)) {
+          const source = Array.isArray(data.top_products_orders_filtered) ? data.top_products_orders_filtered : data.top_products;
+          topTBody.innerHTML = '';
+          for (const item of source) {
+            const product = Array.isArray(item) ? item[0] : item.product || '';
+            const qty = Array.isArray(item) ? item[1] : item.qty || 0;
+            const tr = document.createElement('tr');
+            const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
+            const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+            topTBody.appendChild(tr);
+          }
+        }
+        // TOP short (right column)
+        const topShortBody = document.getElementById('ordersTopShortBody');
+        if (topShortBody && Array.isArray(data.top_products)) {
+          topShortBody.innerHTML = '';
+          for (const [product, qty] of data.top_products) {
+            const tr = document.createElement('tr');
+            const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
+            const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+            topShortBody.appendChild(tr);
+          }
+        }
+        msg.style.display = '';
+      } catch (err) {
+        console.error(err);
+      } finally {
+        btn.disabled = false; spinner.classList.add('d-none'); btnText.textContent = prevText;
+        setTimeout(()=>{ msg.style.display='none'; }, 2500);
+      }
+    });
+
     // Async filter apply for orders top
-    document.getElementById('applyWarehouse')?.addEventListener('click', async () => {
-      const select = document.getElementById('warehouseSelect');
-      const warehouse = select ? (select.value || '') : '';
+    const whSelect = document.getElementById('warehouseSelect');
+    async function reloadTopPivot() {
+      const warehouse = whSelect ? (whSelect.value || '') : '';
       const params = new URLSearchParams();
       if (warehouse) params.set('warehouse', warehouse);
       try {
@@ -260,7 +368,8 @@
       } catch (e) {
         console.error(e);
       }
-    });
+    }
+    whSelect?.addEventListener('change', reloadTopPivot);
   </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
