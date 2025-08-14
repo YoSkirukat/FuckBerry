@@ -43,6 +43,7 @@
             </div>
           </form>
           <div id="ordersMsg" class="text-success mt-2" style="display:none;">Данные обновлены</div>
+          <div id="ordersDuration" class="text-muted mt-1" style="display:none;"></div>
         </div></div>
       </div>
 
@@ -79,17 +80,17 @@
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
           <h6 id="titleWarehouses" class="mb-3">Продажи по складам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
-          {% if warehouse_summary_dual and warehouse_summary_dual|length %}
-            <div class="table-responsive">
-              <table class="table table-sm table-striped mb-0">
-                <thead>
-                  <tr>
-                    <th>Склад отгрузки</th>
-                    <th class="text-end">Кол-во заказано</th>
-                    <th class="text-end">Кол-во продано</th>
-                  </tr>
-                </thead>
-                <tbody id="warehouseBody">
+          <div class="table-responsive">
+            <table class="table table-sm table-striped mb-0">
+              <thead>
+                <tr>
+                  <th>Склад отгрузки</th>
+                  <th class="text-end">Кол-во заказано</th>
+                  <th class="text-end">Кол-во продано</th>
+                </tr>
+              </thead>
+              <tbody id="warehouseBody">
+                {% if warehouse_summary_dual and warehouse_summary_dual|length %}
                   {% for row in warehouse_summary_dual %}
                     <tr>
                       <td>{{ row.warehouse }}</td>
@@ -97,39 +98,39 @@
                       <td class="text-end">{{ row.sales | num_space }}</td>
                     </tr>
                   {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <div class="text-muted">Нет данных</div>
-          {% endif %}
+                {% else %}
+                  <tr><td colspan="3" class="text-muted">Нет данных</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
         </div></div>
       </div>
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
           <h6 id="titleTop" class="mb-3">ТОП товаров по заказам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
-          {% if top_products and top_products|length %}
-            <div class="table-responsive">
-              <table class="table table-sm table-striped mb-0">
-                <thead>
-                  <tr>
-                    <th>Товар</th>
-                    <th class="text-end">Кол-во единиц</th>
-                  </tr>
-                </thead>
-                <tbody id="ordersTopShortBody">
+          <div class="table-responsive">
+            <table class="table table-sm table-striped mb-0">
+              <thead>
+                <tr>
+                  <th>Товар</th>
+                  <th class="text-end">Кол-во единиц</th>
+                </tr>
+              </thead>
+              <tbody id="ordersTopShortBody">
+                {% if top_products and top_products|length %}
                   {% for product, qty in top_products %}
                     <tr>
                       <td>{{ product }}</td>
                       <td class="text-end">{{ qty | num_space }}</td>
                     </tr>
                   {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <div class="text-muted">Нет данных</div>
-          {% endif %}
+                {% else %}
+                  <tr><td colspan="2" class="text-muted">Нет данных</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
         </div></div>
       </div>
     </div>
@@ -189,6 +190,7 @@
     const spinner = document.getElementById('ordersSpinner');
     const msg = document.getElementById('ordersMsg');
     const updatedAtEl = document.getElementById('ordersUpdatedAt');
+    const durationEl = document.getElementById('ordersDuration');
 
     // Existing charts init moved below to function
     let countChart = null;
@@ -253,19 +255,24 @@
       }
     }
 
-    // Initialize charts from server-rendered JSON (wrap with JSON.parse to avoid linters)
-    initCharts(
-      JSON.parse('{{ daily_labels | tojson | replace("'", "\\'") }}'),
-      JSON.parse('{{ daily_orders_counts | tojson | replace("'", "\\'") }}'),
-      JSON.parse('{{ daily_sales_counts | tojson | replace("'", "\\'") }}'),
-      JSON.parse('{{ daily_orders_revenue | tojson | replace("'", "\\'") }}'),
-      JSON.parse('{{ daily_sales_revenue | tojson | replace("'", "\\'") }}')
-    );
+    // Initialize charts from server-rendered JSON (embed as literals)
+    const initialLabels = {{ daily_labels | tojson | safe }};
+    const initialOrdersCounts = {{ daily_orders_counts | tojson | safe }};
+    const initialSalesCounts = {{ daily_sales_counts | tojson | safe }};
+    const initialOrdersRevenue = {{ daily_orders_revenue | tojson | safe }};
+    const initialSalesRevenue = {{ daily_sales_revenue | tojson | safe }};
+    try {
+      if (typeof Chart !== 'undefined') {
+        initCharts(initialLabels, initialOrdersCounts, initialSalesCounts, initialOrdersRevenue, initialSalesRevenue);
+      }
+    } catch (e) { console.error(e); }
 
-    form?.addEventListener('submit', async (e) => {
+    if (form) form.addEventListener('submit', async (e) => {
       e.preventDefault();
       msg.style.display = 'none';
+      if (durationEl) durationEl.style.display = 'none';
       btn.disabled = true; const prevText = btnText.textContent; spinner.classList.remove('d-none'); btnText.textContent = 'Загрузка...';
+      const t0 = performance.now();
       try {
         const fd = new FormData();
         const dFrom = document.getElementById('dateFrom').value;
@@ -288,7 +295,11 @@
         const tTop = document.getElementById('titleTop'); if (tTop) tTop.textContent = `ТОП товаров по заказам с ${dfmt} по ${dtmt}`;
         const tTopPivot = document.getElementById('titleTopPivot'); if (tTopPivot) tTopPivot.textContent = `Сводная таблица: ТОП товаров по заказам с ${dfmt} по ${dtmt}`;
         // Charts
-        initCharts(data.daily_labels, data.daily_orders_counts, data.daily_sales_counts, data.daily_orders_revenue, data.daily_sales_revenue);
+        if (Array.isArray(data.daily_labels) && data.daily_labels.length) {
+          initCharts(data.daily_labels, data.daily_orders_counts, data.daily_sales_counts, data.daily_orders_revenue, data.daily_sales_revenue);
+        } else {
+          initCharts([], [], [], [], []);
+        }
         // Warehouse table
         const wtbody = document.getElementById('warehouseBody');
         if (wtbody && Array.isArray(data.warehouse_summary_dual)) {
@@ -304,12 +315,18 @@
         if (topTBody && Array.isArray(data.top_products_orders_filtered || data.top_products)) {
           const source = Array.isArray(data.top_products_orders_filtered) ? data.top_products_orders_filtered : data.top_products;
           topTBody.innerHTML = '';
-          for (const item of source) {
-            const product = Array.isArray(item) ? item[0] : item.product || '';
-            const qty = Array.isArray(item) ? item[1] : item.qty || 0;
+          if (source.length) {
+            for (const item of source) {
+              const product = Array.isArray(item) ? item[0] : item.product || '';
+              const qty = Array.isArray(item) ? item[1] : item.qty || 0;
+              const tr = document.createElement('tr');
+              const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
+              const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+              topTBody.appendChild(tr);
+            }
+          } else {
             const tr = document.createElement('tr');
-            const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
-            const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+            const td = document.createElement('td'); td.colSpan=2; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
             topTBody.appendChild(tr);
           }
         }
@@ -317,14 +334,45 @@
         const topShortBody = document.getElementById('ordersTopShortBody');
         if (topShortBody && Array.isArray(data.top_products)) {
           topShortBody.innerHTML = '';
-          for (const [product, qty] of data.top_products) {
+          if (data.top_products.length) {
+            for (const [product, qty] of data.top_products) {
+              const tr = document.createElement('tr');
+              const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
+              const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+              topShortBody.appendChild(tr);
+            }
+          } else {
             const tr = document.createElement('tr');
-            const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
-            const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+            const td = document.createElement('td'); td.colSpan=2; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
             topShortBody.appendChild(tr);
           }
         }
+
+        // Warehouses select options (for pivot) and reload pivot with current selection
+        try {
+          const sel = document.getElementById('warehouseSelect');
+          if (sel && Array.isArray(data.warehouses)) {
+            const keep = sel.value || '';
+            sel.innerHTML = '';
+            const optAll = document.createElement('option');
+            optAll.value = '';
+            optAll.textContent = 'Все склады';
+            sel.appendChild(optAll);
+            for (const w of data.warehouses) {
+              const o = document.createElement('option');
+              o.value = w; o.textContent = w; if (w === keep) o.selected = true; sel.appendChild(o);
+            }
+            // ensure pivot reflects current choice
+            if (typeof reloadTopPivot === 'function') { await reloadTopPivot(); }
+          }
+        } catch (e) { console.error(e); }
         msg.style.display = '';
+        // Duration
+        const elapsedSec = Math.max(0, Math.round((performance.now() - t0) / 1000));
+        const hh = String(Math.floor(elapsedSec / 3600)).padStart(2,'0');
+        const mm = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2,'0');
+        const ss = String(elapsedSec % 60).padStart(2,'0');
+        if (durationEl) { durationEl.textContent = `Время выполнения запроса ${hh}:${mm}:${ss}`; durationEl.style.display=''; }
       } catch (err) {
         console.error(err);
       } finally {
@@ -370,7 +418,7 @@
         console.error(e);
       }
     }
-    whSelect?.addEventListener('change', reloadTopPivot);
+    if (whSelect) whSelect.addEventListener('change', reloadTopPivot);
   </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>

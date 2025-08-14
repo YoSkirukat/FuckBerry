@@ -1,3 +1,20 @@
+{% if subscription_banner.show %}
+<div class="alert alert-warning rounded-0 mb-0 position-relative text-center fw-semibold py-1" role="alert" style="border:0;">
+  Подписка истекает {{ subscription_banner.end_date }} (осталось {{ subscription_banner.days_left }} дн.).
+  <button id="hideSubBanner" type="button" class="btn-close" aria-label="Close" style="position:absolute; right:8px; top:50%; transform: translateY(-50%);"></button>
+</div>
+<script>
+  document.getElementById('hideSubBanner')?.addEventListener('click', function(){
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth()+1).padStart(2,'0');
+    const dd = String(today.getDate()).padStart(2,'0');
+    const val = `${yyyy}-${mm}-${dd}`;
+    document.cookie = `hide_sub_banner_until=${val}; Max-Age=86400; path=/`;
+    this.closest('.alert').remove();
+  });
+</script>
+{% endif %}
 <nav class="navbar navbar-expand-lg navbar-light bg-light">
   <div class="container">
     <a class="navbar-brand d-flex align-items-center gap-2" href="/orders" style="font-weight: bold;"><img src="/logo.png" alt="logo" width="40" height="40"/> FuckBerry</a>

@@ -11,10 +11,6 @@
   <div class="container mt-3">
     <h1 class="mb-4" style="font-size:1.6rem;">Профиль</h1>
 
-    {% if message %}
-      <div class="alert alert-info">{{ message }}</div>
-    {% endif %}
-
     <div class="row g-3">
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
@@ -23,11 +19,27 @@
             <div class="col-12">
               <input name="token" type="password" class="form-control" value="{{ token }}" placeholder="Вставьте ваш WB токен" />
             </div>
-            <div class="col-12 d-flex gap-2">
+            <div class="col-12 d-flex gap-2 align-items-center">
               <button class="btn btn-primary" type="submit">Сохранить</button>
               <button class="btn btn-outline-danger" type="submit" onclick="document.querySelector('[name=token]').value='';">Очистить</button>
+              {% with msgs = get_flashed_messages() %}
+                {% if msgs and 'Токен успешно добавлен' in msgs[-1] %}
+                  <span class="text-success ms-2">Токен успешно добавлен</span>
+                {% elif msgs and 'Токен удален' in msgs[-1] %}
+                  <span class="text-success ms-2">Токен удален</span>
+                {% elif msgs and 'Ошибка' in msgs[-1] %}
+                  <span class="text-danger ms-2">{{ msgs[-1] }}</span>
+                {% endif %}
+              {% endwith %}
             </div>
           </form>
+
+          {% if seller_info %}
+            <div class="mt-3">
+              <div class="text-muted">Наименование продавца</div>
+              <div>{{ seller_info.name or seller_info.companyName or seller_info.supplierName }}</div>
+            </div>
+          {% endif %}
         </div></div>
       </div>
 

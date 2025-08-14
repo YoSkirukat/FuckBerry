@@ -83,6 +83,10 @@ def _cache_path_for_user() -> str:
     return os.path.join(CACHE_DIR, f"orders_{_get_session_id()}.json")
 
 
+def _cache_path_for_user_id(user_id: int) -> str:
+    return os.path.join(CACHE_DIR, f"orders_user_{user_id}.json")
+
+
 def load_last_results() -> Dict[str, Any] | None:
     path = _cache_path_for_user()
     if not os.path.isfile(path):
@@ -97,8 +101,16 @@ def load_last_results() -> Dict[str, Any] | None:
 def save_last_results(payload: Dict[str, Any]) -> None:
     path = _cache_path_for_user()
     try:
+        enriched = dict(payload)
+        try:
+            if current_user.is_authenticated:
+                enriched["_user_id"] = current_user.id
+                enriched["_username"] = getattr(current_user, "username", None)
+        except Exception:
+            # If current_user unavailable outside request context, ignore
+            pass
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(enriched, f, ensure_ascii=False)
     except Exception:
         pass
 
@@ -129,6 +141,33 @@ def load_user(user_id: str):
         return db.session.get(User, int(user_id))
     except Exception:
         return None
+
+
+def _is_user_valid_now(u: "User") -> bool:
+    if not u.is_active:
+        return False
+    today = datetime.utcnow().date()
+    if u.valid_from and today < u.valid_from:
+        return False
+    if u.valid_to and today > u.valid_to:
+        return False
+    return True
+
+
+@app.before_request
+def _enforce_account_validity():
+    # Allow unauthenticated pages and static assets
+    endpoint = (request.endpoint or "")
+    if endpoint in {"login", "logout", "favicon", "logo"} or endpoint.startswith("static"):
+        return None
+    if current_user.is_authenticated:
+        if not _is_user_valid_now(current_user):
+            logout_user()
+            # For API requests return JSON 401 to avoid HTML redirect in fetch()
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "expired"}), 401
+            flash("Срок действия учётной записи истёк")
+            return redirect(url_for("login"))
 
 
 def parse_date(date_str: str) -> datetime:
@@ -683,7 +722,8 @@ def index():
     # Если GET — пробуем показать последние результаты из кэша
     if request.method == "GET":
         cached = load_last_results()
-        if cached:
+        # Use cache only if it belongs to this user (by user_id) and user has token
+        if cached and current_user.is_authenticated and cached.get("_user_id") == current_user.id and (current_user.wb_token or ""):
             date_from = cached.get("date_from", date_from)
             date_to = cached.get("date_to", date_to)
             date_from_fmt = format_dmy(date_from)
@@ -711,8 +751,11 @@ def index():
             error = "Выберите даты"
         else:
             try:
-                parse_date(date_from)
-                parse_date(date_to)
+                df = parse_date(date_from)
+                dt = parse_date(date_to)
+                # normalize inverted range
+                if df > dt:
+                    date_from, date_to = date_to, date_from
             except ValueError:
                 error = "Неверный формат дат"
 
@@ -823,8 +866,10 @@ def api_orders_refresh():
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
     try:
-        parse_date(date_from)
-        parse_date(date_to)
+        df = parse_date(date_from)
+        dt = parse_date(date_to)
+        if df > dt:
+            date_from, date_to = date_to, date_from
     except ValueError:
         return jsonify({"error": "bad_dates"}), 400
     try:
@@ -926,7 +971,7 @@ def profile_token():
     try:
         current_user.wb_token = new_token or None
         db.session.commit()
-        flash("Токен сохранен" if new_token else "Токен очищен")
+        flash("Токен успешно добавлен" if new_token else "Токен удален")
     except Exception:
         db.session.rollback()
         flash("Ошибка сохранения токена")
@@ -1006,7 +1051,7 @@ def export_excel():
 def api_top_products_sales():
     warehouse = request.args.get("warehouse", "") or None
     cached = load_last_results()
-    if not cached:
+    if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
         return jsonify({"items": []})
     sales_rows = cached.get("sales_rows", [])
     items = aggregate_top_products_sales(sales_rows, warehouse, limit=50)
@@ -1018,7 +1063,7 @@ def api_top_products_sales():
 def api_top_products_orders():
     warehouse = request.args.get("warehouse", "") or None
     cached = load_last_results()
-    if not cached:
+    if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
         return jsonify({"items": []})
     orders = cached.get("orders", [])
     items = aggregate_top_products_orders(orders, warehouse, limit=50)
@@ -1137,15 +1182,17 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         user = User.query.filter_by(username=username).first()
-        # Check basic active flag and password
-        if not user or not user.is_active or user.password != password:
+        # Authentication and account state checks
+        if not user or user.password != password:
             return render_template("login.html", error="Неверный логин или пароль")
+        if not user.is_active:
+            return render_template("login.html", error="Ваша учетная запись заблокирована, обратитесь в техподдержку")
         # Check validity dates
         today = datetime.utcnow().date()
         if user.valid_from and today < user.valid_from:
             return render_template("login.html", error="Учётная запись ещё не активна")
         if user.valid_to and today > user.valid_to:
-            return render_template("login.html", error="Срок действия учётной записи истёк")
+            return render_template("login.html", error="Срок действия вашей подписки истек")
         login_user(user)
         return redirect(request.args.get("next") or url_for("index"))
     return render_template("login.html")
@@ -1277,6 +1324,13 @@ def admin_users_delete(user_id: int):
         try:
             db.session.delete(u)
             db.session.commit()
+            # Remove user's cache file if exists
+            try:
+                cache_path = _cache_path_for_user_id(user_id)
+                if os.path.isfile(cache_path):
+                    os.remove(cache_path)
+            except Exception:
+                pass
             flash("Пользователь удалён")
         except Exception:
             db.session.rollback()
@@ -1314,6 +1368,40 @@ def admin_users_validity(user_id: int):
             db.session.rollback()
             flash("Ошибка обновления срока")
     return redirect(url_for("admin_users"))
+
+
+# -------------------------
+# Template context: subscription banner
+# -------------------------
+
+@app.context_processor
+def inject_subscription_banner():
+    banner = {"show": False}
+    try:
+        if current_user.is_authenticated and current_user.valid_to:
+            today = datetime.utcnow().date()
+            days_left = (current_user.valid_to - today).days
+            if 0 <= days_left <= 5:
+                # Check cookie suppressing banner for a day
+                hide_until = request.cookies.get("hide_sub_banner_until")
+                hide_ok = False
+                if hide_until:
+                    try:
+                        from datetime import date
+                        hide_date = datetime.strptime(hide_until, "%Y-%m-%d").date()
+                        if hide_date >= today:
+                            hide_ok = True
+                    except Exception:
+                        hide_ok = False
+                if not hide_ok:
+                    banner = {
+                        "show": True,
+                        "days_left": days_left,
+                        "end_date": current_user.valid_to.strftime("%d.%m.%Y"),
+                    }
+    except Exception:
+        pass
+    return {"subscription_banner": banner}
 
 
 if __name__ == "__main__":
