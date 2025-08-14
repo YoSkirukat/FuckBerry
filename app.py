@@ -5,7 +5,7 @@ import uuid
 import time
 import random
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple
 
 import requests
@@ -43,6 +43,26 @@ SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
 
 
+# Timezone helpers (Moscow)
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+except Exception:  # Fallback to fixed UTC+3 if zoneinfo unavailable
+    MOSCOW_TZ = timezone(timedelta(hours=3))
+
+def to_moscow(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    try:
+        # If datetime is naive, consider it already in Moscow time (many WB fields come without TZ but are MSK)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=MOSCOW_TZ)
+        # If it has timezone (e.g., Z/UTC), convert to Moscow
+        return dt.astimezone(MOSCOW_TZ)
+    except Exception:
+        return dt
+
+
 def format_int_thousands(value: Any) -> str:
     try:
         return f"{int(value):,}".replace(",", " ")
@@ -67,6 +87,56 @@ def format_dmy(date_str: str) -> str:
     except Exception:
         return date_str or ""
 
+
+def time_ago_ru(dt_val: Any) -> str:
+    try:
+        if dt_val is None:
+            return ""
+        if isinstance(dt_val, str):
+            s = dt_val.strip()
+            dt = parse_wb_datetime(s)
+            if dt is None:
+                # Try ISO first
+                try:
+                    dt = datetime.fromisoformat(s)
+                except Exception:
+                    dt = None
+            if dt is None:
+                # Try common RU formats
+                for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+                    try:
+                        dt = datetime.strptime(s, fmt)
+                        break
+                    except Exception:
+                        dt = None
+            if dt is None:
+                return ""
+        elif isinstance(dt_val, datetime):
+            dt = dt_val
+        else:
+            return ""
+        # Convert both to Moscow time for consistent human delta
+        dt = to_moscow(dt)
+        now = datetime.now(MOSCOW_TZ)
+        if dt > now:
+            return "только что"
+        diff = now - dt
+        days = diff.days
+        seconds = diff.seconds
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        if days > 0:
+            return f"{days} д {hours} ч назад" if hours > 0 else f"{days} д назад"
+        if hours > 0:
+            return f"{hours} ч {minutes} м назад" if minutes > 0 else f"{hours} ч назад"
+        if minutes > 0:
+            return f"{minutes} м назад"
+        return "только что"
+    except Exception:
+        return ""
+
+
+app.jinja_env.filters["time_ago_ru"] = time_ago_ru
 
 def _get_session_id() -> str:
     # For anonymous sessions only; with auth we key cache by user id
@@ -182,7 +252,8 @@ def parse_wb_datetime(value: str) -> datetime | None:
     try:
         # Normalize Z to +00:00
         s_norm = s.replace("Z", "+00:00")
-        return datetime.fromisoformat(s_norm[:26] + s_norm[26:])  # be forgiving on microseconds length
+        dt = datetime.fromisoformat(s_norm[:26] + s_norm[26:])  # be forgiving on microseconds length
+        return dt
     except Exception:
         try:
             return datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
@@ -497,9 +568,26 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
 def _extract_created_at(obj: Any) -> datetime:
     if not isinstance(obj, dict):
         return datetime.min
-    val = obj.get("createdAt") or obj.get("dateCreated") or obj.get("date") or ""
-    dt = parse_wb_datetime(str(val))
-    return dt or datetime.min
+    val = obj.get("createdAt") or obj.get("dateCreated") or obj.get("date") or obj.get("created_at") or obj.get("time") or ""
+    # Numeric timestamp support (ms or s)
+    try:
+        if isinstance(val, (int, float)):
+            ts = float(val)
+            if ts > 1e12:  # milliseconds
+                return datetime.fromtimestamp(ts / 1000)
+            if ts > 1e9:   # seconds
+                return datetime.fromtimestamp(ts)
+        s = str(val).strip()
+        if s.isdigit():
+            ts = float(s)
+            if ts > 1e12:
+                return datetime.fromtimestamp(ts / 1000)
+            if ts > 1e9:
+                return datetime.fromtimestamp(ts)
+        dt = parse_wb_datetime(s)
+        return dt or datetime.min
+    except Exception:
+        return datetime.min
 
 
 def fetch_fbs_new_orders(token: str) -> List[Dict[str, Any]]:
@@ -535,8 +623,11 @@ def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
         # Номер задания — ID
         order_id = o.get("ID") or o.get("id") or o.get("orderId") or o.get("gNumber") or ""
-        # Дата — createdAt (ГГГГ-ММ-ДД)
-        created_at = str(o.get("createdAt") or "")[:10]
+        # Дата — createdAt (форматируем с временем если доступно)
+        ca_raw = o.get("createdAt") or o.get("dateCreated") or o.get("date")
+        ca_dt = parse_wb_datetime(str(ca_raw))
+        ca_dt_msk = to_moscow(ca_dt) if ca_dt else None
+        created_at = ca_dt_msk.strftime("%d.%m.%Y %H:%M") if ca_dt_msk else str(ca_raw or "")[:10]
         # Наименование — article
         article = o.get("article") or ""
         # Цена — price без двух последних нулей
@@ -1083,8 +1174,8 @@ def fbs_page():
         else:
             try:
                 raw = fetch_fbs_new_orders(token)
-                # sort by createdAt desc
-                raw_sorted = sorted(raw, key=_extract_created_at, reverse=True)
+                # sort by createdAt asc (oldest first)
+                raw_sorted = sorted(raw, key=_extract_created_at)
                 rows = to_fbs_rows(raw_sorted)
             except requests.HTTPError as http_err:
                 error = f"Ошибка API: {http_err.response.status_code}"
