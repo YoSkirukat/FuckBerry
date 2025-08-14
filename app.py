@@ -11,9 +11,24 @@ from typing import List, Dict, Any, Tuple
 import requests
 from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory
 from openpyxl import Workbook
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    login_required,
+    login_user,
+    logout_user,
+    current_user,
+)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(os.path.dirname(__file__), 'app.db')}")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
 
 API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
 SALES_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
@@ -54,6 +69,7 @@ def format_dmy(date_str: str) -> str:
 
 
 def _get_session_id() -> str:
+    # For anonymous sessions only; with auth we key cache by user id
     sid = session.get("SID")
     if not sid:
         sid = uuid.uuid4().hex
@@ -61,13 +77,14 @@ def _get_session_id() -> str:
     return sid
 
 
-def _cache_path(sid: str) -> str:
-    return os.path.join(CACHE_DIR, f"orders_{sid}.json")
+def _cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"orders_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, f"orders_{_get_session_id()}.json")
 
 
 def load_last_results() -> Dict[str, Any] | None:
-    sid = _get_session_id()
-    path = _cache_path(sid)
+    path = _cache_path_for_user()
     if not os.path.isfile(path):
         return None
     try:
@@ -78,13 +95,40 @@ def load_last_results() -> Dict[str, Any] | None:
 
 
 def save_last_results(payload: Dict[str, Any]) -> None:
-    sid = _get_session_id()
-    path = _cache_path(sid)
+    path = _cache_path_for_user()
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+# -------------------------
+# Models & Auth
+# -------------------------
+
+class User(UserMixin, db.Model):
+    __tablename__ = "users"
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.String(255), nullable=False)  # store hashed in production
+    is_admin = db.Column(db.Boolean, default=False)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    wb_token = db.Column(db.Text, nullable=True)
+    valid_from = db.Column(db.Date, nullable=True)
+    valid_to = db.Column(db.Date, nullable=True)
+
+    def get_id(self):  # type: ignore[override]
+        return str(self.id)
+
+
+@login_manager.user_loader
+def load_user(user_id: str):
+    try:
+        return db.session.get(User, int(user_id))
+    except Exception:
+        return None
 
 
 def parse_date(date_str: str) -> datetime:
@@ -599,6 +643,7 @@ def root():
 
 
 @app.route("/orders", methods=["GET", "POST"]) 
+@login_required
 def index():
     error = None
     # Orders
@@ -632,8 +677,8 @@ def index():
     date_from_fmt = format_dmy(date_from)
     date_to_fmt = format_dmy(date_to)
 
-    # Токен: берём из формы, иначе из сессии
-    token = (request.form.get("token", "").strip() or session.get("WB_API_TOKEN", ""))
+    # Токен: берём из формы, иначе из профиля пользователя
+    token = (request.form.get("token", "").strip() or (current_user.wb_token if current_user.is_authenticated else ""))
 
     # Если GET — пробуем показать последние результаты из кэша
     if request.method == "GET":
@@ -697,8 +742,13 @@ def index():
                 # Top products (by orders)
                 top_products = aggregate_top_products(orders, limit=15)
 
-                # Сохраняем токен и результаты
-                session["WB_API_TOKEN"] = token
+                # Сохраняем токен в профиле пользователя при наличии
+                if current_user.is_authenticated and token:
+                    try:
+                        current_user.wb_token = token
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
                 updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 date_from_fmt = format_dmy(date_from)
                 date_to_fmt = format_dmy(date_to)
@@ -765,8 +815,9 @@ def index():
 
 
 @app.route("/api/orders-refresh", methods=["POST"]) 
+@login_required
 def api_orders_refresh():
-    token = session.get("WB_API_TOKEN", "")
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
         return jsonify({"error": "no_token"}), 401
     date_from = request.form.get("date_from", "")
@@ -838,36 +889,75 @@ def api_orders_refresh():
         return jsonify({"error": str(exc)}), 500
 
 
-@app.route("/settings", methods=["GET", "POST"]) 
-def settings():
-    message = None
-    current_token = session.get("WB_API_TOKEN", "")
+@app.route("/profile", methods=["GET"]) 
+@login_required
+def profile():
     seller_info: Dict[str, Any] | None = None
-
-    if request.method == "POST":
-        new_token = request.form.get("token", "").strip()
-        if new_token:
-            session["WB_API_TOKEN"] = new_token
-            current_token = new_token
-            message = "Токен сохранен"
-        else:
-            session.pop("WB_API_TOKEN", None)
-            current_token = ""
-            message = "Токен очищен"
-
-    # Always try to load seller info if token set
-    if current_token:
+    token = current_user.wb_token or ""
+    if token:
         try:
-            seller_info = fetch_seller_info(current_token)
+            seller_info = fetch_seller_info(token)
         except Exception:
             seller_info = None
+    validity_status = None
+    if current_user.valid_from or current_user.valid_to:
+        today = datetime.utcnow().date()
+        active = True
+        if current_user.valid_from and today < current_user.valid_from:
+            active = False
+        if current_user.valid_to and today > current_user.valid_to:
+            active = False
+        validity_status = "active" if active and current_user.is_active else "inactive"
+    return render_template(
+        "profile.html",
+        message=None,
+        token=token,
+        seller_info=seller_info,
+        valid_from=current_user.valid_from.strftime("%d.%m.%Y") if current_user.valid_from else None,
+        valid_to=current_user.valid_to.strftime("%d.%m.%Y") if current_user.valid_to else None,
+        validity_status=validity_status,
+    )
 
-    return render_template("settings.html", message=message, token=current_token, seller_info=seller_info)
+
+@app.route("/profile/token", methods=["POST"]) 
+@login_required
+def profile_token():
+    new_token = request.form.get("token", "").strip()
+    try:
+        current_user.wb_token = new_token or None
+        db.session.commit()
+        flash("Токен сохранен" if new_token else "Токен очищен")
+    except Exception:
+        db.session.rollback()
+        flash("Ошибка сохранения токена")
+    return redirect(url_for("profile"))
+
+
+@app.route("/profile/password", methods=["POST"]) 
+@login_required
+def profile_password():
+    old_password = request.form.get("old_password", "")
+    new_password = request.form.get("new_password", "")
+    if not old_password or not new_password:
+        flash("Заполните оба поля")
+        return redirect(url_for("profile"))
+    if current_user.password != old_password:
+        flash("Текущий пароль неверен")
+        return redirect(url_for("profile"))
+    try:
+        current_user.password = new_password
+        db.session.commit()
+        flash("Пароль обновлён")
+    except Exception:
+        db.session.rollback()
+        flash("Ошибка обновления пароля")
+    return redirect(url_for("profile"))
 
 
 @app.route("/export", methods=["POST"]) 
+@login_required
 def export_excel():
-    token = (request.form.get("token", "").strip() or session.get("WB_API_TOKEN", ""))
+    token = (request.form.get("token", "").strip() or (current_user.wb_token or ""))
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
 
@@ -912,6 +1002,7 @@ def export_excel():
 
 
 @app.route("/api/top-products-sales", methods=["GET"]) 
+@login_required
 def api_top_products_sales():
     warehouse = request.args.get("warehouse", "") or None
     cached = load_last_results()
@@ -923,6 +1014,7 @@ def api_top_products_sales():
 
 
 @app.route("/api/top-products-orders", methods=["GET"]) 
+@login_required
 def api_top_products_orders():
     warehouse = request.args.get("warehouse", "") or None
     cached = load_last_results()
@@ -934,9 +1026,10 @@ def api_top_products_orders():
 
 
 @app.route("/fbs", methods=["GET", "POST"]) 
+@login_required
 def fbs_page():
     error = None
-    token = session.get("WB_API_TOKEN", "")
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     rows: List[Dict[str, Any]] = []
 
     if request.method == "POST":
@@ -957,9 +1050,10 @@ def fbs_page():
 
 
 @app.route("/coefficients", methods=["GET", "POST"]) 
+@login_required
 def coefficients_page():
     error = None
-    token = session.get("WB_API_TOKEN", "")
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     items: List[Dict[str, Any]] | None = None
     warehouses: List[str] = []
     date_keys: List[str] = []
@@ -1001,8 +1095,9 @@ def coefficients_page():
 
 
 @app.route("/api/acceptance-coefficients", methods=["GET"]) 
+@login_required
 def api_acceptance_coefficients():
-    token = session.get("WB_API_TOKEN", "")
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:
@@ -1031,5 +1126,216 @@ def favicon():
 def logo():
     return send_from_directory(os.path.join(app.root_path, 'templates'), 'logo.png', mimetype='image/png')
 
+
+# -------------------------
+# Auth routes
+# -------------------------
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = User.query.filter_by(username=username).first()
+        # Check basic active flag and password
+        if not user or not user.is_active or user.password != password:
+            return render_template("login.html", error="Неверный логин или пароль")
+        # Check validity dates
+        today = datetime.utcnow().date()
+        if user.valid_from and today < user.valid_from:
+            return render_template("login.html", error="Учётная запись ещё не активна")
+        if user.valid_to and today > user.valid_to:
+            return render_template("login.html", error="Срок действия учётной записи истёк")
+        login_user(user)
+        return redirect(request.args.get("next") or url_for("index"))
+    return render_template("login.html")
+
+
+@app.route("/logout", methods=["GET"]) 
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
+
+def admin_required():
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return False
+    return True
+
+
+@app.route("/admin/users", methods=["GET"]) 
+@login_required
+def admin_users():
+    if not admin_required():
+        return redirect(url_for("index"))
+    users = User.query.order_by(User.id.asc()).all()
+    return render_template("admin_users.html", users=users, message=None)
+
+
+@app.route("/admin/users/create", methods=["POST"]) 
+@login_required
+def admin_users_create():
+    if not admin_required():
+        return redirect(url_for("index"))
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    is_admin = bool(request.form.get("is_admin"))
+    vf = request.form.get("valid_from") or None
+    vt = request.form.get("valid_to") or None
+    if not username or not password:
+        flash("Укажите логин и пароль")
+        return redirect(url_for("admin_users"))
+    if User.query.filter_by(username=username).first():
+        flash("Такой логин уже существует")
+        return redirect(url_for("admin_users"))
+    try:
+        from datetime import date
+        vf_d = None
+        vt_d = None
+        if vf:
+            try:
+                vf_d = datetime.strptime(vf, "%Y-%m-%d").date()
+            except Exception:
+                vf_d = None
+        if vt:
+            try:
+                vt_d = datetime.strptime(vt, "%Y-%m-%d").date()
+            except Exception:
+                vt_d = None
+        u = User(username=username, password=password, is_admin=is_admin, is_active=True, valid_from=vf_d, valid_to=vt_d)
+        db.session.add(u)
+        db.session.commit()
+        flash("Пользователь создан")
+    except Exception:
+        db.session.rollback()
+        flash("Ошибка создания пользователя")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/block", methods=["POST"]) 
+@login_required
+def admin_users_block(user_id: int):
+    if not admin_required():
+        return redirect(url_for("index"))
+    u = db.session.get(User, user_id)
+    if u:
+        try:
+            u.is_active = False
+            db.session.commit()
+            flash("Пользователь заблокирован")
+        except Exception:
+            db.session.rollback()
+            flash("Ошибка")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/unblock", methods=["POST"]) 
+@login_required
+def admin_users_unblock(user_id: int):
+    if not admin_required():
+        return redirect(url_for("index"))
+    u = db.session.get(User, user_id)
+    if u:
+        try:
+            u.is_active = True
+            db.session.commit()
+            flash("Пользователь разблокирован")
+        except Exception:
+            db.session.rollback()
+            flash("Ошибка")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/reset", methods=["POST"]) 
+@login_required
+def admin_users_reset(user_id: int):
+    if not admin_required():
+        return redirect(url_for("index"))
+    new_pass = request.form.get("password", "")
+    if not new_pass:
+        flash("Укажите новый пароль")
+        return redirect(url_for("admin_users"))
+    u = db.session.get(User, user_id)
+    if u:
+        try:
+            u.password = new_pass
+            db.session.commit()
+            flash("Пароль обновлён")
+        except Exception:
+            db.session.rollback()
+            flash("Ошибка")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/delete", methods=["POST"]) 
+@login_required
+def admin_users_delete(user_id: int):
+    if not admin_required():
+        return redirect(url_for("index"))
+    u = db.session.get(User, user_id)
+    if u:
+        try:
+            db.session.delete(u)
+            db.session.commit()
+            flash("Пользователь удалён")
+        except Exception:
+            db.session.rollback()
+            flash("Ошибка")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/validity", methods=["POST"]) 
+@login_required
+def admin_users_validity(user_id: int):
+    if not admin_required():
+        return redirect(url_for("index"))
+    vf = request.form.get("valid_from") or None
+    vt = request.form.get("valid_to") or None
+    u = db.session.get(User, user_id)
+    if u:
+        try:
+            vf_d = None
+            vt_d = None
+            if vf:
+                try:
+                    vf_d = datetime.strptime(vf, "%Y-%m-%d").date()
+                except Exception:
+                    vf_d = None
+            if vt:
+                try:
+                    vt_d = datetime.strptime(vt, "%Y-%m-%d").date()
+                except Exception:
+                    vt_d = None
+            u.valid_from = vf_d
+            u.valid_to = vt_d
+            db.session.commit()
+            flash("Срок действия обновлён")
+        except Exception:
+            db.session.rollback()
+            flash("Ошибка обновления срока")
+    return redirect(url_for("admin_users"))
+
+
 if __name__ == "__main__":
+    # Initialize DB on first run and perform simple SQLite migrations
+    def _ensure_sqlite_schema():
+        try:
+            with db.engine.connect() as conn:
+                rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                cols = {r[1] for r in rows}
+                if "valid_from" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN valid_from DATE"))
+                if "valid_to" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN valid_to DATE"))
+        except Exception:
+            # Ignore if users table doesn't exist yet; create_all will make it
+            pass
+
+    with app.app_context():
+        db.create_all()
+        _ensure_sqlite_schema()
+        # Ensure there is at least one admin user (default creds: admin/admin) — change in prod!
+        if not User.query.filter_by(username="admin").first():
+            db.session.add(User(username="admin", password="admin", is_admin=True, is_active=True))
+            db.session.commit()
     app.run(host="0.0.0.0", port=5000, debug=True) 

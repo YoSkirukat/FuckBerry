@@ -17,6 +17,7 @@ Thumbs.db
 # Local cache and artifacts
 cache/
 *.xlsx
+app.db
 
 # IDE
 .vscode/
