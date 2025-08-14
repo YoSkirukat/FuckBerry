@@ -28,6 +28,7 @@
           <table class="table table-sm table-striped">
             <thead>
               <tr>
+                <th class="text-center" style="width:60px;">#</th>
                 <th>Номер и дата задания</th>
                 <th>Наименование товара</th>
                 <th class="text-end">Стоимость товара</th>
@@ -37,6 +38,7 @@
             <tbody>
               {% for r in rows %}
                 <tr>
+                  <td class="text-center">{{ loop.index }}</td>
                   <td>{{ r["Номер и дата задания"] }}</td>
                   <td>{{ r["Наименование товара"] }}</td>
                   <td class="text-end">{{ r["Стоимость товара"] | money_ru }}</td>
@@ -44,7 +46,7 @@
                 </tr>
               {% endfor %}
               {% if not rows %}
-                <tr><td colspan="4" class="text-muted">Нет данных</td></tr>
+                <tr><td colspan="5" class="text-muted">Нет данных</td></tr>
               {% endif %}
             </tbody>
           </table>
