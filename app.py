@@ -540,7 +540,7 @@ def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Наименование — article
         article = o.get("article") or ""
         # Цена — price без двух последних нулей
-        raw_price = o.get("price")
+        raw_price = o.get("convertedPrice")
         try:
             price_value = int(raw_price) // 100
         except Exception:
