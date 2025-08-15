@@ -35,6 +35,17 @@
               <label class="form-label">Дата по</label>
               <input name="date_to" id="dateTo" type="date" class="form-control" value="{{ date_to }}" required />
             </div>
+            <div class="col-12">
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" id="includeOrders" name="include_orders" {% if include_orders %}checked{% endif %} />
+                <label class="form-check-label" for="includeOrders">Заказы</label>
+              </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" id="includeSales" name="include_sales" {% if include_sales %}checked{% endif %} />
+                <label class="form-check-label" for="includeSales">Продажи</label>
+              </div>
+              <div class="form-text">Отметьте, какие данные загружать</div>
+            </div>
             <div class="col-12 d-grid">
               <button id="refreshOrdersBtn" class="btn btn-primary" type="submit">
                 <span id="ordersSpinner" class="spinner-border spinner-border-sm me-2 d-none" role="status" aria-hidden="true"></span>
@@ -108,7 +119,7 @@
       </div>
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
-          <h6 id="titleTop" class="mb-3">ТОП товаров по заказам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
+          <h6 id="titleTop" class="mb-3">ТОП товаров {{ 'по продажам' if top_mode=='sales' else 'по заказам' }} с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           <div class="table-responsive">
             <table class="table table-sm table-striped mb-0">
               <thead>
@@ -119,10 +130,16 @@
               </thead>
               <tbody id="ordersTopShortBody">
                 {% if top_products and top_products|length %}
-                  {% for product, qty in top_products %}
+                  {% for it in top_products %}
                     <tr>
-                      <td>{{ product }}</td>
-                      <td class="text-end">{{ qty | num_space }}</td>
+                      <td>
+                        {% if it.nm_id %}
+                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                        {% else %}
+                          {{ it.product }}
+                        {% endif %}
+                      </td>
+                      <td class="text-end">{{ it.qty | num_space }}</td>
                     </tr>
                   {% endfor %}
                 {% else %}
@@ -139,7 +156,7 @@
       <div class="card-body">
         <div class="row g-3 align-items-end">
           <div class="col-md-6">
-            <h6 id="titleTopPivot" class="mb-2">Сводная таблица: ТОП товаров по заказам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
+            <h6 id="titleTopPivot" class="mb-2">Сводная таблица: ТОП товаров {{ 'по продажам' if top_mode=='sales' else 'по заказам' }} с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           </div>
           <div class="col-md-6">
             <div class="row g-2">
@@ -166,10 +183,16 @@
               </tr>
             </thead>
             <tbody id="ordersTopBody">
-              {% for product, qty in top_products_orders_filtered %}
+              {% for it in top_products_orders_filtered %}
                 <tr>
-                  <td>{{ product }}</td>
-                  <td class="text-end">{{ qty | num_space }}</td>
+                  <td>
+                    {% if it.nm_id %}
+                      <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                    {% else %}
+                      {{ it.product }}
+                    {% endif %}
+                  </td>
+                  <td class="text-end">{{ it.qty | num_space }}</td>
                 </tr>
               {% endfor %}
               {% if not top_products_orders_filtered %}
@@ -191,6 +214,16 @@
     const msg = document.getElementById('ordersMsg');
     const updatedAtEl = document.getElementById('ordersUpdatedAt');
     const durationEl = document.getElementById('ordersDuration');
+    const cbOrders = document.getElementById('includeOrders');
+    const cbSales = document.getElementById('includeSales');
+
+    function updateSubmitEnabled() {
+      const enabled = (cbOrders?.checked || cbSales?.checked);
+      if (btn) btn.disabled = !enabled;
+    }
+    cbOrders?.addEventListener('change', updateSubmitEnabled);
+    cbSales?.addEventListener('change', updateSubmitEnabled);
+    updateSubmitEnabled();
 
     // Existing charts init moved below to function
     let countChart = null;
@@ -277,8 +310,12 @@
         const fd = new FormData();
         const dFrom = document.getElementById('dateFrom').value;
         const dTo = document.getElementById('dateTo').value;
+        const incOrders = document.getElementById('includeOrders')?.checked ? 'on' : '';
+        const incSales = document.getElementById('includeSales')?.checked ? 'on' : '';
         fd.set('date_from', dFrom);
         fd.set('date_to', dTo);
+        if (incOrders) fd.set('include_orders','on');
+        if (incSales) fd.set('include_sales','on');
         const res = await fetch('/api/orders-refresh', { method: 'POST', body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
@@ -292,8 +329,9 @@
         const tCount = document.getElementById('titleCount'); if (tCount) tCount.textContent = `Количество заказов и продаж по дням с ${dfmt} по ${dtmt}`;
         const tRev = document.getElementById('titleRevenue'); if (tRev) tRev.textContent = `Выручка по дням (заказы и продажи) с ${dfmt} по ${dtmt}`;
         const tWh = document.getElementById('titleWarehouses'); if (tWh) tWh.textContent = `Продажи по складам с ${dfmt} по ${dtmt}`;
-        const tTop = document.getElementById('titleTop'); if (tTop) tTop.textContent = `ТОП товаров по заказам с ${dfmt} по ${dtmt}`;
-        const tTopPivot = document.getElementById('titleTopPivot'); if (tTopPivot) tTopPivot.textContent = `Сводная таблица: ТОП товаров по заказам с ${dfmt} по ${dtmt}`;
+        const modeLabel = (data.top_mode === 'sales') ? 'по продажам' : 'по заказам';
+        const tTop = document.getElementById('titleTop'); if (tTop) tTop.textContent = `ТОП товаров ${modeLabel} с ${dfmt} по ${dtmt}`;
+        const tTopPivot = document.getElementById('titleTopPivot'); if (tTopPivot) tTopPivot.textContent = `Сводная таблица: ТОП товаров ${modeLabel} с ${dfmt} по ${dtmt}`;
         // Charts
         if (Array.isArray(data.daily_labels) && data.daily_labels.length) {
           initCharts(data.daily_labels, data.daily_orders_counts, data.daily_sales_counts, data.daily_orders_revenue, data.daily_sales_revenue);
@@ -317,10 +355,14 @@
           topTBody.innerHTML = '';
           if (source.length) {
             for (const item of source) {
-              const product = Array.isArray(item) ? item[0] : item.product || '';
-              const qty = Array.isArray(item) ? item[1] : item.qty || 0;
+              const product = item.product || (Array.isArray(item) ? item[0] : '');
+              const qty = item.qty ?? (Array.isArray(item) ? item[1] : 0);
+              const nm = item.nm_id || '';
               const tr = document.createElement('tr');
-              const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
+              const td1 = document.createElement('td');
+              if (nm) { const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`; a.target = '_blank'; a.rel='noopener'; a.textContent = product; td1.appendChild(a); }
+              else { td1.textContent = product; }
+              tr.appendChild(td1);
               const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
               topTBody.appendChild(tr);
             }
@@ -335,9 +377,15 @@
         if (topShortBody && Array.isArray(data.top_products)) {
           topShortBody.innerHTML = '';
           if (data.top_products.length) {
-            for (const [product, qty] of data.top_products) {
+            for (const item of data.top_products) {
+              const product = item.product ?? (Array.isArray(item) ? item[0] : '');
+              const qty = item.qty ?? (Array.isArray(item) ? item[1] : 0);
+              const nm = item.nm_id || '';
               const tr = document.createElement('tr');
-              const td1 = document.createElement('td'); td1.textContent = product; tr.appendChild(td1);
+              const td1 = document.createElement('td');
+              if (nm) { const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`; a.target = '_blank'; a.rel='noopener'; a.textContent = product; td1.appendChild(a); }
+              else { td1.textContent = product; }
+              tr.appendChild(td1);
               const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
               topShortBody.appendChild(tr);
             }

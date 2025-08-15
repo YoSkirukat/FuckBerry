@@ -32,6 +32,12 @@
         <li class="nav-item">
           <a class="nav-link {% if request.path.startswith('/fbs') %}active{% endif %}" href="/fbs" {% if request.path.startswith('/fbs') %}aria-current="page"{% endif %}>Маркетплейс FBS</a>
         </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/products') %}active{% endif %}" href="/products" {% if request.path.startswith('/products') %}aria-current="page"{% endif %}>Товары</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/stocks') %}active{% endif %}" href="/stocks" {% if request.path.startswith('/stocks') %}aria-current="page"{% endif %}>Остатки на складах</a>
+        </li>
       </ul>
       <ul class="navbar-nav ms-auto">
         {% if current_user.is_authenticated %}

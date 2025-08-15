@@ -41,6 +41,12 @@ FBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/new"
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
 ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
+# Wildberries Content API: cards list
+WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
+STOCKS_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
+
+# Wildberries Content API: cards list
+WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 
 
 # Timezone helpers (Moscow)
@@ -86,6 +92,19 @@ def format_dmy(date_str: str) -> str:
         return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
     except Exception:
         return date_str or ""
+
+
+def extract_nm(value: Any) -> str:
+    try:
+        import re
+        s = str(value)
+        m = re.search(r"(\d{7,12})", s)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+app.jinja_env.filters["extract_nm"] = extract_nm
 
 
 def time_ago_ru(dt_val: Any) -> str:
@@ -155,6 +174,66 @@ def _cache_path_for_user() -> str:
 
 def _cache_path_for_user_id(user_id: int) -> str:
     return os.path.join(CACHE_DIR, f"orders_user_{user_id}.json")
+
+
+# Products cache helpers (per user)
+def _products_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"products_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "products_anon.json")
+
+
+def load_products_cache() -> Dict[str, Any] | None:
+    path = _products_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_products_cache(payload: Dict[str, Any]) -> None:
+    path = _products_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+# Stocks cache helpers (per user)
+def _stocks_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"stocks_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "stocks_anon.json")
+
+
+def load_stocks_cache() -> Dict[str, Any] | None:
+    path = _stocks_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_stocks_cache(payload: Dict[str, Any]) -> None:
+    path = _stocks_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def load_last_results() -> Dict[str, Any] | None:
@@ -261,12 +340,12 @@ def parse_wb_datetime(value: str) -> datetime | None:
             return None
 
 
-def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 8) -> requests.Response:
+def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 8, timeout_s: int = 60) -> requests.Response:
     last_exc: Exception | None = None
     last_resp: requests.Response | None = None
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=60)
+            resp = requests.get(url, headers=headers, params=params, timeout=timeout_s)
             last_resp = resp
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry_after = resp.headers.get("Retry-After")
@@ -537,12 +616,19 @@ def aggregate_by_warehouse_dual(orders_rows: List[Dict[str, Any]], sales_rows: L
     return summary
 
 
-def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[Tuple[str, int]]:
+def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[Dict[str, Any]]:
     counts: Dict[str, int] = defaultdict(int)
+    nm_by_product: Dict[str, Any] = {}
     for r in rows:
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
-        counts[str(product)] += 1
-    return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        product = str(product)
+        counts[product] += 1
+        nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        if product not in nm_by_product and nm:
+            nm_by_product[product] = nm
+    items = [{"product": p, "qty": c, "nm_id": nm_by_product.get(p)} for p, c in counts.items()]
+    items.sort(key=lambda x: x["qty"], reverse=True)
+    return items[:limit]
 
 
 def aggregate_top_products_sales(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Tuple[str, int]]:
@@ -555,14 +641,21 @@ def aggregate_top_products_sales(rows: List[Dict[str, Any]], warehouse: str | No
     return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
 
 
-def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Tuple[str, int]]:
+def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
     counts: Dict[str, int] = defaultdict(int)
+    nm_by_product: Dict[str, Any] = {}
     for r in rows:
         if warehouse and (r.get("Склад отгрузки") or "Не указан") != warehouse:
             continue
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
-        counts[str(product)] += 1
-    return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        product = str(product)
+        counts[product] += 1
+        nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        if product not in nm_by_product and nm:
+            nm_by_product[product] = nm
+    items = [{"product": p, "qty": c, "nm_id": nm_by_product.get(p)} for p, c in counts.items()]
+    items.sort(key=lambda x: x["qty"], reverse=True)
+    return items[:limit]
 
 
 def _extract_created_at(obj: Any) -> datetime:
@@ -804,6 +897,11 @@ def index():
     updated_at: str = ""
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
+    include_orders = True
+    include_sales = True
+    if request.method == "POST":
+        include_orders = request.form.get("include_orders") is not None
+        include_sales = request.form.get("include_sales") is not None
     date_from_fmt = format_dmy(date_from)
     date_to_fmt = format_dmy(date_to)
 
@@ -811,6 +909,7 @@ def index():
     token = (request.form.get("token", "").strip() or (current_user.wb_token if current_user.is_authenticated else ""))
 
     # Если GET — пробуем показать последние результаты из кэша
+    top_mode = "orders"
     if request.method == "GET":
         cached = load_last_results()
         # Use cache only if it belongs to this user (by user_id) and user has token
@@ -834,6 +933,11 @@ def index():
             daily_sales_revenue = cached.get("daily_sales_revenue", [])
             warehouse_summary_dual = cached.get("warehouse_summary_dual", [])
             updated_at = cached.get("updated_at", "")
+            # default mode when loading cache
+            top_mode = cached.get("top_mode", "orders")
+            # restore include flags if present
+            include_orders = cached.get("include_orders", include_orders)
+            include_sales = cached.get("include_sales", include_sales)
 
     if request.method == "POST":
         if not token:
@@ -853,19 +957,29 @@ def index():
         if not error:
             try:
                 # Orders
-                raw_orders = fetch_orders_range(token, date_from, date_to)
-                orders = to_rows(raw_orders, date_from, date_to)
-                total_orders = len(orders)
-                total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+                if include_orders:
+                    raw_orders = fetch_orders_range(token, date_from, date_to)
+                    orders = to_rows(raw_orders, date_from, date_to)
+                    total_orders = len(orders)
+                    total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+                else:
+                    orders = []
+                    total_orders = 0
+                    total_revenue = 0.0
                 # Sales
-                raw_sales = fetch_sales_range(token, date_from, date_to)
-                sales_rows = to_sales_rows(raw_sales, date_from, date_to)
-                total_sales = len(sales_rows)
-                total_sales_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in sales_rows), 2)
+                if include_sales:
+                    raw_sales = fetch_sales_range(token, date_from, date_to)
+                    sales_rows = to_sales_rows(raw_sales, date_from, date_to)
+                    total_sales = len(sales_rows)
+                    total_sales_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in sales_rows), 2)
+                else:
+                    sales_rows = []
+                    total_sales = 0
+                    total_sales_revenue = 0.0
 
                 # Aggregates for charts
-                o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
-                s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows)
+                o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders) if include_orders else ({}, {})
+                s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows) if include_sales else ({}, {})
                 daily_labels, daily_orders_counts, daily_sales_counts, daily_orders_revenue, daily_sales_revenue = build_union_series(
                     o_counts_map, s_counts_map, o_rev_map, s_rev_map
                 )
@@ -874,7 +988,16 @@ def index():
                 warehouse_summary_dual = aggregate_by_warehouse_dual(orders, sales_rows)
 
                 # Top products (by orders)
-                top_products = aggregate_top_products(orders, limit=15)
+                # Top block uses orders by default; if orders disabled — use sales rows
+                top_mode = "orders"
+                if include_orders:
+                    top_products = aggregate_top_products(orders, limit=15)
+                elif include_sales:
+                    top_products = aggregate_top_products(sales_rows, limit=15)
+                    top_mode = "sales"
+                else:
+                    top_products = []
+                    top_mode = "orders"
 
                 # Сохраняем токен в профиле пользователя при наличии
                 if current_user.is_authenticated and token:
@@ -902,6 +1025,9 @@ def index():
                     "daily_sales_revenue": daily_sales_revenue,
                     "warehouse_summary_dual": warehouse_summary_dual,
                     "top_products": top_products,
+                    "top_mode": top_mode,
+                    "include_orders": include_orders,
+                    "include_sales": include_sales,
                     "updated_at": updated_at,
                 })
             except requests.HTTPError as http_err:
@@ -945,6 +1071,9 @@ def index():
         warehouses=warehouses,
         selected_warehouse=selected_warehouse,
         top_products_orders_filtered=top_products_orders_filtered,
+        include_orders=include_orders,
+        include_sales=include_sales,
+        top_mode=top_mode,
     )
 
 
@@ -965,22 +1094,40 @@ def api_orders_refresh():
         return jsonify({"error": "bad_dates"}), 400
     try:
         # Orders
-        raw_orders = fetch_orders_range(token, date_from, date_to)
-        orders = to_rows(raw_orders, date_from, date_to)
-        total_orders = len(orders)
-        total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+        include_orders = request.form.get("include_orders") is not None
+        include_sales = request.form.get("include_sales") is not None
+        if include_orders:
+            raw_orders = fetch_orders_range(token, date_from, date_to)
+            orders = to_rows(raw_orders, date_from, date_to)
+            total_orders = len(orders)
+            total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+        else:
+            orders = []
+            total_orders = 0
+            total_revenue = 0.0
         # Sales
-        raw_sales = fetch_sales_range(token, date_from, date_to)
-        sales_rows = to_sales_rows(raw_sales, date_from, date_to)
+        if include_sales:
+            raw_sales = fetch_sales_range(token, date_from, date_to)
+            sales_rows = to_sales_rows(raw_sales, date_from, date_to)
+        else:
+            sales_rows = []
         # Aggregates
-        o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
-        s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows)
+        o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders) if include_orders else ({}, {})
+        s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows) if include_sales else ({}, {})
         daily_labels, daily_orders_counts, daily_sales_counts, daily_orders_revenue, daily_sales_revenue = build_union_series(
             o_counts_map, s_counts_map, o_rev_map, s_rev_map
         )
         # Warehouses and TOPs
         warehouse_summary_dual = aggregate_by_warehouse_dual(orders, sales_rows)
-        top_products = aggregate_top_products(orders, limit=15)
+        if include_orders:
+            top_products = aggregate_top_products(orders, limit=15)
+            top_mode = "orders"
+        elif include_sales:
+            top_products = aggregate_top_products(sales_rows, limit=15)
+            top_mode = "sales"
+        else:
+            top_products = []
+            top_mode = "orders"
         warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders})
         top_products_orders_filtered = aggregate_top_products_orders(orders, None, limit=50)
         updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -1001,6 +1148,9 @@ def api_orders_refresh():
             "daily_sales_revenue": daily_sales_revenue,
             "warehouse_summary_dual": warehouse_summary_dual,
             "top_products": top_products,
+            "top_mode": top_mode,
+            "include_orders": include_orders,
+            "include_sales": include_sales,
             "updated_at": updated_at,
         })
         return jsonify({
@@ -1018,9 +1168,16 @@ def api_orders_refresh():
             "updated_at": updated_at,
             "date_from_fmt": format_dmy(date_from),
             "date_to_fmt": format_dmy(date_to),
+            "top_mode": top_mode,
         })
     except requests.HTTPError as http_err:
-        return jsonify({"error": "http", "status": http_err.response.status_code}), 502
+        status = 502
+        try:
+            if http_err.response is not None and http_err.response.status_code:
+                status = http_err.response.status_code
+        except Exception:
+            status = 502
+        return jsonify({"error": "http", "status": status}), status
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
@@ -1146,7 +1303,7 @@ def api_top_products_sales():
         return jsonify({"items": []})
     sales_rows = cached.get("sales_rows", [])
     items = aggregate_top_products_sales(sales_rows, warehouse, limit=50)
-    return jsonify({"items": [{"product": name, "qty": qty} for name, qty in items]})
+    return jsonify({"items": items})
 
 
 @app.route("/api/top-products-orders", methods=["GET"]) 
@@ -1158,7 +1315,7 @@ def api_top_products_orders():
         return jsonify({"items": []})
     orders = cached.get("orders", [])
     items = aggregate_top_products_orders(orders, warehouse, limit=50)
-    return jsonify({"items": [{"product": name, "qty": qty} for name, qty in items]})
+    return jsonify({"items": items})
 
 
 @app.route("/fbs", methods=["GET", "POST"]) 
@@ -1249,10 +1406,440 @@ def api_acceptance_coefficients():
             "lastUpdated": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
         })
     except requests.HTTPError as http_err:
+        status = 502
+        retry_after = None
+        try:
+            if http_err.response is not None:
+                if http_err.response.status_code:
+                    status = http_err.response.status_code
+                retry_after = http_err.response.headers.get("Retry-After")
+        except Exception:
+            status = 502
+        cached = load_stocks_cache()
+        return jsonify({
+            "error": "http",
+            "status": status,
+            "retry_after": retry_after,
+            "updated_at": (cached.get("updated_at") if cached and cached.get("_user_id") == current_user.id else None)
+        }), status
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+def post_with_retry(url: str, headers: Dict[str, str], json_body: Dict[str, Any], max_retries: int = 8) -> requests.Response:
+    last_exc: Exception | None = None
+    last_resp: requests.Response | None = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, headers=headers, json=json_body, timeout=60)
+            last_resp = resp
+            if resp.status_code in (429, 500, 502, 503, 504):
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after is not None:
+                    try:
+                        sleep_s = float(retry_after)
+                    except ValueError:
+                        sleep_s = 1.0
+                else:
+                    sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
+                time.sleep(sleep_s)
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as exc:
+            last_exc = exc
+            time.sleep(min(8, 0.5 * (2 ** attempt) + random.uniform(0, 0.5)))
+            continue
+    if last_exc:
+        raise last_exc
+    if last_resp is not None:
+        raise requests.HTTPError(f"HTTP {last_resp.status_code} after {max_retries} retries", response=last_resp)
+    raise RuntimeError("Request failed after retries")
+
+
+def fetch_cards_list(token: str, nm_ids: List[int] | None = None, cursor: Dict[str, Any] | None = None, limit: int = 100) -> Dict[str, Any]:
+    # Build request body per WB docs: settings.cursor + settings.filter
+    base_cursor = {"limit": limit, "nmID": 0}
+    if cursor:
+        base_cursor.update(cursor)
+    body: Dict[str, Any] = {
+        "settings": {
+            "cursor": base_cursor,
+            "filter": {
+                "textSearch": "",
+                "withPhoto": -1,  # -1 — не фильтровать по наличию фото
+            },
+        }
+    }
+    if nm_ids:
+        body["nmID"] = nm_ids
+    # Try with Bearer first, then raw token (Content API часто принимает без Bearer)
+    headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        resp = post_with_retry(WB_CARDS_LIST_URL, headers1, body)
+        return resp.json()
+    except requests.HTTPError as err:
+        if err.response is not None and err.response.status_code in (401, 403):
+            headers2 = {"Authorization": f"{token}", "Content-Type": "application/json"}
+            resp2 = post_with_retry(WB_CARDS_LIST_URL, headers2, body)
+            return resp2.json()
+        raise
+
+
+def fetch_all_cards(token: str, page_limit: int = 1000) -> List[Dict[str, Any]]:
+    all_cards: List[Dict[str, Any]] = []
+    seen_keys: set[tuple] = set()
+    cursor: Dict[str, Any] = {"limit": page_limit, "nmID": 0}
+    safety = 0
+    while True:
+        safety += 1
+        if safety > 5000:
+            break
+        data = fetch_cards_list(token, cursor=cursor, limit=page_limit)
+        payload = data.get("data") or data
+        cards = payload.get("cards") or []
+        if not cards:
+            break
+        all_cards.extend(cards)
+        cur = payload.get("cursor") or {}
+        key = (cur.get("updatedAt"), cur.get("nmID"), cur.get("nmIDNext"))
+        if key in seen_keys:
+            break
+        seen_keys.add(key)
+        # Prepare next cursor
+        next_nm = cur.get("nmIDNext") or cur.get("nmID")
+        next_cursor: Dict[str, Any] = {"limit": page_limit}
+        if cur.get("updatedAt"):
+            next_cursor["updatedAt"] = cur.get("updatedAt")
+        if next_nm is not None:
+            next_cursor["nmID"] = next_nm
+        cursor = next_cursor
+        # If страница меньше лимита, вероятно, достигнут конец
+        if len(cards) < page_limit:
+            break
+    return all_cards
+
+
+def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    try:
+        payload = data.get("data") or data
+        cards = payload.get("cards") or []
+        for c in cards:
+            nm_id = c.get("nmID") or c.get("nmId") or c.get("nm")
+            supplier_article = c.get("supplierArticle") or c.get("vendorCode") or c.get("article")
+            photo = None
+            try:
+                photos = c.get("mediaFiles") or c.get("photos") or []
+                if isinstance(photos, list) and photos:
+                    p0 = photos[0]
+                    if isinstance(p0, str):
+                        photo = p0
+                    elif isinstance(p0, dict):
+                        photo = p0.get("small") or p0.get("preview") or p0.get("url") or p0.get("big")
+                if isinstance(photo, str) and photo.startswith("//"):
+                    photo = "https:" + photo
+                if isinstance(photo, str) and not (photo.startswith("http://") or photo.startswith("https://")):
+                    photo = "https://" + photo.lstrip("/")
+            except Exception:
+                photo = None
+            barcode = None
+            try:
+                sizes = c.get("sizes") or []
+                for s in sizes:
+                    tech = s.get("skus") or s.get("barcodes") or []
+                    if tech:
+                        barcode = str(tech[0])
+                        break
+            except Exception:
+                barcode = None
+            items.append({
+                "photo": photo,
+                "supplier_article": supplier_article,
+                "nm_id": nm_id,
+                "barcode": barcode,
+            })
+    except Exception:
+        pass
+    return items
+
+
+@app.route("/products", methods=["GET"]) 
+@login_required
+def products_page():
+    token = current_user.wb_token or ""
+    error = None
+    products: List[Dict[str, Any]] = []
+    if not token:
+        error = "Укажите токен API в профиле"
+    else:
+        try:
+            cached = load_products_cache()
+            if cached and cached.get("_user_id") == current_user.id:
+                products = cached.get("items", [])
+            else:
+                # Load all pages
+                raw_cards = fetch_all_cards(token, page_limit=100)
+                products = normalize_cards_response({"cards": raw_cards})
+                save_products_cache({"items": products})
+        except requests.HTTPError as http_err:
+            error = f"Ошибка API: {http_err.response.status_code}"
+        except Exception as exc:
+            error = f"Ошибка: {exc}"
+    return render_template("products.html", error=error, items=products, items_count=len(products))
+
+
+# -------------------------
+# Stocks page
+# -------------------------
+
+def fetch_stocks_all(token: str) -> List[Dict[str, Any]]:
+    """/supplier/stocks отдаёт текущие остатки одним снимком без пагинации. Берём полные данные за один запрос."""
+    headers1 = {"Authorization": f"Bearer {token}"}
+    # WB иногда отдаёт 502/504 — добавим несколько повторов и альтернативный заголовок
+    try:
+        # один запрос без агрессивных ретраев, чтобы не словить 429 по всплеску
+        resp = get_with_retry(STOCKS_API_URL, headers1, params={}, max_retries=1, timeout_s=60)
+        return resp.json()
+    except requests.HTTPError as err:
+        # если авторизация — попробуем без Bearer
+        if err.response is not None and err.response.status_code in (401, 403):
+            headers2 = {"Authorization": f"{token}"}
+            resp2 = get_with_retry(STOCKS_API_URL, headers2, params={}, max_retries=1, timeout_s=60)
+            return resp2.json()
+        # 429 отдадим наверх без повторов — пусть фронт покажет таймер
+        raise
+
+
+def fetch_stocks_paginated(token: str, start_iso: str = "1970-01-01T00:00:00") -> List[Dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {token}"}
+    cursor = start_iso
+    collected: List[Dict[str, Any]] = []
+    safety = 0
+    while True:
+        safety += 1
+        if safety > 5000:
+            break
+        params = {"dateFrom": cursor, "flag": 0}
+        try:
+            resp = get_with_retry(STOCKS_API_URL, headers, params, max_retries=6, timeout_s=90)
+        except requests.HTTPError as err:
+            if err.response is not None and err.response.status_code in (401, 403):
+                alt_headers = {"Authorization": f"{token}"}
+                resp = get_with_retry(STOCKS_API_URL, alt_headers, params, max_retries=6, timeout_s=90)
+            else:
+                raise
+        page = resp.json()
+        if not isinstance(page, list) or not page:
+            break
+        try:
+            page.sort(key=lambda x: parse_wb_datetime(str(x.get("lastChangeDate"))) or datetime.min)
+        except Exception:
+            pass
+        collected.extend(page)
+        last_lcd = None
+        try:
+            last_lcd = page[-1].get("lastChangeDate")
+        except Exception:
+            last_lcd = None
+        if not last_lcd:
+            break
+        cursor = str(last_lcd)
+        time.sleep(0.25)
+    return collected
+
+
+def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
+    try:
+        data = fetch_stocks_all(token)
+        if isinstance(data, list) and data:
+            return data
+    except requests.HTTPError as e:
+        # если 429 — не уходим в пагинацию, возвращаем 429
+        try:
+            if e.response is not None and e.response.status_code == 429:
+                raise
+        except Exception:
+            pass
+        # иначе попробуем постранично (редкие случаи нестабильности снапшота)
+        return fetch_stocks_paginated(token)
+    # Fallback to paginated flow
+    return fetch_stocks_paginated(token)
+
+
+def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for r in rows or []:
+        qty_val = r.get("quantity") or r.get("qty") or r.get("inWayToClient") or 0
+        try:
+            qty_int = int(qty_val)
+        except Exception:
+            try:
+                qty_int = int(float(qty_val))
+            except Exception:
+                qty_int = 0
+        items.append({
+            "vendor_code": r.get("supplierArticle") or r.get("vendorCode") or r.get("article"),
+            "barcode": r.get("barcode") or r.get("skus") or r.get("sku"),
+            "nm_id": r.get("nmId") or r.get("nmID") or r.get("nm") or None,
+            "qty": qty_int,
+            "warehouse": r.get("warehouseName") or r.get("warehouse") or r.get("warehouse_name"),
+        })
+    return items
+
+
+@app.route("/stocks", methods=["GET"]) 
+@login_required
+def stocks_page():
+    token = current_user.wb_token or ""
+    error = None
+    items: List[Dict[str, Any]] = []
+    if not token:
+        error = "Укажите токен API в профиле"
+    else:
+        try:
+            cached = load_stocks_cache()
+            if cached and cached.get("_user_id") == current_user.id:
+                items = cached.get("items", [])
+            else:
+                raw = fetch_stocks_resilient(token)
+                items = normalize_stocks(raw)
+                save_stocks_cache({"items": items, "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S")})
+        except requests.HTTPError as http_err:
+            error = f"Ошибка API: {http_err.response.status_code}"
+        except Exception as exc:
+            error = f"Ошибка: {exc}"
+    # Aggregations
+    total_qty_all = sum(int(it.get("qty", 0) or 0) for it in items)
+    # by product
+    prod_map: Dict[tuple, Dict[str, Any]] = {}
+    for it in items:
+        key = (it.get("vendor_code") or "", it.get("barcode") or "")
+        rec = prod_map.get(key)
+        if not rec:
+            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "warehouses": []}
+            prod_map[key] = rec
+        rec["total_qty"] += int(it.get("qty", 0) or 0)
+        rec["warehouses"].append({"warehouse": it.get("warehouse"), "qty": int(it.get("qty", 0) or 0)})
+    # Collapse warehouses per product, filter zeroes, sort by qty desc
+    for rec in prod_map.values():
+        from collections import defaultdict as _dd
+        acc = _dd(int)
+        for w in rec["warehouses"]:
+            name = w.get("warehouse") or ""
+            acc[name] += int(w.get("qty", 0) or 0)
+        wh_list = [{"warehouse": name, "qty": qty} for name, qty in acc.items() if qty > 0]
+        wh_list.sort(key=lambda x: (-x["qty"], x["warehouse"]))
+        rec["warehouses"] = wh_list
+    products_agg = sorted(prod_map.values(), key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
+    # by warehouse
+    wh_map: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        w = it.get("warehouse") or ""
+        rec = wh_map.get(w)
+        if not rec:
+            rec = {"warehouse": w, "total_qty": 0, "products": []}
+            wh_map[w] = rec
+        qty_i = int(it.get("qty", 0) or 0)
+        rec["total_qty"] += qty_i
+        rec["products"].append({
+            "vendor_code": it.get("vendor_code"),
+            "barcode": it.get("barcode"),
+            "nm_id": it.get("nm_id"),
+            "qty": qty_i,
+        })
+    for rec in wh_map.values():
+        rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
+    warehouses_agg = sorted(wh_map.values(), key=lambda x: (-x["total_qty"], x["warehouse"] or ""))
+    updated_at = None
+    try:
+        cached = load_stocks_cache()
+        if cached and cached.get("_user_id") == current_user.id:
+            updated_at = cached.get("updated_at")
+    except Exception:
+        updated_at = None
+    return render_template(
+        "stocks.html",
+        error=error,
+        items=items,
+        items_count=len(items),
+        total_qty_all=total_qty_all,
+        updated_at=updated_at,
+        products_agg=products_agg,
+        warehouses_agg=warehouses_agg,
+    )
+
+
+@app.route("/api/stocks/refresh", methods=["POST"]) 
+@login_required
+def api_stocks_refresh():
+    token = current_user.wb_token or ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        raw = fetch_stocks_resilient(token)
+        items = normalize_stocks(raw)
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        save_stocks_cache({"items": items, "updated_at": now_str})
+        return jsonify({"ok": True, "count": len(items), "updated_at": now_str})
+    except requests.HTTPError as http_err:
         return jsonify({"error": "http", "status": http_err.response.status_code}), 502
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
+
+@app.route("/stocks/export", methods=["POST"]) 
+@login_required
+def stocks_export():
+    token = current_user.wb_token or ""
+    if not token:
+        return redirect(url_for("stocks_page"))
+    try:
+        cached = load_stocks_cache()
+        if cached and cached.get("_user_id") == current_user.id:
+            items = cached.get("items", [])
+        else:
+            raw = fetch_stocks_all(token)
+            items = normalize_stocks(raw)
+            save_stocks_cache({"items": items})
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "stocks"
+        headers = ["Артикул продавца", "Баркод", "Остаток", "Склад"]
+        ws.append(headers)
+        for it in items:
+            ws.append([
+                it.get("vendor_code", ""),
+                it.get("barcode", ""),
+                it.get("qty", 0),
+                it.get("warehouse", ""),
+            ])
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        from datetime import datetime as _dt
+        filename = f"wb_stocks_{_dt.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return send_file(output, as_attachment=True, download_name=filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception:
+        return redirect(url_for("stocks_page"))
+
+
+@app.route("/api/products/refresh", methods=["POST"]) 
+@login_required
+def api_products_refresh():
+    token = current_user.wb_token or ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        raw_cards = fetch_all_cards(token, page_limit=100)
+        items = normalize_cards_response({"cards": raw_cards})
+        save_products_cache({"items": items})
+        return jsonify({"ok": True, "count": len(items)})
+    except requests.HTTPError as http_err:
+        return jsonify({"error": "http", "status": http_err.response.status_code}), 502
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 @app.route('/favicon.ico')
 def favicon():

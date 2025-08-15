@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Остатки на складах — WB Dashboard</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <style>
+    h1 { font-size: 1.7rem; }
+    input#stocksSearch { margin: 20px 0px;padding: 10px;}
+    .mb-2 {margin-bottom: 1.1rem !important;}
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
+      <h1 class="mb-0">Остатки на складах{% if total_qty_all is defined %} ({{ total_qty_all }} шт.){% endif %}</h1>
+      <div class="d-flex gap-2">
+        <form method="post" action="/stocks/export">
+          <button class="btn btn-success btn-sm" type="submit">Выгрузить в Excel</button>
+        </form>
+        <button id="refreshStocks" class="btn btn-primary btn-sm">Обновить остатки</button>
+      </div>
+    </div>
+    <div class="text-muted mb-2">Обновлено: <span id="stocksUpdatedAt">{{ updated_at or '' }}</span></div>
+    <div id="stocksMsg" class="small"></div>
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    <ul class="nav nav-tabs" id="stocksTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="tab-products" data-bs-toggle="tab" data-bs-target="#pane-products" type="button" role="tab">По товарам</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-warehouses" data-bs-toggle="tab" data-bs-target="#pane-warehouses" type="button" role="tab">По складам</button>
+      </li>
+    </ul>
+    <div class="tab-content border border-top-0 rounded-bottom p-0">
+      <div class="tab-pane fade show active" id="pane-products" role="tabpanel" aria-labelledby="tab-products">
+        <div class="p-3 pt-2">
+          <div class="table-responsive" style="max-height:70vh;">
+            <table class="table table-sm align-middle mb-0" id="byProductsTable">
+              <thead style="position: sticky; top: 0; z-index: 2; background: #fff;">
+                <tr>
+                  <th style="width:56px;" class="text-center">#</th>
+                  <th>Артикул продавца</th>
+                  <th>Артикул WB</th>
+                  <th>Баркод</th>
+                  <th class="text-end">Остаток (всего)</th>
+                </tr>
+                <tr>
+                  <th colspan="5"><input id="stocksSearch" type="search" class="form-control form-control-sm" placeholder="Поиск товара" /></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for p in products_agg %}
+                <tr class="prod-row" data-bs-toggle="collapse" data-bs-target="#prod-{{ loop.index }}" style="cursor:pointer;">
+                  <td class="text-center">{{ loop.index }}</td>
+                  <td>{{ p.vendor_code or '' }}</td>
+                  <td>{{ p.nm_id or '' }}</td>
+                  <td>{{ p.barcode or '' }}</td>
+                  <td class="text-end">{{ p.total_qty or 0 }}</td>
+                </tr>
+                <tr class="collapse" id="prod-{{ loop.index }}">
+                  <td></td>
+                  <td colspan="3">
+                    <div class="table-responsive">
+                      <table class="table table-sm mb-0">
+                        <thead><tr><th>Склад</th><th class="text-end">Остаток</th></tr></thead>
+                        <tbody>
+                          {% for w in p.warehouses %}
+                          <tr><td>{{ w.warehouse }}</td><td class="text-end">{{ w.qty }}</td></tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+                {% endfor %}
+                {% if not products_agg %}
+                  <tr><td colspan="4" class="text-muted">Нет данных</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="tab-pane fade" id="pane-warehouses" role="tabpanel" aria-labelledby="tab-warehouses">
+        <div class="p-3 pt-2">
+          <div class="table-responsive" style="max-height:70vh;">
+            <table class="table table-sm align-middle mb-0" id="byWarehousesTable">
+              <thead style="position: sticky; top: 0; z-index: 2; background: #fff;">
+                <tr>
+                  <th style="width:56px;" class="text-center">#</th>
+                  <th>Склад</th>
+                  <th class="text-end">Остаток (всего)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for w in warehouses_agg %}
+                <tr class="wh-row" data-bs-toggle="collapse" data-bs-target="#wh-{{ loop.index }}" style="cursor:pointer;">
+                  <td class="text-center">{{ loop.index }}</td>
+                  <td>{{ w.warehouse or '' }}</td>
+                  <td class="text-end">{{ w.total_qty or 0 }}</td>
+                </tr>
+                <tr class="collapse" id="wh-{{ loop.index }}">
+                  <td></td>
+                  <td colspan="2">
+                    <div class="table-responsive">
+                      <table class="table table-sm mb-0">
+                        <thead><tr><th>Артикул продавца</th><th>Артикул WB</th><th>Баркод</th><th class="text-end">Остаток</th></tr></thead>
+                        <tbody>
+                          {% for p in w.products %}
+                          <tr><td>{{ p.vendor_code }}</td><td>{{ p.nm_id }}</td><td>{{ p.barcode }}</td><td class="text-end">{{ p.qty }}</td></tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+                {% endfor %}
+                {% if not warehouses_agg %}
+                  <tr><td colspan="3" class="text-muted">Нет данных</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function(){
+      const btn = document.getElementById('refreshStocks');
+      if (btn) {
+        btn.addEventListener('click', async function(){
+          btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Обновление...';
+          try {
+            const res = await fetch('/api/stocks/refresh', { method: 'POST' });
+            const data = await res.json().catch(()=>({}));
+            if (!res.ok) {
+              const msgEl = document.getElementById('stocksMsg');
+              // Показать статус и возможный Retry-After
+              const status = data.status || res.status;
+              let retry = parseInt(data.retry_after || '0', 10);
+              if (!retry || isNaN(retry)) retry = (status === 429 ? 60 : 0); // дефолт для 429
+              if (msgEl) msgEl.className = 'small text-danger';
+              if (msgEl) msgEl.textContent = `Ошибка обновления (status ${status})`;
+              // Короткую подпись оставим на кнопке
+              btn.textContent = retry > 0 ? `Подождите ${retry} c...` : 'Ошибка';
+              if (retry > 0) {
+                const timer = setInterval(()=>{
+                  retry -= 1;
+                  if (retry <= 0) { clearInterval(timer); btn.textContent = prev; btn.disabled = false; if (msgEl) msgEl.textContent = ''; }
+                  else { btn.textContent = `Подождите ${retry} c...`; }
+                }, 1000);
+              } else {
+                setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; if (msgEl) msgEl.textContent=''; }, 3000);
+              }
+              const updEl = document.getElementById('stocksUpdatedAt');
+              if (updEl && data.updated_at) updEl.textContent = data.updated_at;
+              return;
+            }
+            const updEl = document.getElementById('stocksUpdatedAt');
+            if (updEl && data.updated_at) updEl.textContent = data.updated_at;
+            // Подтянем свежие агрегаты и перерисуем таблицы без перезагрузки
+            try {
+              const dres = await fetch('/api/stocks/data');
+              const djson = await dres.json();
+              if (dres.ok && djson) {
+                const total = document.querySelector('h1');
+                if (total && djson.total_qty_all != null) total.innerHTML = `Остатки на складах (${djson.total_qty_all} шт.)`;
+                // Перерисовка вкладки По товарам
+                const tbodyProd = document.querySelector('#byProductsTable tbody');
+                if (tbodyProd && Array.isArray(djson.products)) {
+                  tbodyProd.innerHTML='';
+                  let idx=1;
+                  for (const p of djson.products) {
+                    const tr = document.createElement('tr'); tr.className='prod-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#prod-${idx}`); tr.style.cursor='pointer';
+                    tr.innerHTML = `<td class="text-center">${idx}</td><td>${p.vendor_code||''}</td><td>${p.nm_id||''}</td><td>${p.barcode||''}</td><td class="text-end">${(p.total_qty||0).toLocaleString('ru-RU')}</td>`;
+                    const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `prod-${idx}`;
+                    trd.innerHTML = `<td></td><td colspan="4"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Склад</th><th class="text-end">Остаток</th></tr></thead><tbody>${(p.warehouses||[]).map(w=>`<tr><td>${w.warehouse}</td><td class='text-end'>${(w.qty||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></td>`;
+                    tbodyProd.appendChild(tr); tbodyProd.appendChild(trd); idx++;
+                  }
+                }
+                // Перерисовка вкладки По складам
+                const tbodyWh = document.querySelector('#byWarehousesTable tbody');
+                if (tbodyWh && Array.isArray(djson.warehouses)) {
+                  tbodyWh.innerHTML='';
+                  let idx=1;
+                  for (const w of djson.warehouses) {
+                    const tr = document.createElement('tr'); tr.className='wh-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#wh-${idx}`); tr.style.cursor='pointer';
+                    tr.innerHTML = `<td class="text-center">${idx}</td><td>${w.warehouse||''}</td><td class="text-end">${(w.total_qty||0).toLocaleString('ru-RU')}</td>`;
+                    const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `wh-${idx}`;
+                    trd.innerHTML = `<td></td><td colspan="2"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Артикул продавца</th><th>Артикул WB</th><th>Баркод</th><th class="text-end">Остаток</th></tr></thead><tbody>${(w.products||[]).map(p=>`<tr><td>${p.vendor_code||''}</td><td>${p.nm_id||''}</td><td>${p.barcode||''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></td>`;
+                    tbodyWh.appendChild(tr); tbodyWh.appendChild(trd); idx++;
+                  }
+                }
+              }
+            } catch(e) { console.error(e); }
+            btn.textContent = 'Готово';
+            setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; }, 1000);
+          } catch (e) {
+            console.error(e);
+            btn.textContent = 'Ошибка';
+            setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; }, 1500);
+          }
+        });
+      }
+      const search = document.getElementById('stocksSearch');
+      const tbody = document.querySelector('#byProductsTable tbody');
+      if (search && tbody) {
+        search.addEventListener('input', function(){
+          const q = (this.value || '').toLowerCase().trim();
+          const prodRows = tbody.querySelectorAll('tr.prod-row');
+          prodRows.forEach(row => {
+            const match = q === '' || row.textContent.toLowerCase().indexOf(q) !== -1;
+            row.style.display = match ? '' : 'none';
+            const detail = row.nextElementSibling;
+            if (detail && detail.classList.contains('collapse')) {
+              if (!match) {
+                detail.classList.remove('show');
+                detail.hidden = true;
+              } else {
+                detail.hidden = false;
+              }
+            }
+          });
+        });
+      }
+    })();
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
