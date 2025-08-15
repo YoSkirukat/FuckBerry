@@ -446,8 +446,15 @@
             const tr = document.createElement('tr');
             const td1 = document.createElement('td');
             const td2 = document.createElement('td');
-            td1.textContent = it.product;
-            td2.textContent = it.qty.toLocaleString('ru-RU');
+            if (it.nm_id) {
+              const a = document.createElement('a');
+              a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
+              a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product;
+              td1.appendChild(a);
+            } else {
+              td1.textContent = it.product;
+            }
+            td2.textContent = (it.qty || 0).toLocaleString('ru-RU');
             td2.className = 'text-end';
             tr.appendChild(td1);
             tr.appendChild(td2);

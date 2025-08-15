@@ -1788,6 +1788,67 @@ def api_stocks_refresh():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/stocks/data", methods=["GET"]) 
+@login_required
+def api_stocks_data():
+    cached = load_stocks_cache()
+    if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
+        return jsonify({"products": [], "warehouses": [], "total_qty_all": 0, "updated_at": None})
+    items = cached.get("items", [])
+    # Total
+    try:
+        total_qty_all = sum(int((it.get("qty") or 0)) for it in items)
+    except Exception:
+        total_qty_all = 0
+    # by product (same shape as on page)
+    prod_map: Dict[tuple, Dict[str, Any]] = {}
+    for it in items:
+        key = (it.get("vendor_code") or "", it.get("barcode") or "")
+        rec = prod_map.get(key)
+        if not rec:
+            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "warehouses": []}
+            prod_map[key] = rec
+        qty_i = int(it.get("qty", 0) or 0)
+        rec["total_qty"] += qty_i
+        rec["warehouses"].append({"warehouse": it.get("warehouse"), "qty": qty_i})
+    from collections import defaultdict as _dd
+    products_agg = []
+    for rec in prod_map.values():
+        acc = _dd(int)
+        for w in rec["warehouses"]:
+            acc[w.get("warehouse") or ""] += int(w.get("qty", 0) or 0)
+        rec["warehouses"] = [{"warehouse": n, "qty": q} for n, q in acc.items() if q > 0]
+        rec["warehouses"].sort(key=lambda x: (-x["qty"], x["warehouse"]))
+        products_agg.append(rec)
+    products_agg.sort(key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
+
+    # by warehouse
+    wh_map: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        w = it.get("warehouse") or ""
+        rec = wh_map.get(w)
+        if not rec:
+            rec = {"warehouse": w, "total_qty": 0, "products": []}
+            wh_map[w] = rec
+        qty_i = int(it.get("qty", 0) or 0)
+        rec["total_qty"] += qty_i
+        rec["products"].append({
+            "vendor_code": it.get("vendor_code"),
+            "nm_id": it.get("nm_id"),
+            "barcode": it.get("barcode"),
+            "qty": qty_i,
+        })
+    for rec in wh_map.values():
+        rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
+    warehouses_agg = sorted(wh_map.values(), key=lambda x: (-x["total_qty"], x["warehouse"] or ""))
+
+    return jsonify({
+        "products": products_agg,
+        "warehouses": warehouses_agg,
+        "total_qty_all": total_qty_all,
+        "updated_at": cached.get("updated_at"),
+    })
+
 @app.route("/stocks/export", methods=["POST"]) 
 @login_required
 def stocks_export():
