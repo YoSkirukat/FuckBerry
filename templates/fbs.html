@@ -19,10 +19,18 @@
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
+    {% if products_hint %}
+      <div class="alert alert-warning">{{ products_hint }}</div>
+    {% endif %}
 
-    <form method="post" action="/fbs" class="mb-3">
-      <button class="btn btn-primary" type="submit">Проверить задания на сборку</button>
-    </form>
+    <div class="d-flex gap-2 mb-3 flex-wrap">
+      <form method="post" action="/fbs">
+        <button class="btn btn-primary" type="submit">Проверить задания на сборку</button>
+      </form>
+      <form method="post" action="/fbs/export">
+        <button class="btn btn-success" type="submit">Сохранить в Excel</button>
+      </form>
+    </div>
 
     <div class="card">
       <div class="card-body">
@@ -32,10 +40,12 @@
             <thead>
               <tr>
                 <th class="text-center" style="width:60px;">#</th>
-                <th>Номер и дата задания</th>
-                <th>Наименование товара</th>
-                <th class="text-end">Стоимость товара</th>
-                <th>Склад</th>
+                <th class="text-center">Номер и дата задания</th>
+                <th class="text-center" style="width:70px;">Фото</th>
+                <th class="text-center">Наименование товара</th>
+                <th class="text-center">Цена</th>
+                <th class="text-center">Склад</th>
+                <th class="text-center">Баркод</th>
               </tr>
             </thead>
             <tbody>
@@ -49,13 +59,21 @@
                       <div class="text-muted" style="font-size:0.68rem;">{{ parts[1] }} · {{ parts[1] | time_ago_ru }}</div>
                     {% endif %}
                   </td>
+                  <td>
+                    {% if r.photo %}
+                      <img src="{{ r.photo }}" data-src="{{ r.photo }}" class="product-thumb" alt="photo" style="width:45px;height:65px;object-fit:cover;cursor: zoom-in;" />
+                    {% else %}
+                      <span class="text-muted">—</span>
+                    {% endif %}
+                  </td>
                   <td>{{ r["Наименование товара"] }}</td>
-                  <td class="text-end">{{ r["Стоимость товара"] | money_ru }}</td>
+                  <td class="text-end">{{ r["Цена"] if r.get("Цена") is not none else r["Стоимость товара"] | money_ru }}</td>
                   <td>{{ r["Склад"] }}</td>
+                  <td>{{ r.barcode or '—' }}</td>
                 </tr>
               {% endfor %}
               {% if not rows %}
-                <tr><td colspan="5" class="text-muted">Нет данных</td></tr>
+                <tr><td colspan="7" class="text-muted">Нет данных</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -64,6 +82,30 @@
     </div>
   </div>
 
+  <div id="imgPreview" style="display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none;">
+    <img id="imgPreviewImg" src="" alt="preview" style="max-width:420px; max-height:560px; display:block;" />
+  </div>
+  <script>
+    (function(){
+      const preview = document.getElementById('imgPreview');
+      const previewImg = document.getElementById('imgPreviewImg');
+      document.addEventListener('mouseover', function(e){
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('product-thumb')){
+          const src = t.getAttribute('data-src') || t.getAttribute('src');
+          previewImg.src = src;
+          preview.style.display = 'block';
+        }
+      });
+      document.addEventListener('mouseout', function(e){
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('product-thumb')){
+          preview.style.display = 'none';
+          previewImg.src = '';
+        }
+      });
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html> 
