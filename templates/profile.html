@@ -57,6 +57,14 @@
               <button class="btn btn-secondary" type="submit">Обновить пароль</button>
             </div>
           </form>
+          {% with msgs = get_flashed_messages() %}
+            {% if msgs %}
+              <div class="mt-2">
+                {% set m = msgs[-1] %}
+                <div class="{{ 'text-success' if 'Пароль обновлён' in m else 'text-danger' }}">{{ m }}</div>
+              </div>
+            {% endif %}
+          {% endwith %}
         </div></div>
       </div>
     </div>

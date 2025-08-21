@@ -1590,13 +1590,19 @@ def profile_token():
 @app.route("/profile/password", methods=["POST"]) 
 @login_required
 def profile_password():
-    old_password = request.form.get("old_password", "")
-    new_password = request.form.get("new_password", "")
+    old_password = (request.form.get("old_password", "") or "").strip()
+    new_password = (request.form.get("new_password", "") or "").strip()
     if not old_password or not new_password:
         flash("Заполните оба поля")
         return redirect(url_for("profile"))
     if current_user.password != old_password:
         flash("Текущий пароль неверен")
+        return redirect(url_for("profile"))
+    if len(new_password) < 4:
+        flash("Новый пароль слишком короткий (мин. 4 символа)")
+        return redirect(url_for("profile"))
+    if new_password == old_password:
+        flash("Новый пароль совпадает с текущим")
         return redirect(url_for("profile"))
     try:
         current_user.password = new_password
