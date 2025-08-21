@@ -8,6 +8,25 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
   <style>
     h1 { font-size: 1.7rem; }
+    .status-badge {
+      display: inline-block;
+      padding: 0.15rem 0.4rem;
+      border-radius: 0.25rem;
+      font-weight: 600;
+      line-height: 1.1;
+    }
+    .status-ok {
+      color: #0f5132; /* тёмно-зелёный */
+      background-color: #d1e7dd; /* светло-зелёный фон */
+    }
+    .status-pending {
+      color: #b35c00; /* тёмно-оранжевый */
+      background-color: #ffe5cc; /* светло-оранжевый фон */
+    }
+    .supply-date {
+      font-size: 0.72rem;
+      color: #6c757d;
+    }
   </style>
 </head>
 <body>
@@ -61,7 +80,7 @@
                   </td>
                   <td>
                     {% if r.photo %}
-                      <img src="{{ r.photo }}" data-src="{{ r.photo }}" class="product-thumb" alt="photo" style="width:45px;height:65px;object-fit:cover;cursor: zoom-in;" />
+                      <img src="{{ r.photo }}" data-src="{{ r.photo }}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;" />
                     {% else %}
                       <span class="text-muted">—</span>
                     {% endif %}
@@ -75,6 +94,29 @@
               {% if not rows %}
                 <tr><td colspan="7" class="text-muted">Нет данных</td></tr>
               {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container mt-4">
+    <div class="card">
+      <div class="card-body">
+        <h6 class="mb-3">Поставки FBS</h6>
+        <div class="table-responsive">
+          <table class="table table-sm table-striped" id="suppliesTable">
+            <thead>
+              <tr>
+                <th class="text-center" style="width:60px;">#</th>
+                <th class="text-center">Номер поставки</th>
+                <th class="text-center">Кол-во товаров</th>
+                <th class="text-center">Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="4" class="text-muted">Загрузка...</td></tr>
             </tbody>
           </table>
         </div>
@@ -104,6 +146,96 @@
           previewImg.src = '';
         }
       });
+      // Load supplies table
+      (async function initSupplies(){
+        try{
+          const res = await fetch('/api/fbs/supplies');
+          const data = await res.json();
+          const tbody = document.querySelector('#suppliesTable tbody');
+          tbody.innerHTML = '';
+          (data.items || []).forEach((s, idx) => {
+            const tr = document.createElement('tr');
+            tr.setAttribute('data-supply-id', s.supplyId || '');
+            tr.style.cursor = 'pointer';
+            tr.innerHTML = `<td class=\"text-center\"></td>
+                            <td class=\"text-center\"></td>
+                            <td class=\"text-center\"></td>
+                            <td class=\"text-center\"></td>`;
+            tr.children[0].textContent = (idx + 1).toString();
+            tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
+            tr.children[2].textContent = s.count != null ? s.count : '';
+            const statusCell = tr.children[3];
+            if (s.status === 'Отгружено'){
+              const badge = document.createElement('span');
+              badge.className = 'status-badge status-ok';
+              badge.textContent = 'Отгружено';
+              statusCell.innerHTML = '';
+              statusCell.appendChild(badge);
+              if (s.statusDt){
+                const small = document.createElement('div');
+                small.className = 'supply-date';
+                small.textContent = s.statusDt;
+                statusCell.appendChild(small);
+              }
+            } else {
+              const badge = document.createElement('span');
+              badge.className = 'status-badge status-pending';
+              badge.textContent = s.status || 'Не отгружена';
+              statusCell.innerHTML = '';
+              statusCell.appendChild(badge);
+            }
+            tbody.appendChild(tr);
+            // expandable row placeholder
+            const details = document.createElement('tr');
+            details.className = 'd-none supply-details-row';
+            details.innerHTML = `<td></td><td colspan="3"><div class="py-2" id="details-${s.supplyId}"><div class="text-muted">Загрузка...</div></div></td>`;
+            tbody.appendChild(details);
+            tr.addEventListener('click', async () => {
+              // collapse any other opened details rows
+              document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
+                if (row !== details) row.classList.add('d-none');
+              });
+              // toggle current
+              details.classList.toggle('d-none');
+              const wrap = document.getElementById(`details-${s.supplyId}`);
+              if (!wrap) return;
+              if (wrap.getAttribute('data-loaded') === '1') return;
+              try{
+                const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(s.supplyId)}/orders`);
+                const d = await r.json();
+                const items = d.items || [];
+                if (!items.length){
+                  wrap.innerHTML = '<div class="text-muted">Нет товаров в поставке</div>';
+                } else {
+                  const table = document.createElement('table');
+                  table.className = 'table table-sm mb-0';
+                  table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
+                  const tb = table.querySelector('tbody');
+                  items.forEach(it => {
+                    const tr2 = document.createElement('tr');
+                    const img = it.photo ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">` : '';
+                    tr2.innerHTML = `<td class="text-center">${img}</td><td>${(it.article||'')}</td><td class="text-center">${(it.barcode||'')}</td><td class="text-center">${(it.createdAt||'')}</td>`;
+                    tb.appendChild(tr2);
+                  });
+                  wrap.innerHTML = '';
+                  wrap.appendChild(table);
+                }
+                wrap.setAttribute('data-loaded','1');
+              } catch(e){
+                console.error(e);
+                wrap.innerHTML = '<div class="text-danger">Ошибка загрузки списка товаров</div>';
+              }
+            });
+          });
+          if ((data.items || []).length === 0){
+            tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
+          }
+        }catch(e){
+          console.error(e);
+          const tbody = document.querySelector('#suppliesTable tbody');
+          tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Ошибка загрузки</td></tr>';
+        }
+      })();
     })();
   </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>

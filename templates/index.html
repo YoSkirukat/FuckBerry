@@ -11,6 +11,8 @@
     h1 { font-size: 1.7rem; }
     .kpi { font-size: 1.1rem; font-weight: 600; }
     .table-responsive { max-height: 60vh; }
+    /* Hide default calendar icon in Chrome to avoid double icons */
+    input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 10px; width: 1.2em; height: 1.2em; }
   </style>
 </head>
 <body>
@@ -29,11 +31,17 @@
           <form id="ordersForm" class="row g-3">
             <div class="col-12">
               <label class="form-label">Дата с</label>
-              <input name="date_from" id="dateFrom" type="date" class="form-control" value="{{ date_from }}" required />
+              <div class="input-group" id="dateFromWrap">
+                <input name="date_from" id="dateFrom" type="date" class="form-control" value="{{ date_from }}" required />
+                <span class="input-group-text" style="cursor:pointer;">📅</span>
+              </div>
             </div>
             <div class="col-12">
               <label class="form-label">Дата по</label>
-              <input name="date_to" id="dateTo" type="date" class="form-control" value="{{ date_to }}" required />
+              <div class="input-group" id="dateToWrap">
+                <input name="date_to" id="dateTo" type="date" class="form-control" value="{{ date_to }}" required />
+                <span class="input-group-text" style="cursor:pointer;">📅</span>
+              </div>
             </div>
             <div class="col-12">
               <div class="form-check form-check-inline">
@@ -119,18 +127,27 @@
       </div>
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">
-          <h6 id="titleTop" class="mb-3">ТОП товаров {{ 'по продажам' if top_mode=='sales' else 'по заказам' }} с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
+          <h6 id="titleTopPivot" class="mb-3">Сводная таблица: ТОП товаров по заказам (топ 15) с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
+          <div class="mb-2 d-flex align-items-center gap-2">
+            <label class="mb-0" for="shortTopWarehouse">Склад:</label>
+            <select id="shortTopWarehouse" class="form-select" style="max-width: 260px;">
+              <option value="">Все склады</option>
+              {% for w in warehouses %}
+                <option value="{{ w }}">{{ w }}</option>
+              {% endfor %}
+            </select>
+          </div>
           <div class="table-responsive">
             <table class="table table-sm table-striped mb-0">
               <thead>
                 <tr>
                   <th>Товар</th>
-                  <th class="text-end">Кол-во единиц</th>
+                  <th class="text-end">Кол-во заказано</th>
                 </tr>
               </thead>
               <tbody id="ordersTopShortBody">
-                {% if top_products and top_products|length %}
-                  {% for it in top_products %}
+                {% if top_products_orders_filtered and top_products_orders_filtered|length %}
+                  {% for it in top_products_orders_filtered[:15] %}
                     <tr>
                       <td>
                         {% if it.nm_id %}
@@ -148,61 +165,14 @@
               </tbody>
             </table>
           </div>
+          <div class="mt-2 text-center">
+            <a href="/report/sales" class="btn btn-outline-primary btn-sm">Открыть полный отчёт</a>
+          </div>
         </div></div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-body">
-        <div class="row g-3 align-items-end">
-          <div class="col-md-6">
-            <h6 id="titleTopPivot" class="mb-2">Сводная таблица: ТОП товаров {{ 'по продажам' if top_mode=='sales' else 'по заказам' }} с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
-          </div>
-          <div class="col-md-6">
-            <div class="row g-2">
-              <div class="col-12">
-                <label class="form-label">Склад</label>
-                <select id="warehouseSelect" class="form-select">
-                  <option value="" {% if not selected_warehouse %}selected{% endif %}>Все склады</option>
-                  {% for w in warehouses %}
-                    <option value="{{ w }}" {% if selected_warehouse == w %}selected{% endif %}>{{ w }}</option>
-                  {% endfor %}
-                </select>
-                <div class="form-text">Таблица обновляется автоматически при выборе склада</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="table-responsive mt-3">
-          <table class="table table-sm table-striped" id="ordersTopTable">
-            <thead>
-              <tr>
-                <th>Товар</th>
-                <th class="text-end">Кол-во заказано</th>
-              </tr>
-            </thead>
-            <tbody id="ordersTopBody">
-              {% for it in top_products_orders_filtered %}
-                <tr>
-                  <td>
-                    {% if it.nm_id %}
-                      <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
-                    {% else %}
-                      {{ it.product }}
-                    {% endif %}
-                  </td>
-                  <td class="text-end">{{ it.qty | num_space }}</td>
-                </tr>
-              {% endfor %}
-              {% if not top_products_orders_filtered %}
-                <tr><td colspan="2" class="text-muted">Нет данных для выбранного склада</td></tr>
-              {% endif %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    <!-- Removed bottom pivot block -->
   </div>
 
   <script>
@@ -224,6 +194,52 @@
     cbOrders?.addEventListener('change', updateSubmitEnabled);
     cbSales?.addEventListener('change', updateSubmitEnabled);
     updateSubmitEnabled();
+
+    // Make whole date inputs clickable to open picker
+    function bindDateOpener(wrapId, inputId){
+      const wrap = document.getElementById(wrapId);
+      const input = document.getElementById(inputId);
+      if (!wrap || !input) return;
+      const openPicker = () => { input.showPicker ? input.showPicker() : input.focus(); };
+      wrap.addEventListener('click', (e) => {
+        if (e.target === input) return;
+        openPicker();
+      });
+      input.addEventListener('click', () => openPicker());
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); }});
+    }
+    bindDateOpener('dateFromWrap','dateFrom');
+    bindDateOpener('dateToWrap','dateTo');
+
+    // Short top filter by warehouse
+    const shortTopWarehouse = document.getElementById('shortTopWarehouse');
+    async function reloadShortTop(){
+      const wh = shortTopWarehouse ? (shortTopWarehouse.value || '') : '';
+      const params = new URLSearchParams();
+      if (wh) params.set('warehouse', wh);
+      const res = await fetch(`/api/top-products-orders?${params.toString()}`);
+      const data = await res.json();
+      const tbody = document.getElementById('ordersTopShortBody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      const src = (data.items || []).slice(0, 15);
+      if (!src.length){
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="2" class="text-muted">Нет данных</td>';
+        tbody.appendChild(tr);
+        return;
+      }
+      for (const it of src){
+        const tr = document.createElement('tr');
+        const td1 = document.createElement('td');
+        if (it.nm_id){
+          const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; td1.appendChild(a);
+        } else { td1.textContent = it.product; }
+        const td2 = document.createElement('td'); td2.className = 'text-end'; td2.textContent = (it.qty||0).toLocaleString('ru-RU');
+        tr.appendChild(td1); tr.appendChild(td2); tbody.appendChild(tr);
+      }
+    }
+    if (shortTopWarehouse) shortTopWarehouse.addEventListener('change', reloadShortTop);
 
     // Existing charts init moved below to function
     let countChart = null;

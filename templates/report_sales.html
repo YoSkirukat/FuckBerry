@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Отчёт по заказам со складов</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <style>
+    /* скрываем чёрные встроенные иконки календаря */
+    input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 10px; width: 1.2em; height: 1.2em; }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <h1 class="mb-3" style="font-size:1.6rem;">Отчёт по заказам со складов</h1>
+    {% if error %}
+      <div class="alert alert-warning">{{ error }}</div>
+    {% endif %}
+
+    <div class="mb-1 text-muted">Период: <span id="repPeriod">{{ date_from_fmt }}{% if date_from_fmt and date_to_fmt %} — {{ date_to_fmt }}{% endif %}</span></div>
+    <div class="mb-3">Количество проданного товара: <strong id="repTotal">{{ (items and (items | sum(attribute='qty'))) or 0 }}</strong></div>
+
+    <form class="row g-3 mb-3" method="get" action="/report/sales">
+      <div class="col-sm-6 col-md-3">
+        <label class="form-label">Дата с</label>
+        <div class="input-group" id="rDateFromWrap">
+          <input type="date" class="form-control" name="date_from" id="rDateFrom" value="{{ date_from_val or '' }}" required />
+          <span class="input-group-text" style="cursor:pointer;">📅</span>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-3">
+        <label class="form-label">Дата по</label>
+        <div class="input-group" id="rDateToWrap">
+          <input type="date" class="form-control" name="date_to" id="rDateTo" value="{{ date_to_val or '' }}" required />
+          <span class="input-group-text" style="cursor:pointer;">📅</span>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-4">
+        <label class="form-label">Склад</label>
+        <select name="warehouse" id="rWarehouse" class="form-select" {% if not items or not items|length %}disabled{% endif %}>
+          <option value="" {% if not warehouse %}selected{% endif %}>Все склады</option>
+          {% for w in warehouses %}
+            <option value="{{ w }}" {% if warehouse == w %}selected{% endif %}>{{ w }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <button id="reportLoadBtn" class="btn btn-primary w-100" type="submit">Загрузить</button>
+      </div>
+    </form>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="table-responsive" style="max-height: 70vh;">
+          <table class="table table-sm table-striped" id="reportTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Товар</th>
+                <th class="text-end">Кол-во заказано</th>
+              </tr>
+            </thead>
+            <tbody id="reportBody">
+              {% if items and items|length %}
+                {% for it in items %}
+                  <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>
+                      {% if it.nm_id %}
+                        <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                      {% else %}
+                        {{ it.product }}
+                      {% endif %}
+                    </td>
+                    <td class="text-end">{{ it.qty | num_space }}</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="3" class="text-muted">Нет данных</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    function bindDateOpener(wrapId, inputId){
+      const wrap = document.getElementById(wrapId);
+      const input = document.getElementById(inputId);
+      if (!wrap || !input) return;
+      const openPicker = () => { input.showPicker ? input.showPicker() : input.focus(); };
+      wrap.addEventListener('click', (e) => {
+        if (e.target === input) return;
+        openPicker();
+      });
+      input.addEventListener('click', () => openPicker());
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); }});
+    }
+    bindDateOpener('rDateFromWrap','rDateFrom');
+    bindDateOpener('rDateToWrap','rDateTo');
+
+    let reportMatrix = null; // cached matrix for client-side filtering
+    async function reloadReport(){
+      const form = document.querySelector('form[action="/report/sales"]');
+      const btn = document.getElementById('reportLoadBtn');
+      if (!form || !btn) return;
+      try{
+        btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Загрузка...';
+        const params = new URLSearchParams(new FormData(form));
+        // При загрузке отчёта всегда запрашиваем агрегат по всем складам,
+        // а затем фильтруем локально при смене склада
+        params.set('warehouse', '');
+        const res = await fetch(`/api/report/sales?${params.toString()}`);
+        const data = await res.json();
+        reportMatrix = data.matrix || null;
+        const tbody = document.getElementById('reportBody');
+        tbody.innerHTML = '';
+        (data.items || []).forEach((it, idx) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td></td><td></td><td class="text-end"></td>`;
+          tr.children[0].textContent = (idx + 1).toString();
+          const cell = tr.children[1];
+          if (it.nm_id){
+            const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a);
+          } else { cell.textContent = it.product; }
+          tr.children[2].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tbody.appendChild(tr);
+        });
+        const periodEl = document.getElementById('repPeriod');
+        if (periodEl) periodEl.textContent = `${data.date_from_fmt || ''} — ${data.date_to_fmt || ''}`;
+        const totalEl = document.getElementById('repTotal');
+        if (totalEl) totalEl.textContent = (data.total_qty || 0).toLocaleString('ru-RU');
+        // populate and enable warehouse select
+        const whSel = document.getElementById('rWarehouse');
+        if (whSel){
+          const current = '';
+          whSel.innerHTML = '';
+          const optAll = document.createElement('option'); optAll.value=''; optAll.textContent = 'Все склады'; whSel.appendChild(optAll);
+          (data.warehouses || []).forEach(w => { const o = document.createElement('option'); o.value = w; o.textContent = w; whSel.appendChild(o); });
+          whSel.disabled = false;
+          whSel.value = current; // сброс на «Все склады»
+          if (whSel.selectedIndex < 0) whSel.selectedIndex = 0;
+        }
+        btn.textContent = prev; btn.disabled = false;
+      } catch(err){
+        console.error(err);
+        btn.disabled = false;
+      }
+    }
+
+    const form = document.querySelector('form[action="/report/sales"]');
+    const btn = document.getElementById('reportLoadBtn');
+    if (form && btn){
+      form.addEventListener('submit', (e) => { e.preventDefault(); reloadReport(); });
+    }
+    const whSel = document.getElementById('rWarehouse');
+    if (whSel){
+      whSel.addEventListener('change', () => {
+        // Только локальная фильтрация; если матрица не загружена ещё, ничего не делаем
+        if (!reportMatrix) return;
+        const tbody = document.getElementById('reportBody');
+        tbody.innerHTML = '';
+        const target = whSel.value || '';
+        const items = reportMatrix.map(row => {
+          const bywh = row.by_wh || {};
+          const qty = target ? (bywh[target] || 0) : (row.total || 0);
+          return { product: row.product, nm_id: row.nm_id, qty };
+        }).filter(it => (it.qty || 0) > 0).sort((a,b)=> (b.qty||0)-(a.qty||0));
+        items.forEach((it, idx) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td></td><td></td><td class="text-end"></td>`;
+          tr.children[0].textContent = (idx + 1).toString();
+          const cell = tr.children[1];
+          if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a); }
+          else { cell.textContent = it.product; }
+          tr.children[2].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tbody.appendChild(tr);
+        });
+        const totalEl = document.getElementById('repTotal');
+        const totalQty = items.reduce((s, x) => s + (x.qty||0), 0);
+        if (totalEl) totalEl.textContent = (totalQty || 0).toLocaleString('ru-RU');
+      });
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+

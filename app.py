@@ -37,6 +37,11 @@ if not os.path.isdir(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 FBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/new"
+FBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders"
+FBS_ORDERS_STATUS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/status"
+FBS_SUPPLIES_LIST_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies"
+FBS_SUPPLY_INFO_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}"
+FBS_SUPPLY_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}/orders"
 
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
@@ -661,7 +666,20 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
 def _extract_created_at(obj: Any) -> datetime:
     if not isinstance(obj, dict):
         return datetime.min
-    val = obj.get("createdAt") or obj.get("dateCreated") or obj.get("date") or obj.get("created_at") or obj.get("time") or ""
+    val = (
+        obj.get("createdAt")
+        or obj.get("createAt")
+        or obj.get("created")
+        or obj.get("createDt")
+        or obj.get("createdDt")
+        or obj.get("createdDate")
+        or obj.get("dateCreated")
+        or obj.get("orderCreateDate")
+        or obj.get("date")
+        or obj.get("created_at")
+        or obj.get("time")
+        or ""
+    )
     # Numeric timestamp support (ms or s)
     try:
         if isinstance(val, (int, float)):
@@ -701,6 +719,172 @@ def fetch_fbs_new_orders(token: str) -> List[Dict[str, Any]]:
             return inner["orders"]
     return []
 
+
+def fetch_fbs_orders(token: str, limit: int = 100, next_cursor: str | None = None) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"limit": limit, "next": 0 if next_cursor is None else next_cursor}
+    # Try both auth styles. Some WB tenants expect bare token, другие — Bearer
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err: Exception | None = None
+    for hdrs in headers_list:
+        try:
+            resp = get_with_retry(FBS_ORDERS_URL, hdrs, params=params)
+            data = resp.json()
+            # consider non-empty result a success
+            arr = (data.get("orders") if isinstance(data, dict) else None) or []
+            if isinstance(arr, list) and arr:
+                return data
+            # even if empty, return once tried both
+            last_data = data
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
+    return last_data  # type: ignore[name-defined]
+
+
+def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    bodies = [
+        {"orders": order_ids},
+        {"orders": [{"id": oid} for oid in order_ids]},
+    ]
+    last_err: Exception | None = None
+    for hdrs in headers_list:
+        for body in bodies:
+            try:
+                resp = post_with_retry(FBS_ORDERS_STATUS_URL, hdrs, json_body=body)
+                return resp.json()
+            except Exception as e:
+                last_err = e
+                continue
+    if last_err:
+        raise last_err
+    return {}
+
+
+def fetch_fbs_latest_orders(token: str, want_count: int = 30, page_limit: int = 200, max_pages: int = 20) -> tuple[List[Dict[str, Any]], Any]:
+    """Fetch multiple pages and return most recent `want_count` items by created time.
+
+    WB API выдаёт страницы по параметру next. Первая страница (next=0) может содержать старые записи,
+    поэтому идём по страницам, собираем и затем берём последние по дате.
+    """
+    collected: List[Dict[str, Any]] = []
+    cursor: Any = 0
+    pages = 0
+    last_next: Any = None
+    while pages < max_pages:
+        page = fetch_fbs_orders(token, limit=page_limit, next_cursor=cursor)
+        items, next_cursor = _normalize_fbs_orders_page(page)
+        if not items:
+            break
+        collected.extend(items)
+        pages += 1
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+        last_next = next_cursor
+    try:
+        collected.sort(key=_extract_created_at, reverse=True)
+    except Exception:
+        pass
+    return collected[:want_count], last_next
+
+
+def _merge_statuses_for_items(token: str, items: List[Dict[str, Any]]):
+    ids: List[int] = []
+    for it in items:
+        oid = it.get("id") or it.get("orderId") or it.get("ID")
+        try:
+            if oid is not None:
+                ids.append(int(oid))
+        except Exception:
+            continue
+    if not ids:
+        return
+    st = fetch_fbs_statuses(token, ids[:1000])
+    arr = st.get("orders") if isinstance(st, dict) else None
+    if arr is None:
+        arr = st.get("data") if isinstance(st, dict) else None
+    if arr is None:
+        arr = st if isinstance(st, list) else []
+    map_st: Dict[int, Any] = {}
+    if isinstance(arr, list):
+        for x in arr:
+            try:
+                map_st[int(x.get("id") or x.get("orderId") or 0)] = x
+            except Exception:
+                continue
+    for it in items:
+        try:
+            oid = int(it.get("id") or it.get("orderId") or it.get("ID") or 0)
+            stx = map_st.get(oid) or {}
+            # WB может возвращать разные поля для статусов
+            status_val = (
+                stx.get("status")
+                or stx.get("supplierStatus")
+                or stx.get("wbStatus")
+                or stx.get("state")
+            )
+            status_name_val = (
+                stx.get("statusName")
+                or stx.get("supplierStatusName")
+                or stx.get("wbStatusName")
+                or stx.get("stateName")
+                or status_val
+            )
+            if status_name_val:
+                it["statusName"] = status_name_val
+            if status_val:
+                it["status"] = status_val
+        except Exception:
+            continue
+
+
+def get_orders_with_status(token: str, need_count: int = 30, start_next: Any = None) -> tuple[List[Dict[str, Any]], Any]:
+    collected: List[Dict[str, Any]] = []
+    cursor: Any = 0 if (start_next is None or start_next == "" or start_next == "null") else start_next
+    last_next: Any = None
+    safety_pages = 0
+    while len(collected) < need_count and safety_pages < 5:
+        page = fetch_fbs_orders(token, limit=200, next_cursor=cursor)
+        items, next_cursor = _normalize_fbs_orders_page(page)
+        if not items:
+            break
+        collected.extend(items)
+        last_next = next_cursor
+        safety_pages += 1
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    try:
+        collected.sort(key=_extract_created_at, reverse=True)
+    except Exception:
+        pass
+    result = collected[:need_count]
+    _merge_statuses_for_items(token, result)
+    return result, last_next
+
+
+def _normalize_fbs_orders_page(page: Any) -> tuple[list[dict], str | None]:
+    try:
+        if isinstance(page, list):
+            return page, None
+        if isinstance(page, dict):
+            items = page.get("orders") or page.get("data") or []
+            if not isinstance(items, list):
+                items = []
+            next_cursor = page.get("next") or page.get("cursor") or None
+            return items, next_cursor
+    except Exception:
+        pass
+    return [], None
 
 def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
@@ -1182,6 +1366,32 @@ def api_orders_refresh():
                 status = http_err.response.status_code
         except Exception:
             status = 502
+        # Graceful fallback for 429: return cached data if dates match
+        if status == 429:
+            cached = load_last_results() or {}
+            if (
+                cached.get("date_from") == date_from
+                and cached.get("date_to") == date_to
+                and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None)
+            ):
+                return jsonify({
+                    "total_orders": cached.get("total_orders", 0),
+                    "total_revenue": cached.get("total_revenue", 0),
+                    "daily_labels": cached.get("daily_labels", []),
+                    "daily_orders_counts": cached.get("daily_orders_counts", []),
+                    "daily_sales_counts": cached.get("daily_sales_counts", []),
+                    "daily_orders_revenue": cached.get("daily_orders_revenue", []),
+                    "daily_sales_revenue": cached.get("daily_sales_revenue", []),
+                    "warehouse_summary_dual": cached.get("warehouse_summary_dual", []),
+                    "top_products": cached.get("top_products", []),
+                    "warehouses": cached.get("warehouses", []),
+                    "top_products_orders_filtered": cached.get("top_products_orders_filtered", []),
+                    "updated_at": cached.get("updated_at", ""),
+                    "date_from_fmt": format_dmy(date_from),
+                    "date_to_fmt": format_dmy(date_to),
+                    "top_mode": cached.get("top_mode", "orders"),
+                    "rate_limited": True,
+                }), 200
         return jsonify({"error": "http", "status": status}), status
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
@@ -1323,6 +1533,120 @@ def api_top_products_orders():
     return jsonify({"items": items})
 
 
+@app.route("/report/sales", methods=["GET"]) 
+@login_required
+def report_sales_page():
+    cached = load_last_results()
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    # Страница по умолчанию открывается пустой: без данных, пока пользователь не задаст период и не нажмёт Загрузить
+    if not request.args.get("date_from") and not request.args.get("date_to"):
+        return render_template(
+            "report_sales.html",
+            error=None,
+            items=[],
+            date_from_fmt="",
+            date_to_fmt="",
+            warehouse=None,
+            warehouses=[],
+            date_from_val="",
+            date_to_val="",
+        ), 200
+
+    # Accept date range from query params; fallback to cached
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    warehouse = request.args.get("warehouse") or None
+
+    if req_from and req_to and token:
+        # Fetch fresh orders for requested period
+        try:
+            raw_orders = fetch_orders_range(token, req_from, req_to)
+            orders = to_rows(raw_orders, req_from, req_to)
+            date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+            date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+        except Exception as exc:
+            # Fallback to cache on error
+            orders = (cached or {}).get("orders", [])
+            date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
+            date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
+    else:
+        # Без явного периода не подставляем кэш — страница остаётся пустой
+        orders = []
+        date_from_fmt = ""
+        date_to_fmt = ""
+
+    warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
+    try:
+        items = aggregate_top_products_orders(orders, warehouse, limit=1_000_000) if orders else []
+    except Exception:
+        items = []
+    return render_template(
+        "report_sales.html",
+        error=None,
+        items=items,
+        date_from_fmt=date_from_fmt,
+        date_to_fmt=date_to_fmt,
+        warehouse=warehouse,
+        warehouses=warehouses,
+        date_from_val=(request.args.get("date_from") or ""),
+        date_to_val=(request.args.get("date_to") or ""),
+    )
+
+
+@app.route("/api/report/sales", methods=["GET"]) 
+@login_required
+def api_report_sales():
+    cached = load_last_results()
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    warehouse = (request.args.get("warehouse") or "").strip() or None
+    try:
+        if req_from and req_to and token:
+            raw_orders = fetch_orders_range(token, req_from, req_to)
+            orders = to_rows(raw_orders, req_from, req_to)
+            date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+            date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+        else:
+            orders = (cached or {}).get("orders", [])
+            date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
+            date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
+        # Build matrix for local filtering on frontend
+        counts_total: Dict[str, int] = defaultdict(int)
+        by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        nm_by_product: Dict[str, Any] = {}
+        warehouses = set()
+        for r in orders:
+            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
+            wh = str(r.get("Склад отгрузки") or "Не указан")
+            warehouses.add(wh)
+            counts_total[prod] += 1
+            by_wh[prod][wh] += 1
+            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+            if prod not in nm_by_product and nmv:
+                nm_by_product[prod] = nmv
+        def build_items_for_wh(target_wh: str | None) -> List[Dict[str, Any]]:
+            items_local: List[Dict[str, Any]] = []
+            for prod, total in counts_total.items():
+                qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
+                if qty > 0:
+                    items_local.append({"product": prod, "qty": qty, "nm_id": nm_by_product.get(prod)})
+            items_local.sort(key=lambda x: x["qty"], reverse=True)
+            return items_local
+        items = build_items_for_wh(warehouse)
+        total_qty = sum(int(it.get("qty") or 0) for it in items)
+        matrix = [{"product": p, "nm_id": nm_by_product.get(p), "total": counts_total[p], "by_wh": by_wh[p]} for p in counts_total.keys()]
+        return jsonify({
+            "items": items,
+            "total_qty": total_qty,
+            "date_from_fmt": date_from_fmt,
+            "date_to_fmt": date_to_fmt,
+            "warehouses": sorted(list(warehouses)),
+            "matrix": matrix,
+        }), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
+
 @app.route("/fbs", methods=["GET", "POST"]) 
 @login_required
 def fbs_page():
@@ -1385,7 +1709,8 @@ def fbs_page():
     if not prod_cached_now or not ((prod_cached_now or {}).get("items")):
         products_hint = "Для отображения фото товара и баркода обновите данные на странице Товары"
 
-    return render_template("fbs.html", error=error, rows=rows, products_hint=products_hint)
+    # Не блокируем рендер страницы: текущие задания подтянем AJAX-ом
+    return render_template("fbs.html", error=error, rows=rows, products_hint=products_hint, current_orders=[])
 
 
 @app.route("/fbs/export", methods=["POST"]) 
@@ -1470,6 +1795,323 @@ def fbs_export():
         return (f"Ошибка API: {http_err.response.status_code}", 502)
     except Exception as exc:
         return (f"Ошибка: {exc}", 500)
+
+
+@app.route("/api/fbs/orders/load-more", methods=["POST"]) 
+@login_required
+def api_fbs_orders_load_more():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "next": None}), 200
+    try:
+        cursor = session.get("fbs_next_cursor")
+        if not cursor:
+            return jsonify({"items": [], "next": None}), 200
+        page = fetch_fbs_orders(token, limit=30, next_cursor=cursor)
+        items, next_cursor = _normalize_fbs_orders_page(page)
+        try:
+            items.sort(key=_extract_created_at, reverse=True)
+        except Exception:
+            pass
+        # Merge statuses
+        need_ids: List[int] = []
+        for it in items:
+            oid = it.get("id") or it.get("orderId") or it.get("ID")
+            try:
+                if oid is not None:
+                    need_ids.append(int(oid))
+            except Exception:
+                pass
+        if need_ids:
+            st = fetch_fbs_statuses(token, need_ids[:1000])
+            arr = st.get("orders") or st.get("data") or st
+            m: Dict[int, Any] = {}
+            if isinstance(arr, list):
+                for x in arr:
+                    try:
+                        m[int(x.get("id") or x.get("orderId") or 0)] = x
+                    except Exception:
+                        continue
+            for it in items:
+                try:
+                    oid = int(it.get("id") or it.get("orderId") or it.get("ID") or 0)
+                    stx = m.get(oid) or {}
+                    it["statusName"] = stx.get("statusName") or stx.get("status") or it.get("statusName") or it.get("status")
+                    it["status"] = stx.get("status") or it.get("status")
+                except Exception:
+                    pass
+        session["fbs_next_cursor"] = next_cursor
+        # Вернём курсор для «Загрузить ещё»: если мы собрали несколько страниц, last_next уже сохранён в сессии,
+        # но фронту нужен любой ненулевой next, чтобы показать кнопку. Используем тот из сессии.
+        return jsonify({"items": items, "next": session.get("fbs_next_cursor")}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "next": None, "error": str(exc)}), 200
+
+
+@app.route("/api/fbs/orders", methods=["GET"]) 
+@login_required
+def api_fbs_orders_first():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "next": None}), 200
+    try:
+        items, last_next = get_orders_with_status(token, need_count=30, start_next=None)
+        session["fbs_next_cursor"] = last_next
+        return jsonify({"items": items, "next": last_next}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "next": None, "error": str(exc)}), 200
+
+
+@app.route("/api/fbs/orders/with-status", methods=["GET"]) 
+@login_required
+def api_fbs_orders_with_status():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "next": None}), 200
+    try:
+        limit = request.args.get("limit", default="30")
+        try:
+            limit_i = max(1, min(200, int(limit)))
+        except Exception:
+            limit_i = 30
+        next_val = request.args.get("next")
+        items, last_next = get_orders_with_status(token, need_count=limit_i, start_next=next_val)
+        session["fbs_next_cursor"] = last_next
+        return jsonify({"items": items, "next": last_next}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "next": None, "error": str(exc)}), 200
+
+
+def _collect_fbs_orders_for_supplies(token: str, max_pages: int = 5, limit: int = 200) -> List[Dict[str, Any]]:
+    collected: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    cursor: Any = 0
+    pages = 0
+    while pages < max_pages:
+        page = fetch_fbs_orders(token, limit=limit, next_cursor=cursor)
+        items, next_cursor = _normalize_fbs_orders_page(page)
+        if not items:
+            break
+        for it in items:
+            oid = it.get("id") or it.get("orderId") or it.get("ID")
+            try:
+                if oid is not None:
+                    oid_i = int(oid)
+                    if oid_i in seen:
+                        continue
+                    seen.add(oid_i)
+            except Exception:
+                pass
+            collected.append(it)
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+        pages += 1
+    return collected
+
+
+def _aggregate_fbs_supplies(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    groups: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        sid = it.get("supplyId") or it.get("supplyID") or it.get("supply_id")
+        if not sid:
+            continue
+        d_raw = it.get("createdAt") or it.get("dateCreated") or it.get("date")
+        dt = parse_wb_datetime(str(d_raw)) if d_raw else None
+        dt_msk = to_moscow(dt) if dt else None
+        status_name = (it.get("statusName") or it.get("status") or "").strip()
+        g = groups.get(str(sid))
+        if not g:
+            g = {"supplyId": str(sid), "count": 0, "last_dt": dt_msk, "status_counts": {}}
+            groups[str(sid)] = g
+        g["count"] = int(g.get("count", 0)) + 1
+        # last date in the supply
+        if dt_msk and (g.get("last_dt") is None or dt_msk > g.get("last_dt")):
+            g["last_dt"] = dt_msk
+        # collect status counts
+        if status_name:
+            sc = g.get("status_counts") or {}
+            sc[status_name] = int(sc.get(status_name, 0)) + 1
+            g["status_counts"] = sc
+
+    result: List[Dict[str, Any]] = []
+    for g in groups.values():
+        dt_val = g.get("last_dt")
+        date_str = dt_val.strftime("%d.%m.%Y %H:%M") if dt_val else ""
+        ts = int(dt_val.timestamp()) if dt_val else 0
+        # determine supply status: priority rules, then most frequent
+        status_counts: Dict[str, int] = g.get("status_counts") or {}
+        status_final = ""
+        if status_counts:
+            # Priority: Отгрузите поставку -> Поставку приняли -> otherwise most frequent
+            lowered = {k.lower(): k for k in status_counts.keys()}
+            # Look for 'отгрузите поставку'
+            for lk, orig in lowered.items():
+                if "отгруз" in lk:
+                    status_final = orig
+                    break
+            if not status_final:
+                for lk, orig in lowered.items():
+                    if "принял" in lk or "приняли" in lk:
+                        status_final = orig
+                        break
+            if not status_final:
+                status_final = max(status_counts.items(), key=lambda x: x[1])[0]
+        result.append({
+            "supplyId": g["supplyId"],
+            "date": date_str,
+            "ts": ts,
+            "count": g["count"],
+            "status": status_final,
+        })
+    result.sort(key=lambda x: x.get("ts", 0), reverse=True)
+    return result
+
+
+@app.route("/api/fbs/supplies", methods=["GET"]) 
+@login_required
+def api_fbs_supplies():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": []}), 200
+    try:
+        pages_param = request.args.get("pages", default="5")
+        try:
+            pages_i = max(1, min(20, int(pages_param)))
+        except Exception:
+            pages_i = 5
+        orders = _collect_fbs_orders_for_supplies(token, max_pages=pages_i, limit=200)
+        supplies = _aggregate_fbs_supplies(orders)
+        # Enrich supplies with supply info (createdAt, scanDt) and compute status
+        headers_list = [
+            {"Authorization": f"{token}"},
+            {"Authorization": f"Bearer {token}"},
+        ]
+        enriched: List[Dict[str, Any]] = []
+        for s in supplies:
+            info = None
+            last_err = None
+            for hdrs in headers_list:
+                try:
+                    url = FBS_SUPPLY_INFO_URL.replace("{supplyId}", str(s["supplyId"]))
+                    resp = get_with_retry(url, hdrs, params={})
+                    info = resp.json()
+                    break
+                except Exception as e:
+                    last_err = e
+                    continue
+            created_at = info.get("createdAt") if isinstance(info, dict) else None
+            scan_dt = info.get("scanDt") if isinstance(info, dict) else None
+            # Status per requirement
+            if scan_dt:
+                # show "Отгружено" and date/time below on frontend; here store both
+                status_label = "Отгружено"
+                try:
+                    _sdt = parse_wb_datetime(str(scan_dt))
+                    _sdt_msk = to_moscow(_sdt) if _sdt else None
+                    status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else str(scan_dt)
+                except Exception:
+                    status_dt = str(scan_dt)
+            else:
+                status_label = "Не отгружена"
+                status_dt = None
+            # Date column should use createdAt
+            date_dt = parse_wb_datetime(str(created_at)) if created_at else None
+            date_msk = to_moscow(date_dt) if date_dt else None
+            date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else (s.get("date") or "")
+            enriched.append({
+                "supplyId": s["supplyId"],
+                "date": date_str,
+                "count": s["count"],
+                "status": status_label,
+                "statusDt": status_dt or "",
+            })
+        return jsonify({"items": enriched}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
+
+
+@app.route("/api/fbs/supplies/<supply_id>/orders", methods=["GET"]) 
+@login_required
+def api_fbs_supply_orders(supply_id: str):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": []}), 200
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err = None
+    try:
+        for hdrs in headers_list:
+            try:
+                url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
+                resp = get_with_retry(url, hdrs, params={})
+                data = resp.json()
+                items = data.get("orders") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                if not isinstance(items, list):
+                    items = []
+                # Minimal normalization for frontend: id, article, barcode, nmId, photo
+                norm = []
+                prod_cached = load_products_cache() or {}
+                by_nm: Dict[int, Dict[str, Any]] = {}
+                try:
+                    for it in (prod_cached.get("items") or []):
+                        nmv = it.get("nm_id") or it.get("nmID")
+                        if nmv:
+                            by_nm[int(nmv)] = it
+                except Exception:
+                    pass
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    nm = it.get("nmId") or it.get("nmID")
+                    photo = None
+                    barcode = None
+                    # format createdAt for item
+                    created_raw = it.get("createdAt") or it.get("dateCreated") or it.get("date")
+                    try:
+                        _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
+                        _dt_msk = to_moscow(_dt) if _dt else None
+                        created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
+                    except Exception:
+                        created_str = str(created_raw) if created_raw else ""
+                    if nm:
+                        try:
+                            hit = by_nm.get(int(nm))
+                        except Exception:
+                            hit = None
+                        if hit:
+                            photo = hit.get("photo")
+                            if hit.get("barcode"):
+                                barcode = hit.get("barcode")
+                            elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                                barcode = str(hit.get("barcodes")[0])
+                            else:
+                                sizes = hit.get("sizes") or []
+                                if isinstance(sizes, list):
+                                    for s in sizes:
+                                        bl = s.get("skus") or s.get("barcodes")
+                                        if isinstance(bl, list) and bl:
+                                            barcode = str(bl[0])
+                                            break
+                    norm.append({
+                        "id": it.get("id") or it.get("orderId") or it.get("ID"),
+                        "article": it.get("article") or it.get("vendorCode") or "",
+                        "barcode": (it.get("skus")[0] if isinstance(it.get("skus"), list) and it.get("skus") else None) or barcode or "",
+                        "nmId": nm,
+                        "photo": photo,
+                        "createdAt": created_str,
+                    })
+                return jsonify({"items": norm}), 200
+            except Exception as e:
+                last_err = e
+                continue
+        if last_err:
+            raise last_err
+        return jsonify({"items": []}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
 
 
 @app.route("/coefficients", methods=["GET", "POST"]) 
