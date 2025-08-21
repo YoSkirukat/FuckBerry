@@ -22,6 +22,8 @@ from flask_login import (
     current_user,
 )
 
+APP_VERSION = "1.0.1"
+
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(os.path.dirname(__file__), 'app.db')}")
@@ -241,6 +243,36 @@ def save_stocks_cache(payload: Dict[str, Any]) -> None:
         pass
 
 
+# FBS supplies cache helpers (per user)
+def _fbs_supplies_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"fbs_supplies_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "fbs_supplies_anon.json")
+
+
+def load_fbs_supplies_cache() -> Dict[str, Any] | None:
+    path = _fbs_supplies_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_fbs_supplies_cache(payload: Dict[str, Any]) -> None:
+    path = _fbs_supplies_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def load_last_results() -> Dict[str, Any] | None:
     path = _cache_path_for_user()
     if not os.path.isfile(path):
@@ -300,7 +332,7 @@ def load_user(user_id: str):
 def _is_user_valid_now(u: "User") -> bool:
     if not u.is_active:
         return False
-    today = datetime.utcnow().date()
+    today = datetime.now(MOSCOW_TZ).date()
     if u.valid_from and today < u.valid_from:
         return False
     if u.valid_to and today > u.valid_to:
@@ -1409,7 +1441,7 @@ def profile():
             seller_info = None
     validity_status = None
     if current_user.valid_from or current_user.valid_to:
-        today = datetime.utcnow().date()
+        today = datetime.now(MOSCOW_TZ).date()
         active = True
         if current_user.valid_from and today < current_user.valid_from:
             active = False
@@ -1973,13 +2005,34 @@ def _aggregate_fbs_supplies(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 def api_fbs_supplies():
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
-        return jsonify({"items": []}), 200
+        return jsonify({"items": [], "lastUpdated": None}), 200
+
+    # Support two modes: cached read (default) and refresh=1 to re-fetch
+    refresh_flag = request.args.get("refresh") in ("1", "true", "True")
+    limit_param = request.args.get("limit", default="5")
+    try:
+        limit_i = max(1, min(1000, int(limit_param)))
+    except Exception:
+        limit_i = 5
+
+    if not refresh_flag:
+        cached = load_fbs_supplies_cache() or {}
+        if cached.get("items"):
+            # Slice on server to reduce payload if requested
+            items = cached.get("items", [])[:limit_i]
+            return jsonify({
+                "items": items,
+                "lastUpdated": cached.get("lastUpdated"),
+                "total": len(cached.get("items", []))
+            }), 200
+
     try:
         pages_param = request.args.get("pages", default="5")
         try:
             pages_i = max(1, min(20, int(pages_param)))
         except Exception:
             pages_i = 5
+
         orders = _collect_fbs_orders_for_supplies(token, max_pages=pages_i, limit=200)
         supplies = _aggregate_fbs_supplies(orders)
         # Enrich supplies with supply info (createdAt, scanDt) and compute status
@@ -2004,7 +2057,6 @@ def api_fbs_supplies():
             scan_dt = info.get("scanDt") if isinstance(info, dict) else None
             # Status per requirement
             if scan_dt:
-                # show "Отгружено" and date/time below on frontend; here store both
                 status_label = "Отгружено"
                 try:
                     _sdt = parse_wb_datetime(str(scan_dt))
@@ -2026,9 +2078,24 @@ def api_fbs_supplies():
                 "status": status_label,
                 "statusDt": status_dt or "",
             })
-        return jsonify({"items": enriched}), 200
+
+        # Save cache with timestamp in Moscow TZ
+        now_msk = datetime.now(MOSCOW_TZ)
+        payload = {
+            "items": enriched,
+            "lastUpdated": now_msk.strftime("%d.%m.%Y %H:%M"),
+            "ts": int(now_msk.timestamp())
+        }
+        save_fbs_supplies_cache(payload)
+
+        # Return sliced view per limit
+        return jsonify({
+            "items": enriched[:limit_i],
+            "lastUpdated": payload["lastUpdated"],
+            "total": len(enriched)
+        }), 200
     except Exception as exc:
-        return jsonify({"items": [], "error": str(exc)}), 200
+        return jsonify({"items": [], "error": str(exc), "lastUpdated": None}), 200
 
 
 @app.route("/api/fbs/supplies/<supply_id>/orders", methods=["GET"]) 
@@ -2699,7 +2766,7 @@ def login():
         if not user.is_active:
             return render_template("login.html", error="Ваша учетная запись заблокирована, обратитесь в техподдержку")
         # Check validity dates
-        today = datetime.utcnow().date()
+        today = datetime.now(MOSCOW_TZ).date()
         if user.valid_from and today < user.valid_from:
             return render_template("login.html", error="Учётная запись ещё не активна")
         if user.valid_to and today > user.valid_to:
@@ -2890,7 +2957,7 @@ def inject_subscription_banner():
     banner = {"show": False}
     try:
         if current_user.is_authenticated and current_user.valid_to:
-            today = datetime.utcnow().date()
+            today = datetime.now(MOSCOW_TZ).date()
             days_left = (current_user.valid_to - today).days
             if 0 <= days_left <= 5:
                 # Check cookie suppressing banner for a day
@@ -2912,7 +2979,24 @@ def inject_subscription_banner():
                     }
     except Exception:
         pass
-    return {"subscription_banner": banner}
+    return {"subscription_banner": banner, "app_version": APP_VERSION}
+
+
+@app.route("/changelog")
+def changelog_page():
+    entries = [
+        {
+            "version": APP_VERSION,
+            "date": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y"),
+            "notes": [
+                "Добавлен кэш и кнопка обновления для блока 'Поставки FBS'",
+                "Кнопка 'Показать ещё' в поставках (пагинация по 5)",
+                "Исправлено отображение времени (московский часовой пояс)",
+                "Меню 'Отчёты' дополнено пунктом 'Остатки на складах'",
+            ],
+        },
+    ]
+    return render_template("changelog.html", app_version=APP_VERSION, entries=entries)
 
 
 if __name__ == "__main__":

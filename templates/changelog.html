@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Обновления и изменения — FuckBerry {{ app_version }}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <h1 class="mb-3" style="font-size:1.7rem;">Обновления и изменения</h1>
+    <div class="mb-3 text-muted">Текущая версия: {{ app_version }}</div>
+
+    {% if entries and entries|length %}
+      <div class="list-group">
+        {% for e in entries %}
+          <div class="list-group-item">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <strong>Версия {{ e.version }}</strong>
+              <span class="text-muted small">{{ e.date }}</span>
+            </div>
+            {% if e.notes %}
+              <ul class="mb-0">
+                {% for n in e.notes %}
+                  <li>{{ n }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <div class="text-muted">Без описания</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="alert alert-secondary">Записей пока нет.</div>
+    {% endif %}
+  </div>
+  {% include '_footer.html' %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+  </html>
+
+

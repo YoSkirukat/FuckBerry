@@ -92,7 +92,7 @@
                 </tr>
               {% endfor %}
               {% if not rows %}
-                <tr><td colspan="7" class="text-muted">Нет данных</td></tr>
+                <tr><td colspan="7" class="text-muted text-center">Нет новых заданий на сборку</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -104,7 +104,13 @@
   <div class="container mt-4">
     <div class="card">
       <div class="card-body">
-        <h6 class="mb-3">Поставки FBS</h6>
+        <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
+          <h6 class="mb-0">Поставки FBS</h6>
+          <div class="d-flex align-items-center gap-2 small text-muted">
+            <span>Обновлено: <span id="suppliesUpdatedAt">—</span></span>
+            <button id="suppliesRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить</button>
+          </div>
+        </div>
         <div class="table-responsive">
           <table class="table table-sm table-striped" id="suppliesTable">
             <thead>
@@ -119,6 +125,9 @@
               <tr><td colspan="4" class="text-muted">Загрузка...</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="text-center mt-2">
+          <button id="suppliesMoreBtn" class="btn btn-outline-secondary btn-sm d-none">Показать ещё</button>
         </div>
       </div>
     </div>
@@ -146,98 +155,138 @@
           previewImg.src = '';
         }
       });
-      // Load supplies table
-      (async function initSupplies(){
-        try{
-          const res = await fetch('/api/fbs/supplies');
-          const data = await res.json();
-          const tbody = document.querySelector('#suppliesTable tbody');
-          tbody.innerHTML = '';
-          (data.items || []).forEach((s, idx) => {
-            const tr = document.createElement('tr');
-            tr.setAttribute('data-supply-id', s.supplyId || '');
-            tr.style.cursor = 'pointer';
-            tr.innerHTML = `<td class=\"text-center\"></td>
-                            <td class=\"text-center\"></td>
-                            <td class=\"text-center\"></td>
-                            <td class=\"text-center\"></td>`;
-            tr.children[0].textContent = (idx + 1).toString();
-            tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
-            tr.children[2].textContent = s.count != null ? s.count : '';
-            const statusCell = tr.children[3];
-            if (s.status === 'Отгружено'){
-              const badge = document.createElement('span');
-              badge.className = 'status-badge status-ok';
-              badge.textContent = 'Отгружено';
-              statusCell.innerHTML = '';
-              statusCell.appendChild(badge);
-              if (s.statusDt){
-                const small = document.createElement('div');
-                small.className = 'supply-date';
-                small.textContent = s.statusDt;
-                statusCell.appendChild(small);
-              }
-            } else {
-              const badge = document.createElement('span');
-              badge.className = 'status-badge status-pending';
-              badge.textContent = s.status || 'Не отгружена';
-              statusCell.innerHTML = '';
-              statusCell.appendChild(badge);
+      // Supplies: cached initial load (limit=5), show more and refresh support
+      let suppliesLimit = 5;
+      let suppliesTotal = 0;
+
+      function setSuppliesLoading(isLoading){
+        const btn = document.getElementById('suppliesRefreshBtn');
+        if (btn){
+          btn.disabled = !!isLoading;
+          btn.textContent = isLoading ? 'Загрузка…' : 'Обновить';
+        }
+      }
+
+      function renderSupplies(data){
+        const tbody = document.querySelector('#suppliesTable tbody');
+        const updatedAtEl = document.getElementById('suppliesUpdatedAt');
+        const moreBtn = document.getElementById('suppliesMoreBtn');
+        tbody.innerHTML = '';
+        suppliesTotal = Number(data.total || (data.items || []).length || 0);
+        if (updatedAtEl){ updatedAtEl.textContent = data.lastUpdated || '—'; }
+        (data.items || []).forEach((s, idx) => {
+          const tr = document.createElement('tr');
+          tr.setAttribute('data-supply-id', s.supplyId || '');
+          tr.style.cursor = 'pointer';
+          tr.innerHTML = `<td class=\"text-center\"></td>
+                          <td class=\"text-center\"></td>
+                          <td class=\"text-center\"></td>
+                          <td class=\"text-center\"></td>`;
+          tr.children[0].textContent = (idx + 1).toString();
+          tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
+          tr.children[2].textContent = s.count != null ? s.count : '';
+          const statusCell = tr.children[3];
+          if (s.status === 'Отгружено'){
+            const badge = document.createElement('span');
+            badge.className = 'status-badge status-ok';
+            badge.textContent = 'Отгружено';
+            statusCell.innerHTML = '';
+            statusCell.appendChild(badge);
+            if (s.statusDt){
+              const small = document.createElement('div');
+              small.className = 'supply-date';
+              small.textContent = s.statusDt;
+              statusCell.appendChild(small);
             }
-            tbody.appendChild(tr);
-            // expandable row placeholder
-            const details = document.createElement('tr');
-            details.className = 'd-none supply-details-row';
-            details.innerHTML = `<td></td><td colspan="3"><div class="py-2" id="details-${s.supplyId}"><div class="text-muted">Загрузка...</div></div></td>`;
-            tbody.appendChild(details);
-            tr.addEventListener('click', async () => {
-              // collapse any other opened details rows
-              document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
-                if (row !== details) row.classList.add('d-none');
-              });
-              // toggle current
-              details.classList.toggle('d-none');
-              const wrap = document.getElementById(`details-${s.supplyId}`);
-              if (!wrap) return;
-              if (wrap.getAttribute('data-loaded') === '1') return;
-              try{
-                const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(s.supplyId)}/orders`);
-                const d = await r.json();
-                const items = d.items || [];
-                if (!items.length){
-                  wrap.innerHTML = '<div class="text-muted">Нет товаров в поставке</div>';
-                } else {
-                  const table = document.createElement('table');
-                  table.className = 'table table-sm mb-0';
-                  table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
-                  const tb = table.querySelector('tbody');
-                  items.forEach(it => {
-                    const tr2 = document.createElement('tr');
-                    const img = it.photo ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">` : '';
-                    tr2.innerHTML = `<td class="text-center">${img}</td><td>${(it.article||'')}</td><td class="text-center">${(it.barcode||'')}</td><td class="text-center">${(it.createdAt||'')}</td>`;
-                    tb.appendChild(tr2);
-                  });
-                  wrap.innerHTML = '';
-                  wrap.appendChild(table);
-                }
-                wrap.setAttribute('data-loaded','1');
-              } catch(e){
-                console.error(e);
-                wrap.innerHTML = '<div class="text-danger">Ошибка загрузки списка товаров</div>';
-              }
-            });
-          });
-          if ((data.items || []).length === 0){
-            tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
+          } else {
+            const badge = document.createElement('span');
+            badge.className = 'status-badge status-pending';
+            badge.textContent = s.status || 'Не отгружена';
+            statusCell.innerHTML = '';
+            statusCell.appendChild(badge);
           }
+          tbody.appendChild(tr);
+          const details = document.createElement('tr');
+          details.className = 'd-none supply-details-row';
+          details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
+          tbody.appendChild(details);
+          tr.addEventListener('click', async () => {
+            document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
+              if (row !== details) row.classList.add('d-none');
+            });
+            details.classList.toggle('d-none');
+            const wrap = document.getElementById(`details-${s.supplyId}`);
+            if (!wrap) return;
+            if (wrap.getAttribute('data-loaded') === '1') return;
+            try{
+              const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(s.supplyId)}/orders`);
+              const d = await r.json();
+              const items = d.items || [];
+              if (!items.length){
+                wrap.innerHTML = '<div class="text-muted">Нет товаров в поставке</div>';
+              } else {
+                const table = document.createElement('table');
+                table.className = 'table table-sm mb-0';
+                table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
+                const tb = table.querySelector('tbody');
+                items.forEach(it => {
+                  const tr2 = document.createElement('tr');
+                  const img = it.photo ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">` : '';
+                  tr2.innerHTML = `<td class="text-center">${img}</td><td>${(it.article||'')}</td><td class="text-center">${(it.barcode||'')}</td><td class="text-center">${(it.createdAt||'')}</td>`;
+                  tb.appendChild(tr2);
+                });
+                wrap.innerHTML = '';
+                wrap.appendChild(table);
+              }
+              wrap.setAttribute('data-loaded','1');
+            } catch(e){
+              console.error(e);
+              wrap.innerHTML = '<div class="text-danger">Ошибка загрузки списка товаров</div>';
+            }
+          });
+        });
+        if ((data.items || []).length === 0){
+          tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
+        }
+        if (moreBtn){
+          if (suppliesLimit < suppliesTotal){
+            moreBtn.classList.remove('d-none');
+          } else {
+            moreBtn.classList.add('d-none');
+          }
+        }
+      }
+
+      async function loadSupplies(opts){
+        const refresh = opts && opts.refresh;
+        try{
+          setSuppliesLoading(true);
+          const res = await fetch(`/api/fbs/supplies?limit=${encodeURIComponent(suppliesLimit)}${refresh ? '&refresh=1' : ''}`);
+          const data = await res.json();
+          renderSupplies(data);
         }catch(e){
           console.error(e);
           const tbody = document.querySelector('#suppliesTable tbody');
           tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Ошибка загрузки</td></tr>';
+        } finally {
+          setSuppliesLoading(false);
         }
-      })();
+      }
+
+      document.getElementById('suppliesRefreshBtn')?.addEventListener('click', function(){
+        suppliesLimit = 5;
+        loadSupplies({refresh: true});
+      });
+      document.getElementById('suppliesMoreBtn')?.addEventListener('click', function(){
+        suppliesLimit += 5;
+        loadSupplies({refresh: false});
+      });
+
+      // initial cached load
+      loadSupplies({refresh: false});
     })();
   </script>
+  {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html> 
