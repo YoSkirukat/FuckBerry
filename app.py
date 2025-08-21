@@ -35,22 +35,40 @@ def _read_version() -> str:
         pass
     return APP_VERSION
 
-def _read_changelog() -> List[Dict[str, Any]]:
+def _read_changelog_md() -> str:
+    """Read Markdown changelog (CHANGELOG.md). If missing, try convert from JSON fallback."""
+    md_path = os.path.join(os.path.dirname(__file__), "CHANGELOG.md")
+    if os.path.isfile(md_path):
+        try:
+            with open(md_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return ""
+    # Fallback: convert from old changelog.json if exists
     try:
-        path = os.path.join(os.path.dirname(__file__), "changelog.json")
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
+        json_path = os.path.join(os.path.dirname(__file__), "changelog.json")
+        if os.path.isfile(json_path):
+            with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    return data
+            if isinstance(data, list) and data:
+                parts: List[str] = [f"# Обновления и изменения\n\nТекущая версия: {_read_version()}\n"]
+                for e in data:
+                    ver = str(e.get("version") or "").strip()
+                    date = str(e.get("date") or "").strip()
+                    parts.append(f"\n## Версия {ver} — {date}\n")
+                    if e.get("html"):
+                        parts.append(e["html"])  # embed existing html as-is
+                        parts.append("\n")
+                    else:
+                        notes = e.get("notes") or []
+                        for n in notes:
+                            parts.append(f"- {n}")
+                        parts.append("\n")
+                return "\n".join(parts)
     except Exception:
         pass
-    # Fallback to current version only
-    return [{
-        "version": _read_version(),
-        "date": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y"),
-        "notes": ["Первоначальная версия"],
-    }]
+    # Default stub
+    return f"# Обновления и изменения\n\nТекущая версия: {_read_version()}\n\n## Версия {_read_version()} — {datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y')}\n- Первоначальная версия\n"
 
 def _write_version(version: str) -> None:
     try:
@@ -60,11 +78,11 @@ def _write_version(version: str) -> None:
     except Exception:
         pass
 
-def _write_changelog(entries: List[Dict[str, Any]]) -> None:
+def _write_changelog_md(content: str) -> None:
     try:
-        path = os.path.join(os.path.dirname(__file__), "changelog.json")
+        path = os.path.join(os.path.dirname(__file__), "CHANGELOG.md")
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(entries, f, ensure_ascii=False, indent=2)
+            f.write(content or "")
     except Exception:
         pass
 
@@ -75,6 +93,58 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
+# --- DB init helpers (portable across common DBs) ---
+def _ensure_schema_users_validity_columns() -> None:
+    try:
+        engine = db.engine
+        dialect = getattr(engine, "name", getattr(engine.dialect, "name", "")) or getattr(engine.dialect, "name", "")
+        # Use transactional context so DDL is committed on PG/MySQL
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                try:
+                    rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                    cols = {r[1] for r in rows}
+                    if "valid_from" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN valid_from DATE"))
+                    if "valid_to" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN valid_to DATE"))
+                except Exception:
+                    pass
+            elif dialect in ("postgresql", "postgres"):
+                # IF NOT EXISTS works on Postgres
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_from DATE"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_to DATE"))
+                except Exception:
+                    pass
+            elif dialect in ("mysql", "mariadb"):
+                # MySQL 8.0+ supports IF NOT EXISTS
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_from DATE"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_to DATE"))
+                except Exception:
+                    pass
+            else:
+                # Best-effort generic
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN valid_from DATE"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN valid_to DATE"))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+# Note: Flask 3.x removed before_first_request. We init DB in __main__ when run as a script.
 
 API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
 SALES_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/sales"
@@ -2875,9 +2945,13 @@ def admin_users_create():
         db.session.add(u)
         db.session.commit()
         flash("Пользователь создан")
-    except Exception:
-        db.session.rollback()
-        flash("Ошибка создания пользователя")
+    except Exception as exc:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        app.logger.exception("admin_users_create failed")
+        flash(f"Ошибка создания пользователя: {exc}")
     return redirect(url_for("admin_users"))
 
 
@@ -2986,9 +3060,13 @@ def admin_users_validity(user_id: int):
             u.valid_to = vt_d
             db.session.commit()
             flash("Срок действия обновлён")
-        except Exception:
-            db.session.rollback()
-            flash("Ошибка обновления срока")
+        except Exception as exc:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            app.logger.exception("admin_users_validity failed")
+            flash(f"Ошибка обновления срока: {exc}")
     return redirect(url_for("admin_users"))
 
 
@@ -3028,8 +3106,8 @@ def inject_subscription_banner():
 
 @app.route("/changelog")
 def changelog_page():
-    entries = _read_changelog()
-    return render_template("changelog.html", app_version=_read_version(), entries=entries)
+    md = _read_changelog_md()
+    return render_template("changelog.html", app_version=_read_version(), md=md)
 
 
 @app.route("/changelog/edit", methods=["GET", "POST"]) 
@@ -3040,72 +3118,49 @@ def changelog_edit():
     error = None
     message = None
     current_version = _read_version()
+    md_content = _read_changelog_md()
     if request.method == "POST":
         try:
             new_version = (request.form.get("version") or "").strip()
-            html_content = request.form.get("html_content")
-            date_str = (request.form.get("date") or "").strip()
-            if html_content is not None:
-                # Add-only flow from WYSIWYG
-                entries = _read_changelog()
-                if not date_str:
-                    date_str = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y")
-                entry = {
-                    "version": new_version or current_version,
-                    "date": date_str,
-                    "html": html_content,
-                }
-                entries = [entry] + (entries or [])
-                _write_changelog(entries)
-                if new_version:
-                    _write_version(new_version)
-                    current_version = new_version
-                message = "Запись добавлена"
-            else:
-                # Fallback: full JSON edit
-                raw_json = request.form.get("entries_json") or ""
-                parsed = json.loads(raw_json) if raw_json else []
-                if not isinstance(parsed, list):
-                    raise ValueError("JSON должен быть массивом записей")
-                if new_version:
-                    _write_version(new_version)
-                    current_version = new_version
-                _write_changelog(parsed)
-                message = "Изменения сохранены"
+            new_md = request.form.get("md_content")
+            if new_md is not None:
+                _write_changelog_md(new_md)
+                md_content = new_md
+            if new_version:
+                _write_version(new_version)
+                current_version = new_version
+            message = "Сохранено"
         except Exception as exc:
             error = f"Ошибка: {exc}"
-    # Pretty JSON for editor
-    pretty = json.dumps(_read_changelog(), ensure_ascii=False, indent=2)
     return render_template(
         "changelog_edit.html",
         app_version=current_version,
-        entries_json=pretty,
+        md_content=md_content,
         default_date=datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y"),
         error=error,
         message=message,
     )
 
 
-if __name__ == "__main__":
-    # Initialize DB on first run and perform simple SQLite migrations
-    def _ensure_sqlite_schema():
-        try:
-            with db.engine.connect() as conn:
-                rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
-                cols = {r[1] for r in rows}
-                if "valid_from" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN valid_from DATE"))
-                if "valid_to" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN valid_to DATE"))
-        except Exception:
-            # Ignore if users table doesn't exist yet; create_all will make it
-            pass
+_DB_INIT_DONE = False
 
-    with app.app_context():
+@app.before_request
+def _init_db_once_per_process():
+    global _DB_INIT_DONE
+    if _DB_INIT_DONE:
+        return
+    try:
         db.create_all()
-        _ensure_sqlite_schema()
-        # Ensure there is at least one admin user (default creds: admin/admin) — change in prod!
+        _ensure_schema_users_validity_columns()
         if not User.query.filter_by(username="admin").first():
             db.session.add(User(username="admin", password="admin", is_admin=True, is_active=True))
             db.session.commit()
-    app.run(host="0.0.0.0", port=5000, debug=True) 
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+    _DB_INIT_DONE = True
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
