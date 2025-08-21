@@ -11,6 +11,11 @@
   <div class="container mt-3">
     <h1 class="mb-3" style="font-size:1.7rem;">Обновления и изменения</h1>
     <div class="mb-3 text-muted">Текущая версия: {{ app_version }}</div>
+    {% if current_user.is_authenticated and current_user.is_admin %}
+      <div class="mb-3">
+        <a class="btn btn-outline-primary btn-sm" href="/changelog/edit">Редактировать</a>
+      </div>
+    {% endif %}
 
     {% if entries and entries|length %}
       <div class="list-group">
@@ -20,7 +25,9 @@
               <strong>Версия {{ e.version }}</strong>
               <span class="text-muted small">{{ e.date }}</span>
             </div>
-            {% if e.notes %}
+            {% if e.html %}
+              <div class="changelog-html">{{ e.html | safe }}</div>
+            {% elif e.notes %}
               <ul class="mb-0">
                 {% for n in e.notes %}
                   <li>{{ n }}</li>

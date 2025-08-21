@@ -1,7 +1,22 @@
-<footer class="mt-5 py-3 border-top">
+<footer class="py-2 border-top bg-light fixed-bottom" id="appFooter">
   <div class="container">
     <div class="text-center text-muted small">2025 | FuckBerry <a href="/changelog">ver. {{ app_version or '1.0.1' }}</a></div>
   </div>
 </footer>
+<script>
+  (function(){
+    try{
+      function adjustPad(){
+        var f = document.getElementById('appFooter');
+        if(!f) return;
+        var h = f.offsetHeight || 0;
+        document.body.style.paddingBottom = (h + 8) + 'px';
+      }
+      window.addEventListener('load', adjustPad);
+      window.addEventListener('resize', adjustPad);
+      adjustPad();
+    }catch(e){}
+  })();
+</script>
 
 

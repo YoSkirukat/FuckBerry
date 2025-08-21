@@ -24,6 +24,50 @@ from flask_login import (
 
 APP_VERSION = "1.0.1"
 
+def _read_version() -> str:
+    try:
+        path = os.path.join(os.path.dirname(__file__), "VERSION")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+                return v or APP_VERSION
+    except Exception:
+        pass
+    return APP_VERSION
+
+def _read_changelog() -> List[Dict[str, Any]]:
+    try:
+        path = os.path.join(os.path.dirname(__file__), "changelog.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception:
+        pass
+    # Fallback to current version only
+    return [{
+        "version": _read_version(),
+        "date": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y"),
+        "notes": ["Первоначальная версия"],
+    }]
+
+def _write_version(version: str) -> None:
+    try:
+        path = os.path.join(os.path.dirname(__file__), "VERSION")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write((version or "").strip() or "0.0.0")
+    except Exception:
+        pass
+
+def _write_changelog(entries: List[Dict[str, Any]]) -> None:
+    try:
+        path = os.path.join(os.path.dirname(__file__), "changelog.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(os.path.dirname(__file__), 'app.db')}")
@@ -2979,24 +3023,67 @@ def inject_subscription_banner():
                     }
     except Exception:
         pass
-    return {"subscription_banner": banner, "app_version": APP_VERSION}
+    return {"subscription_banner": banner, "app_version": _read_version()}
 
 
 @app.route("/changelog")
 def changelog_page():
-    entries = [
-        {
-            "version": APP_VERSION,
-            "date": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y"),
-            "notes": [
-                "Добавлен кэш и кнопка обновления для блока 'Поставки FBS'",
-                "Кнопка 'Показать ещё' в поставках (пагинация по 5)",
-                "Исправлено отображение времени (московский часовой пояс)",
-                "Меню 'Отчёты' дополнено пунктом 'Остатки на складах'",
-            ],
-        },
-    ]
-    return render_template("changelog.html", app_version=APP_VERSION, entries=entries)
+    entries = _read_changelog()
+    return render_template("changelog.html", app_version=_read_version(), entries=entries)
+
+
+@app.route("/changelog/edit", methods=["GET", "POST"]) 
+@login_required
+def changelog_edit():
+    if not current_user.is_admin:
+        return redirect(url_for("changelog_page"))
+    error = None
+    message = None
+    current_version = _read_version()
+    if request.method == "POST":
+        try:
+            new_version = (request.form.get("version") or "").strip()
+            html_content = request.form.get("html_content")
+            date_str = (request.form.get("date") or "").strip()
+            if html_content is not None:
+                # Add-only flow from WYSIWYG
+                entries = _read_changelog()
+                if not date_str:
+                    date_str = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y")
+                entry = {
+                    "version": new_version or current_version,
+                    "date": date_str,
+                    "html": html_content,
+                }
+                entries = [entry] + (entries or [])
+                _write_changelog(entries)
+                if new_version:
+                    _write_version(new_version)
+                    current_version = new_version
+                message = "Запись добавлена"
+            else:
+                # Fallback: full JSON edit
+                raw_json = request.form.get("entries_json") or ""
+                parsed = json.loads(raw_json) if raw_json else []
+                if not isinstance(parsed, list):
+                    raise ValueError("JSON должен быть массивом записей")
+                if new_version:
+                    _write_version(new_version)
+                    current_version = new_version
+                _write_changelog(parsed)
+                message = "Изменения сохранены"
+        except Exception as exc:
+            error = f"Ошибка: {exc}"
+    # Pretty JSON for editor
+    pretty = json.dumps(_read_changelog(), ensure_ascii=False, indent=2)
+    return render_template(
+        "changelog_edit.html",
+        app_version=current_version,
+        entries_json=pretty,
+        default_date=datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y"),
+        error=error,
+        message=message,
+    )
 
 
 if __name__ == "__main__":
