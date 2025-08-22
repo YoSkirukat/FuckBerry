@@ -166,7 +166,7 @@
             </table>
           </div>
           <div class="mt-2 text-center">
-            <a href="/report/sales" class="btn btn-outline-primary btn-sm">Открыть полный отчёт</a>
+            <a id="openFullReport" href="/report/sales" class="btn btn-outline-primary btn-sm">Открыть полный отчёт</a>
           </div>
         </div></div>
       </div>
@@ -186,6 +186,7 @@
     const durationEl = document.getElementById('ordersDuration');
     const cbOrders = document.getElementById('includeOrders');
     const cbSales = document.getElementById('includeSales');
+    const openFullBtn = document.getElementById('openFullReport');
 
     function updateSubmitEnabled() {
       const enabled = (cbOrders?.checked || cbSales?.checked);
@@ -348,6 +349,13 @@
         const modeLabel = (data.top_mode === 'sales') ? 'по продажам' : 'по заказам';
         const tTop = document.getElementById('titleTop'); if (tTop) tTop.textContent = `ТОП товаров ${modeLabel} с ${dfmt} по ${dtmt}`;
         const tTopPivot = document.getElementById('titleTopPivot'); if (tTopPivot) tTopPivot.textContent = `Сводная таблица: ТОП товаров ${modeLabel} с ${dfmt} по ${dtmt}`;
+        // Update link to full report
+        if (openFullBtn){
+          const url = new URL('/report/sales', window.location.origin);
+          url.searchParams.set('date_from', dFrom);
+          url.searchParams.set('date_to', dTo);
+          openFullBtn.href = url.pathname + '?' + url.searchParams.toString();
+        }
         // Charts
         if (Array.isArray(data.daily_labels) && data.daily_labels.length) {
           initCharts(data.daily_labels, data.daily_orders_counts, data.daily_sales_counts, data.daily_orders_revenue, data.daily_sales_revenue);

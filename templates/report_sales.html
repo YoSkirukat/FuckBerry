@@ -102,7 +102,7 @@
     bindDateOpener('rDateFromWrap','rDateFrom');
     bindDateOpener('rDateToWrap','rDateTo');
 
-    let reportMatrix = null; // cached matrix for client-side filtering
+    let reportMatrix = {{ (matrix or []) | tojson | safe }}; // cached matrix for client-side filtering (server-side if уже есть)
     async function reloadReport(){
       const form = document.querySelector('form[action="/report/sales"]');
       const btn = document.getElementById('reportLoadBtn');
@@ -115,7 +115,7 @@
         params.set('warehouse', '');
         const res = await fetch(`/api/report/sales?${params.toString()}`);
         const data = await res.json();
-        reportMatrix = data.matrix || null;
+        reportMatrix = data.matrix || reportMatrix || null;
         const tbody = document.getElementById('reportBody');
         tbody.innerHTML = '';
         (data.items || []).forEach((it, idx) => {
@@ -184,6 +184,12 @@
         if (totalEl) totalEl.textContent = (totalQty || 0).toLocaleString('ru-RU');
       });
     }
+    // Автозагрузка данных при наличии дат: только если матрица не пришла с сервера
+    (function autoRun(){
+      const df = document.getElementById('rDateFrom')?.value;
+      const dt = document.getElementById('rDateTo')?.value;
+      if (df && dt && !reportMatrix){ reloadReport(); }
+    })();
   </script>
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>

@@ -387,6 +387,34 @@ def save_fbs_supplies_cache(payload: Dict[str, Any]) -> None:
         pass
 
 
+def _fbs_tasks_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"fbs_tasks_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "fbs_tasks_anon.json")
+
+
+def load_fbs_tasks_cache() -> Dict[str, Any] | None:
+    path = _fbs_tasks_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_fbs_tasks_cache(payload: Dict[str, Any]) -> None:
+    path = _fbs_tasks_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
 def load_last_results() -> Dict[str, Any] | None:
     path = _cache_path_for_user()
     if not os.path.isfile(path):
@@ -1710,17 +1738,33 @@ def report_sales_page():
     warehouse = request.args.get("warehouse") or None
 
     if req_from and req_to and token:
-        # Fetch fresh orders for requested period
-        try:
-            raw_orders = fetch_orders_range(token, req_from, req_to)
-            orders = to_rows(raw_orders, req_from, req_to)
-            date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
-            date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
-        except Exception as exc:
-            # Fallback to cache on error
-            orders = (cached or {}).get("orders", [])
-            date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
-            date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
+        # Prefer cache if it matches the requested period and belongs to the user
+        if (
+            cached
+            and current_user.is_authenticated
+            and cached.get("_user_id") == current_user.id
+            and cached.get("date_from") == req_from
+            and cached.get("date_to") == req_to
+        ):
+            orders = cached.get("orders", [])
+            try:
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            except Exception:
+                date_from_fmt = cached.get("date_from_fmt") or req_from
+                date_to_fmt = cached.get("date_to_fmt") or req_to
+        else:
+            # Fetch fresh orders only if cache doesn't match
+            try:
+                raw_orders = fetch_orders_range(token, req_from, req_to)
+                orders = to_rows(raw_orders, req_from, req_to)
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            except Exception as exc:
+                # Fallback to cache on error
+                orders = (cached or {}).get("orders", [])
+                date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
+                date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
     else:
         # Без явного периода не подставляем кэш — страница остаётся пустой
         orders = []
@@ -1728,10 +1772,28 @@ def report_sales_page():
         date_to_fmt = ""
 
     warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
-    try:
-        items = aggregate_top_products_orders(orders, warehouse, limit=1_000_000) if orders else []
-    except Exception:
-        items = []
+    # Build matrix for client-side filtering (same as API)
+    counts_total: Dict[str, int] = defaultdict(int)
+    by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    nm_by_product: Dict[str, Any] = {}
+    for r in (orders or []):
+        prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
+        wh = str(r.get("Склад отгрузки") or "Не указан")
+        counts_total[prod] += 1
+        by_wh[prod][wh] += 1
+        nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        if prod not in nm_by_product and nmv:
+            nm_by_product[prod] = nmv
+    def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
+        items_local: List[Dict[str, Any]] = []
+        for prod, total in counts_total.items():
+            qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
+            if qty > 0:
+                items_local.append({"product": prod, "qty": qty, "nm_id": nm_by_product.get(prod)})
+        items_local.sort(key=lambda x: x["qty"], reverse=True)
+        return items_local
+    items = _build_items(warehouse) if orders else []
+    matrix = [{"product": p, "nm_id": nm_by_product.get(p), "total": counts_total[p], "by_wh": by_wh[p]} for p in counts_total.keys()] if orders else []
     return render_template(
         "report_sales.html",
         error=None,
@@ -1742,6 +1804,7 @@ def report_sales_page():
         warehouses=warehouses,
         date_from_val=(request.args.get("date_from") or ""),
         date_to_val=(request.args.get("date_to") or ""),
+        matrix=matrix,
     )
 
 
@@ -1755,10 +1818,21 @@ def api_report_sales():
     warehouse = (request.args.get("warehouse") or "").strip() or None
     try:
         if req_from and req_to and token:
-            raw_orders = fetch_orders_range(token, req_from, req_to)
-            orders = to_rows(raw_orders, req_from, req_to)
-            date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
-            date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            if (
+                cached
+                and current_user.is_authenticated
+                and cached.get("_user_id") == current_user.id
+                and cached.get("date_from") == req_from
+                and cached.get("date_to") == req_to
+            ):
+                orders = cached.get("orders", [])
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            else:
+                raw_orders = fetch_orders_range(token, req_from, req_to)
+                orders = to_rows(raw_orders, req_from, req_to)
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
         else:
             orders = (cached or {}).get("orders", [])
             date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
@@ -1805,55 +1879,13 @@ def fbs_page():
     error = None
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     rows: List[Dict[str, Any]] = []
+    # Load cached tasks to show immediately
+    cached_tasks = load_fbs_tasks_cache() or {}
+    cached_rows = cached_tasks.get("rows") or []
+    rows = cached_rows
 
     if request.method == "POST":
-        if not token:
-            error = "Укажите токен API на странице Настройки"
-        else:
-            try:
-                raw = fetch_fbs_new_orders(token)
-                # sort by createdAt asc (oldest first)
-                raw_sorted = sorted(raw, key=_extract_created_at)
-                rows = to_fbs_rows(raw_sorted)
-                # Try enrich from products cache
-                prod_cached = load_products_cache()
-                items = (prod_cached or {}).get("items") or []
-                # Build index by supplier_article and by nm_id
-                by_article = {}
-                by_nm = {}
-                for it in items:
-                    art = (it.get("supplier_article") or it.get("vendorCode") or "").strip()
-                    if art:
-                        by_article.setdefault(art, it)
-                    nm = it.get("nm_id") or it.get("nmID")
-                    if nm:
-                        by_nm[int(nm)] = it
-                # Enrich
-                for r in rows:
-                    art = (r.get("Наименование товара") or "").strip()
-                    hit = by_article.get(art)
-                    if not hit and r.get("nm_id"):
-                        hit = by_nm.get(int(r["nm_id"]))
-                    if hit:
-                        # barcode normalization
-                        if hit.get("barcode"):
-                            r["barcode"] = hit.get("barcode")
-                        elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
-                            r["barcode"] = str(hit.get("barcodes")[0])
-                        else:
-                            # Try sizes -> skus
-                            sizes = hit.get("sizes") or []
-                            if isinstance(sizes, list):
-                                for s in sizes:
-                                    bar_list = s.get("skus") or s.get("barcodes")
-                                    if isinstance(bar_list, list) and bar_list:
-                                        r["barcode"] = str(bar_list[0])
-                                        break
-                        r["photo"] = hit.get("photo")
-            except requests.HTTPError as http_err:
-                error = f"Ошибка API: {http_err.response.status_code}"
-            except Exception as exc:  # noqa: BLE001
-                error = f"Ошибка: {exc}"
+        pass  # Раньше была ручная проверка; теперь обновляем через JS-кнопку в блоке
 
     # If enrichment impossible due to empty products cache
     products_hint = None
@@ -1949,6 +1981,64 @@ def fbs_export():
         return (f"Ошибка: {exc}", 500)
 
 
+@app.route("/api/fbs/tasks", methods=["GET"]) 
+@login_required
+def api_fbs_tasks():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    refresh = request.args.get("refresh") in ("1", "true", "True")
+    if not token and refresh:
+        return jsonify({"items": [], "updated_at": None})
+    try:
+        if not refresh:
+            cached = load_fbs_tasks_cache() or {}
+            if cached.get("rows"):
+                return jsonify({"items": cached.get("rows"), "updated_at": cached.get("updated_at")})
+        # Fetch fresh
+        raw = fetch_fbs_new_orders(token)
+        raw_sorted = sorted(raw, key=_extract_created_at)
+        rows = to_fbs_rows(raw_sorted)
+        # Enrich from products cache
+        prod_cached = load_products_cache() or {}
+        items = (prod_cached.get("items") or [])
+        by_article: Dict[str, Dict[str, Any]] = {}
+        by_nm: Dict[int, Dict[str, Any]] = {}
+        for it in items:
+            art = (it.get("supplier_article") or it.get("vendorCode") or "").strip()
+            if art:
+                by_article.setdefault(art, it)
+            nm = it.get("nm_id") or it.get("nmID")
+            if nm:
+                try:
+                    by_nm[int(nm)] = it
+                except Exception:
+                    pass
+        for r in rows:
+            art = (r.get("Наименование товара") or "").strip()
+            hit = by_article.get(art)
+            if not hit and r.get("nm_id"):
+                try:
+                    hit = by_nm.get(int(r["nm_id"]))
+                except Exception:
+                    hit = None
+            if hit:
+                if hit.get("barcode"):
+                    r["barcode"] = hit.get("barcode")
+                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                    r["barcode"] = str(hit.get("barcodes")[0])
+                else:
+                    sizes = hit.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bar_list = s.get("skus") or s.get("barcodes")
+                            if isinstance(bar_list, list) and bar_list:
+                                r["barcode"] = str(bar_list[0])
+                                break
+                r["photo"] = hit.get("photo")
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        save_fbs_tasks_cache({"rows": rows, "updated_at": now_str})
+        return jsonify({"items": rows, "updated_at": now_str})
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
 @app.route("/api/fbs/orders/load-more", methods=["POST"]) 
 @login_required
 def api_fbs_orders_load_more():

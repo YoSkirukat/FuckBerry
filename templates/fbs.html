@@ -33,7 +33,7 @@
   {% include '_navbar.html' %}
 
   <div class="container mt-3">
-    <h1 class="mb-4">Маркетплейс FBS: новые задания на сборку</h1>
+    <h1 class="mb-4">Маркетплейс FBS</h1>
 
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
@@ -42,18 +42,17 @@
       <div class="alert alert-warning">{{ products_hint }}</div>
     {% endif %}
 
-    <div class="d-flex gap-2 mb-3 flex-wrap">
-      <form method="post" action="/fbs">
-        <button class="btn btn-primary" type="submit">Проверить задания на сборку</button>
-      </form>
-      <form method="post" action="/fbs/export">
-        <button class="btn btn-success" type="submit">Сохранить в Excel</button>
-      </form>
-    </div>
+    <div class="d-flex gap-2 mb-3 flex-wrap"></div>
 
     <div class="card">
       <div class="card-body">
-        <h6 class="mb-3">Результаты</h6>
+        <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+          <h6 class="mb-0">Задания на сборку</h6>
+          <div class="d-flex align-items-center gap-2 small text-muted">
+            <span>Обновлено: <span id="tasksUpdatedAt">—</span></span>
+            <button id="tasksRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить</button>
+          </div>
+        </div>
         <div class="table-responsive">
           <table class="table table-sm table-striped">
             <thead>
@@ -67,7 +66,7 @@
                 <th class="text-center">Баркод</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="tasksBody">
               {% for r in rows %}
                 <tr>
                   <td class="text-center">{{ loop.index }}</td>
@@ -96,6 +95,9 @@
               {% endif %}
             </tbody>
           </table>
+          <form method="post" action="/fbs/export" class="mt-2">
+            <button class="btn btn-success btn-sm" type="submit">Сохранить в Excel</button>
+          </form>
         </div>
       </div>
     </div>
@@ -284,6 +286,41 @@
 
       // initial cached load
       loadSupplies({refresh: false});
+
+      // Tasks block logic
+      const tasksBtn = document.getElementById('tasksRefreshBtn');
+      const tasksTime = document.getElementById('tasksUpdatedAt');
+      async function loadTasks(refresh){
+        try{
+          if (tasksBtn){ tasksBtn.disabled = true; tasksBtn.textContent = 'Загрузка...'; }
+          const res = await fetch('/api/fbs/tasks' + (refresh ? '?refresh=1' : ''));
+          const data = await res.json();
+          const tbody = document.getElementById('tasksBody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (data.items || []).forEach((r, idx) => {
+            const tr = document.createElement('tr');
+            const parts = String(r['Номер и дата задания']||'').split(' | ');
+            const num = parts[0]||''; const dt = parts[1]||'';
+            tr.innerHTML = `<td class=\"text-center\">${idx+1}</td>
+              <td><div>${num}</div>${dt?`<div class='text-muted' style='font-size:0.68rem;'>${dt}</div>`:''}</td>
+              <td class=\"text-center\">${r.photo ? `<img src='${r.photo}' class='product-thumb' style='width:31px;height:42px;object-fit:cover;'>` : '—'}</td>
+              <td>${r['Наименование товара']||''}</td>
+              <td class=\"text-center\">${(r['Цена']!=null ? r['Цена'] : r['Стоимость товара'])||''}</td>
+              <td>${r['Склад']||''}</td>
+              <td>${r.barcode || '—'}</td>`;
+            tbody.appendChild(tr);
+          });
+          if (tasksTime) tasksTime.textContent = data.updated_at || '—';
+          if (!((data.items||[]).length)){
+            tbody.innerHTML = '<tr><td colspan="7" class="text-muted text-center">Нет новых заданий на сборку</td></tr>';
+          }
+        }catch(e){ console.error(e); }
+        finally{ if (tasksBtn){ tasksBtn.disabled=false; tasksBtn.textContent='Обновить'; } }
+      }
+      tasksBtn?.addEventListener('click', ()=> loadTasks(true));
+      // initial cached
+      loadTasks(false);
     })();
   </script>
   {% include '_footer.html' %}
