@@ -162,6 +162,11 @@ FBS_SUPPLY_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
 ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
+# FBW supplies API
+FBW_SUPPLIES_LIST_URL = "https://supplies-api.wildberries.ru/api/v1/supplies"
+FBW_SUPPLY_DETAILS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}"
+FBW_SUPPLY_GOODS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/goods"
+FBW_SUPPLY_PACKAGE_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/package"
 # Wildberries Content API: cards list
 WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 STOCKS_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
@@ -195,6 +200,186 @@ def format_int_thousands(value: Any) -> str:
         return f"{int(value):,}".replace(",", " ")
     except Exception:
         return str(value)
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        # Support trailing 'Z'
+        s = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except Exception:
+        try:
+            # Fallback common formats
+            return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z")
+        except Exception:
+            try:
+                return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+            except Exception:
+                return None
+
+
+def _fmt_dt_moscow(value: str | None, with_time: bool = True) -> str:
+    dt = _parse_iso_datetime(value)
+    if not dt:
+        return ""
+    msk = to_moscow(dt) or dt
+    return msk.strftime("%d.%m.%Y %H:%M") if with_time else msk.strftime("%d.%m.%Y")
+
+
+def fetch_fbw_supplies_list(token: str, days_back: int = 90) -> list[dict[str, Any]]:
+    if not token:
+        return []
+    date_to = datetime.now(MOSCOW_TZ).date()
+    date_from = date_to - timedelta(days=days_back)
+    # Some WB endpoints treat 'till' as exclusive. Add +1 day to include entire current day.
+    date_till = date_to + timedelta(days=1)
+    body = {
+        "dates": [
+            {
+                "from": date_from.strftime("%Y-%m-%d"),
+                "till": date_till.strftime("%Y-%m-%d"),
+                "type": "createDate",
+            }
+        ]
+        # statusIDs optional; omit to include all
+    }
+    # Try Bearer first
+    headers1 = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = post_with_retry(FBW_SUPPLIES_LIST_URL, headers1, body)
+        items = resp.json() or []
+    except Exception:
+        headers2 = {"Authorization": f"{token}"}
+        resp = post_with_retry(FBW_SUPPLIES_LIST_URL, headers2, body)
+        items = resp.json() or []
+    # Sort by createDate desc
+    def _key(it: dict[str, Any]):
+        return _parse_iso_datetime(str(it.get("createDate") or "")) or datetime.min.replace(tzinfo=MOSCOW_TZ)
+    items.sort(key=_key, reverse=True)
+    return items
+
+
+def fetch_fbw_supply_details(token: str, supply_id: int | str) -> dict[str, Any] | None:
+    if not token or not supply_id:
+        return None
+    url = FBW_SUPPLY_DETAILS_URL.format(id=supply_id)
+    headers1 = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(url, headers1, params={})
+        return resp.json()
+    except Exception:
+        headers2 = {"Authorization": f"{token}"}
+        try:
+            resp = get_with_retry(url, headers2, params={})
+            return resp.json()
+        except Exception:
+            return None
+
+
+def fetch_fbw_supply_goods(token: str, supply_id: int | str, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+    if not token or not supply_id:
+        return []
+    url = FBW_SUPPLY_GOODS_URL.format(id=supply_id)
+    headers1 = {"Authorization": f"Bearer {token}"}
+    params = {"limit": limit, "offset": offset}
+    try:
+        resp = get_with_retry(url, headers1, params=params)
+        return resp.json() or []
+    except Exception:
+        headers2 = {"Authorization": f"{token}"}
+        try:
+            resp = get_with_retry(url, headers2, params=params)
+            return resp.json() or []
+        except Exception:
+            return []
+
+
+def fetch_fbw_supply_packages(token: str, supply_id: int | str) -> list[dict[str, Any]]:
+    if not token or not supply_id:
+        return []
+    url = FBW_SUPPLY_PACKAGE_URL.format(id=supply_id)
+    headers1 = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(url, headers1, params={})
+        return resp.json() or []
+    except Exception:
+        headers2 = {"Authorization": f"{token}"}
+        try:
+            resp = get_with_retry(url, headers2, params={})
+            return resp.json() or []
+        except Exception:
+            return []
+
+
+def fetch_fbw_last_supplies(token: str, limit: int = 10) -> list[dict[str, Any]]:
+    base_list = fetch_fbw_supplies_list(token)
+    supplies: list[dict[str, Any]] = []
+    for it in base_list[: max(0, int(limit))]:
+        supply_id = it.get("supplyID") or it.get("supplyId") or it.get("id")
+        details = fetch_fbw_supply_details(token, supply_id)
+        # Normalize fields; prefer details when available, fallback to list fields
+        create_date = (details or {}).get("createDate") or it.get("createDate")
+        supply_date = (details or {}).get("supplyDate") or it.get("supplyDate")
+        fact_date = (details or {}).get("factDate") or it.get("factDate")
+        status_name = (details or {}).get("statusName") or it.get("statusName")
+        warehouse_name = (details or {}).get("warehouseName") or it.get("warehouseName") or ""
+        box_type = (details or {}).get("boxTypeName") or (details or {}).get("boxTypeID") or ""
+        total_qty = (details or {}).get("quantity")
+        acceptance_cost = (details or {}).get("acceptanceCost")
+        paid_coef = (details or {}).get("paidAcceptanceCoefficient")
+        supplies.append(
+            {
+                "supply_id": str(supply_id or ""),
+                "type": str(box_type) if box_type is not None else "",
+                "created_at": _fmt_dt_moscow(create_date, with_time=False),
+                "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
+                "warehouse": warehouse_name or "",
+                "acceptance_coefficient": paid_coef,
+                "acceptance_cost": acceptance_cost,
+                "planned_date": _fmt_dt_moscow(supply_date, with_time=False),
+                "fact_date": _fmt_dt_moscow(fact_date, with_time=True),
+                "status": status_name or "",
+            }
+        )
+    return supplies
+
+
+def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[str, Any]]:
+    base_list = fetch_fbw_supplies_list(token)
+    if offset < 0:
+        offset = 0
+    end = offset + max(0, int(limit))
+    slice_ids = base_list[offset:end]
+    supplies: list[dict[str, Any]] = []
+    for it in slice_ids:
+        supply_id = it.get("supplyID") or it.get("supplyId") or it.get("id")
+        details = fetch_fbw_supply_details(token, supply_id)
+        create_date = (details or {}).get("createDate") or it.get("createDate")
+        supply_date = (details or {}).get("supplyDate") or it.get("supplyDate")
+        fact_date = (details or {}).get("factDate") or it.get("factDate")
+        status_name = (details or {}).get("statusName") or it.get("statusName")
+        warehouse_name = (details or {}).get("warehouseName") or it.get("warehouseName") or ""
+        box_type = (details or {}).get("boxTypeName") or (details or {}).get("boxTypeID") or ""
+        total_qty = (details or {}).get("quantity")
+        acceptance_cost = (details or {}).get("acceptanceCost")
+        paid_coef = (details or {}).get("paidAcceptanceCoefficient")
+        supplies.append(
+            {
+                "supply_id": str(supply_id or ""),
+                "type": str(box_type) if box_type is not None else "",
+                "created_at": _fmt_dt_moscow(create_date, with_time=False),
+                "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
+                "warehouse": warehouse_name or "",
+                "acceptance_coefficient": paid_coef,
+                "acceptance_cost": acceptance_cost,
+                "planned_date": _fmt_dt_moscow(supply_date, with_time=False),
+                "fact_date": _fmt_dt_moscow(fact_date, with_time=True),
+                "status": status_name or "",
+            }
+        )
+    return supplies
 
 
 def format_money_ru(value: Any) -> str:
@@ -377,6 +562,36 @@ def load_fbs_supplies_cache() -> Dict[str, Any] | None:
 
 def save_fbs_supplies_cache(payload: Dict[str, Any]) -> None:
     path = _fbs_supplies_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+# FBW supplies cache helpers (per user)
+def _fbw_supplies_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"fbw_supplies_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "fbw_supplies_anon.json")
+
+
+def load_fbw_supplies_cache() -> Dict[str, Any] | None:
+    path = _fbw_supplies_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_fbw_supplies_cache(payload: Dict[str, Any]) -> None:
+    path = _fbw_supplies_cache_path_for_user()
     try:
         enriched = dict(payload)
         if current_user.is_authenticated:
@@ -1438,6 +1653,91 @@ def index():
         include_sales=include_sales,
         top_mode=top_mode,
     )
+
+
+@app.route("/fbw", methods=["GET"]) 
+@login_required
+def fbw_supplies_page():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    error = None
+    supplies: list[dict[str, Any]] = []
+    generated_at = ""
+    # Load from cache first; only refresh by button
+    cached = load_fbw_supplies_cache() or {}
+    if cached and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None):
+        supplies = cached.get("items", [])
+        generated_at = cached.get("updated_at", "")
+    if not supplies:
+        if token:
+            try:
+                # On first ever load: fetch only first 10 and cache them
+                supplies = fetch_fbw_last_supplies(token, limit=10)
+                generated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+                save_fbw_supplies_cache({"items": supplies, "updated_at": generated_at, "next_offset": 10})
+            except requests.HTTPError as http_err:
+                error = f"Ошибка API: {http_err.response.status_code}"
+            except Exception as exc:  # noqa: BLE001
+                error = f"Ошибка: {exc}"
+        else:
+            error = "Укажите API токен в профиле"
+
+    return render_template(
+        "fbw_supplies.html",
+        error=error,
+        supplies=supplies,
+        generated_at=generated_at,
+    )
+
+
+@app.route("/api/fbw/supplies", methods=["GET"]) 
+@login_required
+def api_fbw_supplies():
+    # If cached=1, return cached items only (no API calls)
+    if request.args.get("cached"):
+        cached = load_fbw_supplies_cache() or {}
+        items = cached.get("items") or []
+        updated_at = cached.get("updated_at", "")
+        return jsonify({"items": items, "updated_at": updated_at})
+
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        # Refresh from WB: fetch only first 10 or a subsequent page for load-more
+        offset = int(request.args.get("offset", "0"))
+        limit = int(request.args.get("limit", "10"))
+        if offset <= 0:
+            items = fetch_fbw_last_supplies(token, limit=limit)
+            next_offset = limit
+        else:
+            # Always derive items from the same globally sorted list to avoid gaps
+            items = fetch_fbw_supplies_range(token, offset=offset, limit=limit)
+            next_offset = offset + limit
+        updated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+        if offset <= 0:
+            save_fbw_supplies_cache({"items": items, "updated_at": updated_at, "next_offset": next_offset})
+        return jsonify({"items": items, "updated_at": updated_at, "next_offset": next_offset})
+    except requests.HTTPError as http_err:
+        return jsonify({"error": f"api_{http_err.response.status_code}"}), http_err.response.status_code
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/fbw/supplies/<supply_id>/details", methods=["GET"]) 
+@login_required
+def api_fbw_supply_details(supply_id: str):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        details = fetch_fbw_supply_details(token, supply_id) or {}
+        goods = fetch_fbw_supply_goods(token, supply_id, limit=200, offset=0)
+        packages = fetch_fbw_supply_packages(token, supply_id)
+        return jsonify({"details": details, "goods": goods, "packages": packages})
+    except requests.HTTPError as http_err:
+        return jsonify({"error": f"api_{http_err.response_status}"}), 500
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/orders-refresh", methods=["POST"]) 

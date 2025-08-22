@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Поставки FBW — WB Dashboard</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <style>
+    h1 { font-size: 1.7rem; }
+    .table-sm td, .table-sm th { font-size: 0.9rem; }
+    th, td { vertical-align: middle; }
+    .text-badge {
+      display: inline-block;
+      padding: 0.15rem 0.35rem;
+      border-radius: 0.25rem;
+      white-space: nowrap;
+    }
+    .supply-row { cursor: pointer; }
+    .package-toggle { cursor: pointer; }
+    .pkg-arrow { display: inline-block; width: 1rem; text-align: center; }
+    .status-accepted { color: #14532d; background: #d1fae5; font-size: 11px; font-weight: bold; }
+    .status-allowed { color: #0c4a6e; background: #e0f2fe; font-size: 11px; font-weight: bold; }
+    .text-free { color: #14532d; font-weight: 600; }
+  </style>
+  <script>
+    // no dynamic scripts yet; static render of last 10 supplies
+  </script>
+</head>
+<body>
+  {% include '_navbar.html' %}
+
+  <div class="container mt-3">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h1 class="mb-0">Поставки FBW</h1>
+      <div class="d-flex align-items-center gap-3">
+        <div class="text-muted">Обновлено: <span id="lastUpdated">{{ generated_at }}</span></div>
+        <button id="refreshBtn" class="btn btn-outline-primary btn-sm" type="button">Обновить</button>
+      </div>
+    </div>
+
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered align-middle" id="supTable">
+            <thead class="table-light text-center">
+              <tr>
+                <th>#</th>
+                <th>Номер поставки</th>
+                <th>Тип поставки</th>
+                <th>Дата создания</th>
+                <th>Всего товаров</th>
+                <th class="text-start">Склад</th>
+                <th>Коэфициент приёмки</th>
+                <th class="text-start">Стоимость приёмки</th>
+                <th>Плановая дата</th>
+                <th>Фактическая дата</th>
+                <th class="text-nowrap">Статус</th>
+              </tr>
+            </thead>
+            <tbody id="supBody">
+              {% for s in supplies %}
+              <tr class="supply-row" data-supply-id="{{ s.supply_id }}">
+                <td class="text-center">{{ loop.index }}</td>
+                <td class="text-center fw-semibold">{{ s.supply_id }}</td>
+                <td class="text-center text-nowrap">{{ s.type }}</td>
+                <td class="text-center text-nowrap">{{ s.created_at }}</td>
+                <td class="text-center">{{ s.total_goods if s.total_goods is not none else '-' }}</td>
+                <td class="text-start">{{ s.warehouse }}</td>
+                <td class="text-center">
+                  {% if s.acceptance_coefficient is not none %}
+                    {% if s.acceptance_coefficient == 0 %}
+                      <span class="text-free">Бесплатно</span>
+                    {% else %}
+                      x{{ s.acceptance_coefficient }}
+                    {% endif %}
+                  {% else %}-{% endif %}
+                </td>
+                <td class="text-start">
+                  {% if s.acceptance_cost is not none %}{{ s.acceptance_cost }} ₽{% else %}-{% endif %}
+                </td>
+                <td class="text-center text-nowrap">{{ s.planned_date }}</td>
+                <td class="text-center text-nowrap">{{ s.fact_date.split(' ')|first if s.fact_date else '' }}</td>
+                <td class="text-center">
+                  {% set st = s.status or '' %}
+                  {% set cls = '' %}
+                  {% if 'Принято' in st %}{% set cls = 'status-accepted' %}{% endif %}
+                  {% if 'Отгрузка разрешена' in st %}{% set cls = 'status-allowed' %}{% endif %}
+                  <span class="text-badge {{ cls }}">{{ st }}</span>
+                </td>
+              </tr>
+              <tr class="supply-details" data-for="{{ s.supply_id }}" style="display:none;">
+                <td colspan="11">
+                  <div class="p-2 bg-light border rounded">
+                    <div class="supply-summary small text-muted mb-2" data-for="{{ s.supply_id }}"></div>
+                    <div class="fw-semibold mb-2">Упаковки</div>
+                    <div class="packages" data-for="{{ s.supply_id }}">Загрузка...</div>
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if not supplies %}
+              <tr><td colspan="11" class="text-center text-muted">Нет данных</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+        <div class="d-flex justify-content-center mt-3">
+          <button id="loadMoreBtn" class="btn btn-outline-secondary btn-sm">Загрузить ещё</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include '_footer.html' %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Docs reference: https://dev.wildberries.ru/openapi/orders-fbw#tag/Informaciya-o-postavkah/paths/~1api~1v1~1supplies/post -->
+</body>
+<script>
+// Источник API: https://dev.wildberries.ru/openapi/orders-fbw#tag/Informaciya-o-postavkah/paths/~1api~1v1~1supplies/post
+let supAll = [];
+let rendered = 0;
+
+function statusClass(st){
+  if(!st) return '';
+  if(st.includes('Принято')) return 'status-accepted';
+  if(st.includes('Отгрузка разрешена')) return 'status-allowed';
+  return '';
+}
+
+function onlyDate(s){
+  if(!s) return '';
+  return s.split(' ')[0] || s;
+}
+
+function renderChunk(count){
+  const tbody = document.getElementById('supBody');
+  const next = Math.min(rendered + count, supAll.length);
+  for(let i=rendered;i<next;i++){
+    const s = supAll[i];
+    const coefVal = s.acceptance_coefficient;
+    let coefHtml = '-';
+    if(coefVal !== undefined && coefVal !== null && String(coefVal).trim() !== ''){
+      const num = Number(coefVal);
+      if(!isNaN(num)){
+        coefHtml = num === 0 ? '<span class="text-free">Бесплатно</span>' : ('x' + num);
+      } else {
+        // already formatted text like 'Бесплатно' or 'x4'
+        coefHtml = String(coefVal);
+      }
+    }
+    const costVal = s.acceptance_cost;
+    let costText = '-';
+    if(costVal !== undefined && costVal !== null && String(costVal).trim() !== ''){
+      const txt = String(costVal);
+      costText = txt.includes('₽') ? txt : (txt + ' ₽');
+    }
+    const tr = document.createElement('tr');
+    tr.className = 'supply-row';
+    tr.setAttribute('data-supply-id', s.supply_id||'');
+    tr.innerHTML = `
+      <td class="text-center">${i+1}</td>
+      <td class="text-center fw-semibold">${s.supply_id||''}</td>
+      <td class="text-center text-nowrap">${s.type||''}</td>
+      <td class="text-center text-nowrap">${s.created_at||''}</td>
+      <td class="text-center">${(s.total_goods ?? '-') }</td>
+      <td class="text-start">${s.warehouse||''}</td>
+      <td class="text-center">${coefHtml}</td>
+      <td class="text-start">${costText}</td>
+      <td class="text-center text-nowrap">${s.planned_date||''}</td>
+      <td class="text-center text-nowrap">${onlyDate(s.fact_date)}</td>
+      <td class="text-center"><span class="text-badge ${statusClass(s.status)}">${s.status||''}</span></td>
+    `;
+    tbody.appendChild(tr);
+    // details row skeleton
+    const dtr = document.createElement('tr');
+    dtr.className = 'supply-details';
+    dtr.setAttribute('data-for', s.supply_id||'');
+    dtr.style.display = 'none';
+    dtr.innerHTML = `
+      <td colspan="11">
+        <div class="p-2 bg-light border rounded">
+          <div class="supply-summary small text-muted mb-2" data-for="${s.supply_id||''}"></div>
+          <div class="fw-semibold mb-2">Упаковки</div>
+          <div class="packages" data-for="${s.supply_id||''}">Загрузка...</div>
+        </div>
+      </td>`;
+    tbody.appendChild(dtr);
+  }
+  rendered = next;
+  // Не блокируем кнопку по длине локального массива, так как на сервере могут быть ещё записи
+  const lm = document.getElementById('loadMoreBtn');
+  if (lm) lm.disabled = false;
+}
+
+async function refresh(){
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true; btn.textContent = 'Обновляем...';
+  try{
+    const res = await fetch('/api/fbw/supplies');
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error||'Ошибка обновления');
+    supAll = data.items||[];
+    rendered = 0;
+    const tbody = document.getElementById('supBody');
+    tbody.innerHTML = '';
+    renderChunk(10);
+    document.getElementById('lastUpdated').textContent = data.updated_at||'';
+  }catch(e){ console.error(e); }
+  finally{ btn.disabled = false; btn.textContent = 'Обновить'; }
+}
+
+document.getElementById('refreshBtn')?.addEventListener('click', refresh);
+
+document.getElementById('loadMoreBtn')?.addEventListener('click', ()=>{
+  // Try from cache first
+  // Всегда запрашиваем следующую страницу у сервера согласно текущему rendered,
+  // чтобы избежать пропусков при рассинхроне локального массива
+  // Ask server for next page without calling WB API again if possible (server decides)
+  const btn = document.getElementById('loadMoreBtn');
+  btn.disabled = true; btn.textContent = 'Загружаем...';
+  const nextOffset = rendered;
+  fetch(`/api/fbw/supplies?offset=${nextOffset}&limit=5`).then(r=>r.json()).then(data=>{
+    const items = data.items||[];
+    // Добавляем в общий массив и отрисовываем ровно полученную порцию
+    supAll = supAll.concat(items);
+    renderChunk(items.length);
+    // Если сервер вернул пусто — дальше блокируем кнопку
+    if (items.length === 0) btn.disabled = true;
+  }).catch(console.error).finally(()=>{ btn.disabled = false; btn.textContent = 'Загрузить ещё'; });
+});
+
+// Toggle details and lazy-load
+document.getElementById('supBody')?.addEventListener('click', async (e)=>{
+  // Игнорируем клики внутри внутренних таблиц упаковок
+  if (e.target.closest('.package-toggle .table') || e.target.closest('.package-toggle table')) return;
+  const row = e.target.closest('.supply-row');
+  if(!row) return;
+  const id = row.getAttribute('data-supply-id');
+  const detailsRow = document.querySelector(`.supply-details[data-for="${id}"]`);
+  if(!detailsRow) return;
+  const visible = detailsRow.style.display !== 'none';
+  // collapse any other opened
+  document.querySelectorAll('.supply-details').forEach(r=>{ if(r!==detailsRow) r.style.display='none'; });
+  if(visible){ detailsRow.style.display='none'; return; }
+  detailsRow.style.display='';
+  // if already loaded once, skip
+  const goodsBody = detailsRow.querySelector(`tbody.goods[data-for="${id}"]`);
+  if(goodsBody && goodsBody.getAttribute('data-loaded')==='1') return;
+  try{
+    const res = await fetch(`/api/fbw/supplies/${encodeURIComponent(id)}/details`);
+    const data = await res.json();
+    // summary
+    const sumDiv = detailsRow.querySelector(`.supply-summary[data-for="${id}"]`);
+    const det = data.details||{};
+    function numOrNull(v){ return (v===0 || v==="0" || (v && !isNaN(Number(v)))) ? Number(v) : null; }
+    function fmt(v){ return (v===0 || (v && !isNaN(Number(v)))) ? Number(v) : (v ? v : '-'); }
+    const sent = numOrNull(det.quantity);
+    const accepted = numOrNull(det.acceptedQuantity);
+    let acceptedHtml = `<strong>${fmt(det.acceptedQuantity)}</strong>`;
+    if (sent !== null && accepted !== null && accepted > 0 && accepted < sent) {
+      const diff = sent - accepted;
+      acceptedHtml += ` (<strong class="text-danger">-${diff}</strong>)`;
+    }
+    sumDiv.innerHTML = `
+      <span title="Количество баркодов, добавленных в поставку">Добавлено: <strong>${fmt(det.quantity)}</strong></span>
+      | <span title="Количество баркодов, принятых на складе">Принято: ${acceptedHtml}</span>
+      | <span title="Количество баркодов, поступивших в продажу">В продаже: <strong>${fmt(det.readyForSaleQuantity)}</strong></span>
+      | <span title="Количество баркодов на раскладке">На раскладке: <strong>${fmt(det.unloadingQuantity)}</strong></span>
+      | <span title="Количество коробов (упаковок) в поставке">Коробов: <strong>${(Array.isArray(data.packages)?data.packages.length:'-')}</strong></span>
+    `;
+    // packages
+    const packDiv = detailsRow.querySelector(`.packages[data-for="${id}"]`);
+    const packs = Array.isArray(data.packages)?data.packages:[];
+    if(packs.length===0){ packDiv.textContent = 'Нет данных'; }
+    else{
+      const ul = document.createElement('ul'); ul.className='mb-2 list-unstyled';
+      packs.forEach((p, idx)=>{
+        // aggregate counts per barcode entry
+        const code = p.packageCode || p.package_code || '';
+        const qty = Number(p.quantity ?? 0);
+        const barcodesArr = Array.isArray(p.barcodes)?p.barcodes:[];
+        const totalPieces = barcodesArr.reduce((s,b)=> s + Number(b.quantity||0), 0);
+        const itemsCount = barcodesArr.length;
+        const li = document.createElement('li');
+        li.className = 'package-toggle py-1';
+        li.setAttribute('data-code', code);
+        li.innerHTML = `<span class="pkg-arrow">▸</span><span class="fw-semibold">${code}</span> ${itemsCount} ${itemsCount===1?'Баркод':'Баркодов'}, ${totalPieces} шт.`;
+        // hidden inner table
+        const wrapper = document.createElement('div'); wrapper.className='mt-2 ms-4 package-content'; wrapper.style.display='none';
+        const tbl = document.createElement('table'); tbl.className='table table-sm table-bordered mb-0';
+        tbl.innerHTML = `
+          <thead class="table-light">
+            <tr>
+              <th class="text-center">#</th>
+              <th class="text-start">Артикул продавца</th>
+              <th class="text-center">Артикул WB</th>
+              <th class="text-center">Баркод</th>
+              <th class="text-center">Кол-во</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        `;
+        const tbody = tbl.querySelector('tbody');
+        // Enrich from goods list if available by barcode
+        const goodsList = Array.isArray(data.goods)?data.goods:[];
+        const goodsByBarcode = new Map();
+        goodsList.forEach(g=>{ const bc = (g.barcode||'').trim(); if(bc) goodsByBarcode.set(bc, g); });
+        barcodesArr.forEach((b, i)=>{
+          const tr = document.createElement('tr');
+          const g = goodsByBarcode.get(String(b.barcode||'').trim()) || {};
+          const vendor = g.vendorCode || g.vendor_code || '';
+          const nm = g.nmID || g.nmId || '';
+          tr.innerHTML = `
+            <td class="text-center">${i+1}</td>
+            <td class="text-start">${vendor}</td>
+            <td class="text-center">${nm}</td>
+            <td class="text-center">${b.barcode||''}</td>
+            <td class="text-center">${b.quantity ?? 0}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+        wrapper.appendChild(tbl);
+        li.appendChild(wrapper);
+        // toggle
+        li.addEventListener('click', (ev)=>{
+          ev.stopPropagation();
+          // Если клик внутри таблицы — не сворачиваем, позволяем выделение
+          if (ev.target.closest('.package-content')) return;
+          const open = wrapper.style.display !== 'none';
+          wrapper.style.display = open ? 'none' : '';
+          const arrow = li.querySelector('.pkg-arrow'); if (arrow) arrow.textContent = open ? '▸' : '▾';
+        });
+        ul.appendChild(li);
+      });
+      packDiv.innerHTML=''; packDiv.appendChild(ul);
+    }
+    // goods
+    const goods = Array.isArray(data.goods)?data.goods:[];
+    goodsBody.innerHTML='';
+    goods.forEach((g, idx)=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="text-center">${idx+1}</td>
+        <td class="text-start">${g.vendorCode||g.vendor_code||''}</td>
+        <td class="text-center">${g.nmID||g.nmId||''}</td>
+        <td class="text-center">${g.barcode||''}</td>
+        <td class="text-center">${g.quantity ?? g.acceptedQuantity ?? 0}</td>
+      `;
+      goodsBody.appendChild(tr);
+    });
+    goodsBody.setAttribute('data-loaded','1');
+  }catch(err){
+    if(goodsBody){
+      goodsBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Ошибка загрузки</td></tr>';
+    }
+  }
+});
+
+// Инициализация данных с сервера для load more: захват из HTML в массив
+(function bootstrapData(){
+  try{
+    const rows = Array.from(document.querySelectorAll('#supBody tr.supply-row'));
+    supAll = rows.map((tr, idx)=>{
+      const tds = tr.querySelectorAll('td');
+      const statusSpan = tds[10]?.querySelector('span');
+      return {
+        supply_id: tds[1]?.textContent.trim(),
+        type: tds[2]?.textContent.trim(),
+        created_at: tds[3]?.textContent.trim(),
+        total_goods: tds[4]?.textContent.trim(),
+        warehouse: tds[5]?.textContent.trim(),
+        acceptance_coefficient: tds[6]?.textContent.trim(),
+        acceptance_cost: tds[7]?.textContent.trim(),
+        planned_date: tds[8]?.textContent.trim(),
+        fact_date: tds[9]?.textContent.trim(),
+        status: statusSpan ? statusSpan.textContent.trim() : tds[10]?.textContent.trim()
+      };
+    });
+    // Уже отрисовано сервером (считаем только строки поставок)
+    rendered = rows.length;
+    const moreBtn = document.getElementById('loadMoreBtn');
+    if (moreBtn) moreBtn.disabled = false;
+    // Асинхронно подгружаем полный список (до 50) для кнопки "Загрузить ещё"
+    fetch('/api/fbw/supplies?cached=1').then(r=>r.json()).then(data=>{
+      if (data && Array.isArray(data.items)) {
+        supAll = data.items;
+        if (moreBtn) moreBtn.disabled = false; // всегда активна, даже если в кэше только 10
+      }
+    }).catch(()=>{});
+  }catch(_){ supAll = []; }
+})();
+
+</script>
+</html>
+
+

@@ -33,6 +33,9 @@
           <a class="nav-link {% if request.path.startswith('/fbs') %}active{% endif %}" href="/fbs" {% if request.path.startswith('/fbs') %}aria-current="page"{% endif %}>Маркетплейс FBS</a>
         </li>
         <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/fbw') %}active{% endif %}" href="/fbw" {% if request.path.startswith('/fbw') %}aria-current="page"{% endif %}>Поставки FBW</a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link {% if request.path.startswith('/products') %}active{% endif %}" href="/products" {% if request.path.startswith('/products') %}aria-current="page"{% endif %}>Товары</a>
         </li>
         <li class="nav-item dropdown">
