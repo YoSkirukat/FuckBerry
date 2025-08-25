@@ -65,11 +65,11 @@
                 <th>Товар</th>
                 <th id="repQtyHdr" class="text-end">
                   <div>Кол-во итого:</div>
-                  <div><span id="repQtyVal">{{ (items and (items | sum(attribute='qty'))) or 0 }}</span> шт.</div>
+                  <div><span id="repQtyVal">{{ ((items and (items | sum(attribute='qty'))) or 0) | num_space }}</span> шт.</div>
                 </th>
                 <th id="repSumHdr" class="text-end">
                   <div>Сумма итого:</div>
-                  <div><span id="repSumVal">{{ (items and (items | sum(attribute='sum'))) or 0 | money_ru }}</span> руб.</div>
+                  <div><span id="repSumVal">{{ ((items and (items | sum(attribute='sum'))) or 0) | money_ru }}</span> руб.</div>
                 </th>
               </tr>
             </thead>
@@ -155,7 +155,7 @@
             const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a);
           } else { cell.textContent = it.product; }
           tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
-          tr.children[4].textContent = ((it.sum || 0)).toLocaleString('ru-RU') + ' руб.';
+          tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
           tbody.appendChild(tr);
         });
         bindPreview();
@@ -165,7 +165,7 @@
         if (totalEl) totalEl.textContent = (data.total_qty || 0).toLocaleString('ru-RU');
         const qtyVal = document.getElementById('repQtyVal'); if (qtyVal) qtyVal.textContent = (data.total_qty||0).toLocaleString('ru-RU');
         const totalSum = (data.items||[]).reduce((s,x)=> s + (Number(x.sum)||0), 0);
-        const sumVal = document.getElementById('repSumVal'); if (sumVal) sumVal.textContent = totalSum.toLocaleString('ru-RU');
+        const sumVal = document.getElementById('repSumVal'); if (sumVal) sumVal.textContent = (Number(totalSum)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         // populate and enable warehouse select
         const whSel = document.getElementById('rWarehouse');
         if (whSel){
@@ -213,7 +213,7 @@
           if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a); }
           else { cell.textContent = it.product; }
           tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
-          tr.children[4].textContent = ((it.sum || 0)).toLocaleString('ru-RU') + ' руб.';
+          tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
           tbody.appendChild(tr);
         });
         bindPreview();
@@ -222,7 +222,7 @@
         if (totalEl) totalEl.textContent = (totalQty || 0).toLocaleString('ru-RU');
         const qtyVal2 = document.getElementById('repQtyVal'); if (qtyVal2) qtyVal2.textContent = (totalQty||0).toLocaleString('ru-RU');
         const totalSum2 = items.reduce((s, x) => s + (Number(x.sum)||0), 0);
-        const sumVal2 = document.getElementById('repSumVal'); if (sumVal2) sumVal2.textContent = totalSum2.toLocaleString('ru-RU');
+        const sumVal2 = document.getElementById('repSumVal'); if (sumVal2) sumVal2.textContent = (Number(totalSum2)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
       });
     }
     // Автозагрузка данных при наличии дат: только если матрица не пришла с сервера
