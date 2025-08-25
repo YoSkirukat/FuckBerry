@@ -22,9 +22,7 @@
       <div class="alert alert-warning">{{ error }}</div>
     {% endif %}
 
-    <div class="mb-1 text-muted">Период: <span id="repPeriod">{{ date_from_fmt }}{% if date_from_fmt and date_to_fmt %} — {{ date_to_fmt }}{% endif %}</span></div>
-    <div class="mb-3">Количество проданного товара: <strong id="repTotal">{{ (items and (items | sum(attribute='qty'))) or 0 }}</strong></div>
-
+    
     <form class="row g-3 mb-3" method="get" action="/report/sales">
       <div class="col-sm-6 col-md-3">
         <label class="form-label">Дата с</label>
