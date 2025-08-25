@@ -90,6 +90,8 @@
                   {% set cls = '' %}
                   {% if 'Принято' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   {% if 'Отгрузка разрешена' in st %}{% set cls = 'status-allowed' %}{% endif %}
+                  {% if 'Идёт приёмка' in st %}{% set cls = 'status-accepted' %}{% endif %}
+                  {% if 'Отгружено на воротах' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   <span class="text-badge {{ cls }}">{{ st }}</span>
                 </td>
               </tr>
@@ -129,6 +131,8 @@ function statusClass(st){
   if(!st) return '';
   if(st.includes('Принято')) return 'status-accepted';
   if(st.includes('Отгрузка разрешена')) return 'status-allowed';
+  if(st.includes('Идёт приёмка')) return 'status-accepted';
+  if(st.includes('Отгружено на воротах')) return 'status-accepted';
   return '';
 }
 

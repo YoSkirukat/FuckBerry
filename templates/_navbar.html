@@ -29,8 +29,12 @@
         <li class="nav-item">
           <a class="nav-link {% if request.path.startswith('/coefficients') %}active{% endif %}" href="/coefficients" {% if request.path.startswith('/coefficients') %}aria-current="page"{% endif %}>Коэффициенты приёмки</a>
         </li>
-        <li class="nav-item">
-          <a class="nav-link {% if request.path.startswith('/fbs') %}active{% endif %}" href="/fbs" {% if request.path.startswith('/fbs') %}aria-current="page"{% endif %}>Маркетплейс FBS</a>
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle {% if request.path.startswith('/fbs') or request.path.startswith('/fbs-stock') %}active{% endif %}" href="#" id="fbsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">Маркетплейс FBS</a>
+          <ul class="dropdown-menu" aria-labelledby="fbsDropdown">
+            <li><a class="dropdown-item {% if request.path == '/fbs' %}active{% endif %}" href="/fbs">Заказы FBS</a></li>
+            <li><a class="dropdown-item {% if request.path.startswith('/fbs-stock') %}active{% endif %}" href="/fbs-stock">Остатки на складе FBS</a></li>
+          </ul>
         </li>
         <li class="nav-item">
           <a class="nav-link {% if request.path.startswith('/fbw') %}active{% endif %}" href="/fbw" {% if request.path.startswith('/fbw') %}aria-current="page"{% endif %}>Поставки FBW</a>

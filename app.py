@@ -1,3 +1,6 @@
+# FBS warehouses/stocks
+FBS_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
+FBS_STOCKS_BY_WAREHOUSE_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks/{warehouseId}"
 import io
 import os
 import json
@@ -1436,6 +1439,86 @@ def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
     return warehouses, date_keys, date_labels, grid
 
 
+def fetch_fbs_warehouses(token: str) -> list[dict[str, Any]]:
+    if not token:
+        return []
+    headers1 = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(FBS_WAREHOUSES_URL, headers1, params={})
+        return resp.json() or []
+    except Exception:
+        headers2 = {"Authorization": f"{token}"}
+        try:
+            resp = get_with_retry(FBS_WAREHOUSES_URL, headers2, params={})
+            return resp.json() or []
+        except Exception:
+            return []
+
+
+def fetch_fbs_stocks_by_warehouse(token: str, warehouse_id: int, skus: list[str]) -> list[dict[str, Any]]:
+    if not token or not warehouse_id or not skus:
+        return []
+    url = FBS_STOCKS_BY_WAREHOUSE_URL.format(warehouseId=warehouse_id)
+    headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {"skus": skus[:1000]}
+    try:
+        resp = post_with_retry(url, headers1, body)
+        data = resp.json() or {}
+        return data.get("stocks") or []
+    except Exception:
+        headers2 = {"Authorization": f"{token}", "Content-Type": "application/json"}
+        resp = post_with_retry(url, headers2, body)
+        data = resp.json() or {}
+        return data.get("stocks") or []
+
+
+def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[dict[str, Any]]) -> None:
+    # items: {"sku": str, "amount": int}
+    if not token or not warehouse_id or not items:
+        raise ValueError("bad_args")
+    url = FBS_STOCKS_BY_WAREHOUSE_URL.format(warehouseId=warehouse_id)
+    headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {"stocks": items[:1000]}
+    try:
+        # WB expects 204 No Content
+        resp = requests.put(url, headers=headers1, json=body, timeout=60)
+        if resp.status_code != 204:
+            raise requests.HTTPError(response=resp)
+    except Exception:
+        headers2 = {"Authorization": f"{token}", "Content-Type": "application/json"}
+        resp = requests.put(url, headers=headers2, json=body, timeout=60)
+        if resp.status_code != 204:
+            raise requests.HTTPError(response=resp)
+
+
+def _fbs_stock_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"fbs_stock_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "fbs_stock_anon.json")
+
+
+def load_fbs_stock_cache() -> Dict[str, Any] | None:
+    path = _fbs_stock_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_fbs_stock_cache(payload: Dict[str, Any]) -> None:
+    path = _fbs_stock_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
 @app.route("/", methods=["GET", "POST"]) 
 def root():
     if request.method == "POST":
@@ -1717,6 +1800,170 @@ def api_fbw_supplies():
         if offset <= 0:
             save_fbw_supplies_cache({"items": items, "updated_at": updated_at, "next_offset": next_offset})
         return jsonify({"items": items, "updated_at": updated_at, "next_offset": next_offset})
+    except requests.HTTPError as http_err:
+        return jsonify({"error": f"api_{http_err.response.status_code}"}), http_err.response.status_code
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/fbs-stock", methods=["GET"]) 
+@login_required
+def fbs_stock_page():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    error = None
+    warehouses: list[dict[str, Any]] = []
+    updated_at = ""
+    # Show cache only; refresh by button
+    cached = load_fbs_stock_cache() or {}
+    if cached and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None):
+        warehouses = cached.get("warehouses", []) or []
+        updated_at = cached.get("updated_at", "")
+    return render_template("fbs_stock.html", error=error, warehouses=warehouses, updated_at=updated_at)
+
+
+@app.route("/api/fbs-stock/refresh", methods=["POST"]) 
+@login_required
+def api_fbs_stock_refresh():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        # 1) collect SKUs from products cache
+        prod_cached = load_products_cache() or {}
+        products = prod_cached.get("products") or prod_cached.get("items") or []
+        # products expected structure should have barcode(s) and nm_id, vendor code, photo
+        skus: list[str] = []
+        barcode_to_info: dict[str, dict[str, Any]] = {}
+        for p in products:
+            bcs: list[str] = []
+            if isinstance(p.get("barcodes"), list):
+                bcs = [str(x) for x in p.get("barcodes") if x]
+            elif p.get("barcode"):
+                bcs = [str(p.get("barcode"))]
+            for bc in bcs:
+                skus.append(bc)
+                barcode_to_info[bc] = {
+                    "nm_id": p.get("nm_id") or p.get("nmId") or p.get("nmID"),
+                    "vendor_code": p.get("Артикул продавца") or p.get("vendor_code") or p.get("vendorCode") or p.get("supplierArticle") or p.get("supplier_article"),
+                    "photo": p.get("photo") or p.get("img") or None,
+                }
+        if not skus:
+            return jsonify({"error": "no_skus_in_products_cache"}), 400
+        # 2) fetch warehouses and build summary totals
+        wlist = fetch_fbs_warehouses(token)
+        warehouses: list[dict[str, Any]] = []
+        # Maps for human-readable labels
+        cargo_labels = {
+            1: "МГТ (малогабаритный)",
+            2: "СГТ (сверхгабаритный)",
+            3: "КГТ+ (крупногабаритный)",
+        }
+        delivery_labels = {
+            1: "FBS",
+            2: "DBS",
+            3: "DBW",
+            5: "C&C",
+            6: "EDBS",
+        }
+        for w in wlist:
+            wid = w.get("id") or w.get("warehouseId") or w.get("warehouseID")
+            wname = w.get("name") or w.get("warehouseName") or ""
+            try:
+                stocks = fetch_fbs_stocks_by_warehouse(token, int(wid), skus)
+                total_amount = sum(int(s.get("amount") or 0) for s in stocks)
+            except Exception:
+                total_amount = 0
+            warehouses.append({
+                "id": wid,
+                "name": wname,
+                "cargoType": cargo_labels.get(int(w.get("cargoType") or 0), "-"),
+                "deliveryType": delivery_labels.get(int(w.get("deliveryType") or 0), "-"),
+                "total_amount": total_amount,
+            })
+        updated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+        save_fbs_stock_cache({"warehouses": warehouses, "updated_at": updated_at})
+        return jsonify({"warehouses": warehouses, "updated_at": updated_at})
+    except requests.HTTPError as http_err:
+        return jsonify({"error": f"api_{http_err.response.status_code}"}), http_err.response.status_code
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/fbs-stock/update", methods=["POST"]) 
+@login_required
+def api_fbs_stock_update():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        payload = request.get_json(silent=True) or {}
+        items = payload.get("stocks") or []
+        warehouse_id_payload = payload.get("warehouseId")
+        if not isinstance(items, list) or not items:
+            return jsonify({"error": "no_items"}), 400
+        # determine warehouse id
+        if warehouse_id_payload:
+            warehouse_id = warehouse_id_payload
+        else:
+            warehouses = fetch_fbs_warehouses(token)
+            if not warehouses:
+                return jsonify({"error": "warehouse_not_found"}), 404
+            warehouse_id = warehouses[0].get("id") or warehouses[0].get("warehouseId") or warehouses[0].get("warehouseID")
+        # update
+        update_fbs_stocks_by_warehouse(token, int(warehouse_id), items)
+        return jsonify({"ok": True})
+    except requests.HTTPError as http_err:
+        try:
+            err_text = http_err.response.text
+        except Exception:
+            err_text = ""
+        return jsonify({"error": f"api_{http_err.response.status_code}", "detail": err_text}), http_err.response.status_code
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/fbs-stock/warehouse/<int:warehouse_id>", methods=["GET"]) 
+@login_required
+def api_fbs_stock_by_warehouse(warehouse_id: int):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        # collect SKUs from products cache
+        prod_cached = load_products_cache() or {}
+        products = prod_cached.get("products") or prod_cached.get("items") or []
+        skus: list[str] = []
+        barcode_to_info: dict[str, dict[str, Any]] = {}
+        for p in products:
+            bcs: list[str] = []
+            if isinstance(p.get("barcodes"), list):
+                bcs = [str(x) for x in p.get("barcodes") if x]
+            elif p.get("barcode"):
+                bcs = [str(p.get("barcode"))]
+            for bc in bcs:
+                skus.append(bc)
+                barcode_to_info[bc] = {
+                    "nm_id": p.get("nm_id") or p.get("nmId") or p.get("nmID"),
+                    "vendor_code": p.get("Артикул продавца") or p.get("vendor_code") or p.get("vendorCode") or p.get("supplierArticle") or p.get("supplier_article"),
+                    "photo": p.get("photo") or p.get("img") or None,
+                }
+        if not skus:
+            return jsonify({"error": "no_skus_in_products_cache"}), 400
+        stocks = fetch_fbs_stocks_by_warehouse(token, int(warehouse_id), skus)
+        rows: list[dict[str, Any]] = []
+        for st in stocks:
+            sku = str(st.get("sku") or "")
+            amount = int(st.get("amount") or 0)
+            info = barcode_to_info.get(sku, {})
+            rows.append({
+                "photo": info.get("photo"),
+                "vendor_code": info.get("vendor_code") or "",
+                "nm_id": info.get("nm_id") or "",
+                "barcode": sku,
+                "amount": amount,
+            })
+        total_amount = sum(r.get("amount", 0) for r in rows)
+        return jsonify({"rows": rows, "total_amount": total_amount})
     except requests.HTTPError as http_err:
         return jsonify({"error": f"api_{http_err.response.status_code}"}), http_err.response.status_code
     except Exception as exc:  # noqa: BLE001
