@@ -9,6 +9,9 @@
   <style>
     /* скрываем чёрные встроенные иконки календаря */
     input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 10px; width: 1.2em; height: 1.2em; }
+    .thumb { width: 31px; height: 42px; object-fit: cover; cursor: zoom-in; display: inline-block; }
+    #imgPreview { display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none; }
+    #imgPreview img { max-width:420px; max-height:560px; display:block; }
   </style>
 </head>
 <body>
@@ -58,8 +61,16 @@
             <thead>
               <tr>
                 <th>#</th>
+                <th style="width:72px;">Фото</th>
                 <th>Товар</th>
-                <th class="text-end">Кол-во заказано</th>
+                <th id="repQtyHdr" class="text-end">
+                  <div>Кол-во итого:</div>
+                  <div><span id="repQtyVal">{{ (items and (items | sum(attribute='qty'))) or 0 }}</span> шт.</div>
+                </th>
+                <th id="repSumHdr" class="text-end">
+                  <div>Сумма итого:</div>
+                  <div><span id="repSumVal">{{ (items and (items | sum(attribute='sum'))) or 0 | money_ru }}</span> руб.</div>
+                </th>
               </tr>
             </thead>
             <tbody id="reportBody">
@@ -67,6 +78,7 @@
                 {% for it in items %}
                   <tr>
                     <td>{{ loop.index }}</td>
+                    <td class="text-center">{% if it.photo %}<img class="thumb" src="{{ it.photo }}" data-src="{{ it.photo }}"/>{% else %}-{% endif %}</td>
                     <td>
                       {% if it.nm_id %}
                         <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
@@ -75,10 +87,11 @@
                       {% endif %}
                     </td>
                     <td class="text-end">{{ it.qty | num_space }}</td>
+                    <td class="text-end">{{ (it.sum or 0) | money_ru }} руб.</td>
                   </tr>
                 {% endfor %}
               {% else %}
-                <tr><td colspan="3" class="text-muted">Нет данных</td></tr>
+                <tr><td colspan="5" class="text-muted">Нет данных</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -86,7 +99,19 @@
       </div>
     </div>
   </div>
+  <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
   <script>
+    // Hover preview like on /products
+    const preview = document.getElementById('imgPreview');
+    const previewImg = document.getElementById('imgPreviewImg');
+    function bindPreview(){
+      document.querySelectorAll('.thumb').forEach(img=>{
+        img.addEventListener('mouseover', ()=>{ const src = img.getAttribute('data-src') || img.getAttribute('src'); if(src){ previewImg.src = src; preview.style.display='block'; }});
+        img.addEventListener('mouseout', ()=>{ preview.style.display='none'; previewImg.src=''; });
+      });
+    }
+    // bind for server-rendered rows
+    bindPreview();
     function bindDateOpener(wrapId, inputId){
       const wrap = document.getElementById(wrapId);
       const input = document.getElementById(inputId);
@@ -120,19 +145,27 @@
         tbody.innerHTML = '';
         (data.items || []).forEach((it, idx) => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td></td><td></td><td class="text-end"></td>`;
+          tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td>`;
           tr.children[0].textContent = (idx + 1).toString();
-          const cell = tr.children[1];
+          const photoCell = tr.children[1];
+          if (it.photo) { photoCell.innerHTML = `<img class="thumb" src="${it.photo}" data-src="${it.photo}"/>`; }
+          else { photoCell.textContent = '-'; }
+          const cell = tr.children[2];
           if (it.nm_id){
             const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a);
           } else { cell.textContent = it.product; }
-          tr.children[2].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tr.children[4].textContent = ((it.sum || 0)).toLocaleString('ru-RU') + ' руб.';
           tbody.appendChild(tr);
         });
+        bindPreview();
         const periodEl = document.getElementById('repPeriod');
         if (periodEl) periodEl.textContent = `${data.date_from_fmt || ''} — ${data.date_to_fmt || ''}`;
         const totalEl = document.getElementById('repTotal');
         if (totalEl) totalEl.textContent = (data.total_qty || 0).toLocaleString('ru-RU');
+        const qtyVal = document.getElementById('repQtyVal'); if (qtyVal) qtyVal.textContent = (data.total_qty||0).toLocaleString('ru-RU');
+        const totalSum = (data.items||[]).reduce((s,x)=> s + (Number(x.sum)||0), 0);
+        const sumVal = document.getElementById('repSumVal'); if (sumVal) sumVal.textContent = totalSum.toLocaleString('ru-RU');
         // populate and enable warehouse select
         const whSel = document.getElementById('rWarehouse');
         if (whSel){
@@ -167,21 +200,29 @@
         const items = reportMatrix.map(row => {
           const bywh = row.by_wh || {};
           const qty = target ? (bywh[target] || 0) : (row.total || 0);
-          return { product: row.product, nm_id: row.nm_id, qty };
+          const bywhSum = row.by_wh_sum || {};
+          const sum = target ? (bywhSum[target] || 0) : (row.total_sum || 0);
+          return { product: row.product, nm_id: row.nm_id, qty, sum, photo: row.photo };
         }).filter(it => (it.qty || 0) > 0).sort((a,b)=> (b.qty||0)-(a.qty||0));
         items.forEach((it, idx) => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td></td><td></td><td class="text-end"></td>`;
+          tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td>`;
           tr.children[0].textContent = (idx + 1).toString();
-          const cell = tr.children[1];
+          const photoCell = tr.children[1]; photoCell.innerHTML = it.photo ? `<img class=\"thumb\" src=\"${it.photo}\" data-src=\"${it.photo}\"/>` : '-';
+          const cell = tr.children[2];
           if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a); }
           else { cell.textContent = it.product; }
-          tr.children[2].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tr.children[4].textContent = ((it.sum || 0)).toLocaleString('ru-RU') + ' руб.';
           tbody.appendChild(tr);
         });
+        bindPreview();
         const totalEl = document.getElementById('repTotal');
         const totalQty = items.reduce((s, x) => s + (x.qty||0), 0);
         if (totalEl) totalEl.textContent = (totalQty || 0).toLocaleString('ru-RU');
+        const qtyVal2 = document.getElementById('repQtyVal'); if (qtyVal2) qtyVal2.textContent = (totalQty||0).toLocaleString('ru-RU');
+        const totalSum2 = items.reduce((s, x) => s + (Number(x.sum)||0), 0);
+        const sumVal2 = document.getElementById('repSumVal'); if (sumVal2) sumVal2.textContent = totalSum2.toLocaleString('ru-RU');
       });
     }
     // Автозагрузка данных при наличии дат: только если матрица не пришла с сервера

@@ -13,6 +13,9 @@
     .table-responsive { max-height: 60vh; }
     /* Hide default calendar icon in Chrome to avoid double icons */
     input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 10px; width: 1.2em; height: 1.2em; }
+    .thumb { width: 31px; height: 42px; object-fit: cover; cursor: zoom-in; }
+    #imgPreview { display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none; }
+    #imgPreview img { max-width:420px; max-height:560px; display:block; }
   </style>
 </head>
 <body>
@@ -96,7 +99,7 @@
     </div>
 
     <div class="row g-3 mb-3">
-      <div class="col-md-6">
+      <div class="col-md-4">
         <div class="card h-100"><div class="card-body">
           <h6 id="titleWarehouses" class="mb-3">Продажи по складам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           <div class="table-responsive">
@@ -125,7 +128,7 @@
           </div>
         </div></div>
       </div>
-      <div class="col-md-6">
+      <div class="col-md-8">
         <div class="card h-100"><div class="card-body">
           <h6 id="titleTopPivot" class="mb-3">Сводная таблица: ТОП товаров по заказам (топ 15) с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           <div class="mb-2 d-flex align-items-center gap-2">
@@ -141,14 +144,23 @@
             <table class="table table-sm table-striped mb-0">
               <thead>
                 <tr>
+                  <th style="width:72px;">Фото</th>
                   <th>Товар</th>
-                  <th class="text-end">Кол-во заказано</th>
+                  <th id="colQtyHdr" class="text-end">
+                    <div>Кол-во итого:</div>
+                    <div><span id="colQtyVal">{{ total_orders | num_space }}</span> шт.</div>
+                  </th>
+                  <th id="colSumHdr" class="text-end">
+                    <div>Сумма итого:</div>
+                    <div><span id="colSumVal">{{ total_revenue | money_ru }}</span> руб.</div>
+                  </th>
                 </tr>
               </thead>
               <tbody id="ordersTopShortBody">
                 {% if top_products_orders_filtered and top_products_orders_filtered|length %}
                   {% for it in top_products_orders_filtered[:15] %}
                     <tr>
+                      <td class="text-center">{% if it.photo %}<img class="thumb" src="{{ it.photo }}" data-src="{{ it.photo }}"/>{% else %}-{% endif %}</td>
                       <td>
                         {% if it.nm_id %}
                           <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
@@ -157,10 +169,11 @@
                         {% endif %}
                       </td>
                       <td class="text-end">{{ it.qty | num_space }}</td>
+                      <td class="text-end">{{ (it.sum or 0) | money_ru }} руб.</td>
                     </tr>
                   {% endfor %}
                 {% else %}
-                  <tr><td colspan="2" class="text-muted">Нет данных</td></tr>
+                  <tr><td colspan="4" class="text-muted">Нет данных</td></tr>
                 {% endif %}
               </tbody>
             </table>
@@ -175,7 +188,21 @@
     <!-- Removed bottom pivot block -->
   </div>
 
+  <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
+
   <script>
+    // Hover preview like on /products
+    const preview = document.getElementById('imgPreview');
+    const previewImg = document.getElementById('imgPreviewImg');
+    function bindPreview(){
+      document.querySelectorAll('.thumb').forEach(img=>{
+        img.addEventListener('mouseover', ()=>{ const src = img.getAttribute('data-src') || img.getAttribute('src'); if(src){ previewImg.src = src; preview.style.display='block'; }});
+        img.addEventListener('mouseout', ()=>{ preview.style.display='none'; previewImg.src=''; });
+      });
+    }
+    // bind preview for initial server-rendered thumbs
+    bindPreview();
+
     // AJAX refresh for orders
     const form = document.getElementById('ordersForm');
     const btn = document.getElementById('refreshOrdersBtn');
@@ -226,19 +253,26 @@
       const src = (data.items || []).slice(0, 15);
       if (!src.length){
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="2" class="text-muted">Нет данных</td>';
+        tr.innerHTML = '<td colspan="4" class="text-muted">Нет данных</td>';
         tbody.appendChild(tr);
         return;
       }
       for (const it of src){
         const tr = document.createElement('tr');
-        const td1 = document.createElement('td');
-        if (it.nm_id){
-          const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; td1.appendChild(a);
-        } else { td1.textContent = it.product; }
-        const td2 = document.createElement('td'); td2.className = 'text-end'; td2.textContent = (it.qty||0).toLocaleString('ru-RU');
-        tr.appendChild(td1); tr.appendChild(td2); tbody.appendChild(tr);
+        // photo
+        const tdPhoto = document.createElement('td'); tdPhoto.className='text-center';
+        if (it.photo) { tdPhoto.innerHTML = `<img class=\"thumb\" src=\"${it.photo}\" data-src=\"${it.photo}\"/>`; } else { tdPhoto.textContent='-'; }
+        // product
+        const tdProd = document.createElement('td');
+        if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; tdProd.appendChild(a); }
+        else { tdProd.textContent = it.product; }
+        // qty
+        const tdQty = document.createElement('td'); tdQty.className='text-end'; tdQty.textContent = (it.qty||0).toLocaleString('ru-RU');
+        // sum
+        const tdSum = document.createElement('td'); tdSum.className='text-end'; tdSum.textContent = ((it.sum||0).toLocaleString('ru-RU')) + ' руб.';
+        tr.appendChild(tdPhoto); tr.appendChild(tdProd); tr.appendChild(tdQty); tr.appendChild(tdSum); tbody.appendChild(tr);
       }
+      bindPreview();
     }
     if (shortTopWarehouse) shortTopWarehouse.addEventListener('change', reloadShortTop);
 
@@ -339,6 +373,11 @@
         // KPI
         document.querySelectorAll('.kpi')[0].textContent = 'Всего заказов: ' + (data.total_orders || 0).toLocaleString('ru-RU') + ' шт.';
         document.querySelectorAll('.kpi')[1].textContent = 'Выручка (итог): ' + (data.total_revenue || 0).toLocaleString('ru-RU') + ',00 руб.';
+        // Update short top headers with totals
+        const qtyVal = document.getElementById('colQtyVal');
+        if (qtyVal) qtyVal.textContent = (data.total_orders||0).toLocaleString('ru-RU');
+        const sumVal = document.getElementById('colSumVal');
+        if (sumVal) sumVal.textContent = (Number(data.total_revenue)||0).toLocaleString('ru-RU');
         if (updatedAtEl) updatedAtEl.textContent = data.updated_at || '';
         // Titles with formatted dates
         const df = data.date_from_fmt || dFrom; const dt = data.date_to_fmt || dTo;
@@ -405,17 +444,23 @@
               const product = item.product ?? (Array.isArray(item) ? item[0] : '');
               const qty = item.qty ?? (Array.isArray(item) ? item[1] : 0);
               const nm = item.nm_id || '';
+              const sum = item.sum || 0;
+              const photo = item.photo || '';
               const tr = document.createElement('tr');
-              const td1 = document.createElement('td');
-              if (nm) { const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`; a.target = '_blank'; a.rel='noopener'; a.textContent = product; td1.appendChild(a); }
-              else { td1.textContent = product; }
-              tr.appendChild(td1);
-              const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
+              const tdPhoto = document.createElement('td'); tdPhoto.className='text-center';
+              if (photo) { tdPhoto.innerHTML = `<img class=\"thumb\" src=\"${photo}\" data-src=\"${photo}\"/>`; } else { tdPhoto.textContent='-'; }
+              const tdProd = document.createElement('td');
+              if (nm) { const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`; a.target = '_blank'; a.rel='noopener'; a.textContent = product; tdProd.appendChild(a); }
+              else { tdProd.textContent = product; }
+              const tdQty = document.createElement('td'); tdQty.className='text-end'; tdQty.textContent = (qty||0).toLocaleString('ru-RU');
+              const tdSum = document.createElement('td'); tdSum.className='text-end'; tdSum.textContent = (Number(sum)||0).toLocaleString('ru-RU') + ' руб.';
+              tr.appendChild(tdPhoto); tr.appendChild(tdProd); tr.appendChild(tdQty); tr.appendChild(tdSum);
               topShortBody.appendChild(tr);
             }
+            bindPreview();
           } else {
             const tr = document.createElement('tr');
-            const td = document.createElement('td'); td.colSpan=2; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
+            const td = document.createElement('td'); td.colSpan=4; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
             topShortBody.appendChild(tr);
           }
         }

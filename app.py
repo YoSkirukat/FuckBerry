@@ -1015,15 +1015,39 @@ def aggregate_by_warehouse_dual(orders_rows: List[Dict[str, Any]], sales_rows: L
 
 def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[Dict[str, Any]]:
     counts: Dict[str, int] = defaultdict(int)
+    revenue_by_product: Dict[str, float] = defaultdict(float)
     nm_by_product: Dict[str, Any] = {}
     for r in rows:
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
         product = str(product)
         counts[product] += 1
+        try:
+            price = float(r.get("Цена с учетом всех скидок") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        revenue_by_product[product] += price
         nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
         if product not in nm_by_product and nm:
             nm_by_product[product] = nm
-    items = [{"product": p, "qty": c, "nm_id": nm_by_product.get(p)} for p, c in counts.items()]
+    # photo map
+    nm_to_photo: Dict[Any, Any] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            photo = it.get("photo") or it.get("img")
+            if nmv is not None and nmv not in nm_to_photo:
+                nm_to_photo[nmv] = photo
+    except Exception:
+        nm_to_photo = {}
+
+    items = [{
+        "product": p,
+        "qty": c,
+        "nm_id": nm_by_product.get(p),
+        "sum": round(revenue_by_product.get(p, 0.0), 2),
+        "photo": nm_to_photo.get(nm_by_product.get(p))
+    } for p, c in counts.items()]
     items.sort(key=lambda x: x["qty"], reverse=True)
     return items[:limit]
 
@@ -1040,6 +1064,7 @@ def aggregate_top_products_sales(rows: List[Dict[str, Any]], warehouse: str | No
 
 def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
     counts: Dict[str, int] = defaultdict(int)
+    revenue_by_product: Dict[str, float] = defaultdict(float)
     nm_by_product: Dict[str, Any] = {}
     for r in rows:
         if warehouse and (r.get("Склад отгрузки") or "Не указан") != warehouse:
@@ -1047,10 +1072,33 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
         product = str(product)
         counts[product] += 1
+        try:
+            price = float(r.get("Цена с учетом всех скидок") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        revenue_by_product[product] += price
         nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
         if product not in nm_by_product and nm:
             nm_by_product[product] = nm
-    items = [{"product": p, "qty": c, "nm_id": nm_by_product.get(p)} for p, c in counts.items()]
+    # Enrich with product photos from cache
+    nm_to_photo: Dict[Any, Any] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            photo = it.get("photo") or it.get("img")
+            if nmv is not None and nmv not in nm_to_photo:
+                nm_to_photo[nmv] = photo
+    except Exception:
+        nm_to_photo = {}
+
+    items = [{
+        "product": p,
+        "qty": c,
+        "nm_id": nm_by_product.get(p),
+        "sum": round(revenue_by_product.get(p, 0.0), 2),
+        "photo": nm_to_photo.get(nm_by_product.get(p))
+    } for p, c in counts.items()]
     items.sort(key=lambda x: x["qty"], reverse=True)
     return items[:limit]
 
@@ -2322,25 +2370,60 @@ def report_sales_page():
     # Build matrix for client-side filtering (same as API)
     counts_total: Dict[str, int] = defaultdict(int)
     by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    revenue_total: Dict[str, float] = defaultdict(float)
+    by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     nm_by_product: Dict[str, Any] = {}
     for r in (orders or []):
         prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
         wh = str(r.get("Склад отгрузки") or "Не указан")
         counts_total[prod] += 1
         by_wh[prod][wh] += 1
+        try:
+            price = float(r.get("Цена с учетом всех скидок") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        revenue_total[prod] += price
+        by_wh_sum[prod][wh] += price
         nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
         if prod not in nm_by_product and nmv:
             nm_by_product[prod] = nmv
+    # build photo map from products cache
+    nm_to_photo: Dict[Any, Any] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            photo = it.get("photo") or it.get("img")
+            if nmv is not None and nmv not in nm_to_photo:
+                nm_to_photo[nmv] = photo
+    except Exception:
+        nm_to_photo = {}
+
     def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
         items_local: List[Dict[str, Any]] = []
         for prod, total in counts_total.items():
             qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
             if qty > 0:
-                items_local.append({"product": prod, "qty": qty, "nm_id": nm_by_product.get(prod)})
+                s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                items_local.append({
+                    "product": prod,
+                    "qty": qty,
+                    "nm_id": nm_by_product.get(prod),
+                    "sum": round(float(s or 0.0), 2),
+                    "photo": nm_to_photo.get(nm_by_product.get(prod))
+                })
         items_local.sort(key=lambda x: x["qty"], reverse=True)
         return items_local
     items = _build_items(warehouse) if orders else []
-    matrix = [{"product": p, "nm_id": nm_by_product.get(p), "total": counts_total[p], "by_wh": by_wh[p]} for p in counts_total.keys()] if orders else []
+    matrix = [{
+        "product": p,
+        "nm_id": nm_by_product.get(p),
+        "total": counts_total[p],
+        "by_wh": by_wh[p],
+        "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
+        "by_wh_sum": by_wh_sum[p],
+        "photo": nm_to_photo.get(nm_by_product.get(p))
+    } for p in counts_total.keys()] if orders else []
     return render_template(
         "report_sales.html",
         error=None,
@@ -2387,6 +2470,8 @@ def api_report_sales():
         # Build matrix for local filtering on frontend
         counts_total: Dict[str, int] = defaultdict(int)
         by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        revenue_total: Dict[str, float] = defaultdict(float)
+        by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
         nm_by_product: Dict[str, Any] = {}
         warehouses = set()
         for r in orders:
@@ -2395,20 +2480,53 @@ def api_report_sales():
             warehouses.add(wh)
             counts_total[prod] += 1
             by_wh[prod][wh] += 1
+            try:
+                price = float(r.get("Цена с учетом всех скидок") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            revenue_total[prod] += price
+            by_wh_sum[prod][wh] += price
             nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
             if prod not in nm_by_product and nmv:
                 nm_by_product[prod] = nmv
+        # build photo map
+        nm_to_photo: Dict[Any, Any] = {}
+        try:
+            prod_cached = load_products_cache() or {}
+            for it in (prod_cached.get("items") or []):
+                nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+                photo = it.get("photo") or it.get("img")
+                if nmv is not None and nmv not in nm_to_photo:
+                    nm_to_photo[nmv] = photo
+        except Exception:
+            nm_to_photo = {}
+
         def build_items_for_wh(target_wh: str | None) -> List[Dict[str, Any]]:
             items_local: List[Dict[str, Any]] = []
             for prod, total in counts_total.items():
                 qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
                 if qty > 0:
-                    items_local.append({"product": prod, "qty": qty, "nm_id": nm_by_product.get(prod)})
+                    s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                    items_local.append({
+                        "product": prod,
+                        "qty": qty,
+                        "nm_id": nm_by_product.get(prod),
+                        "sum": round(float(s or 0.0), 2),
+                        "photo": nm_to_photo.get(nm_by_product.get(prod))
+                    })
             items_local.sort(key=lambda x: x["qty"], reverse=True)
             return items_local
         items = build_items_for_wh(warehouse)
         total_qty = sum(int(it.get("qty") or 0) for it in items)
-        matrix = [{"product": p, "nm_id": nm_by_product.get(p), "total": counts_total[p], "by_wh": by_wh[p]} for p in counts_total.keys()]
+        matrix = [{
+            "product": p,
+            "nm_id": nm_by_product.get(p),
+            "total": counts_total[p],
+            "by_wh": by_wh[p],
+            "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
+            "by_wh_sum": by_wh_sum[p],
+            "photo": nm_to_photo.get(nm_by_product.get(p))
+        } for p in counts_total.keys()]
         return jsonify({
             "items": items,
             "total_qty": total_qty,
