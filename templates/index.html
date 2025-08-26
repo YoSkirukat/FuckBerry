@@ -239,6 +239,30 @@
     bindDateOpener('dateFromWrap','dateFrom');
     bindDateOpener('dateToWrap','dateTo');
 
+    // Keep export hidden fields and full report link in sync when dates change
+    function syncExportAndLinks(){
+      const dFrom = document.getElementById('dateFrom')?.value || '';
+      const dTo = document.getElementById('dateTo')?.value || '';
+      const exportForm = document.querySelector('form[action="/export"]');
+      if (exportForm){
+        const hidFrom = exportForm.querySelector('input[name="date_from"]');
+        const hidTo = exportForm.querySelector('input[name="date_to"]');
+        if (hidFrom) hidFrom.value = dFrom;
+        if (hidTo) hidTo.value = dTo;
+      }
+      const openFullBtn = document.getElementById('openFullReport');
+      if (openFullBtn){
+        const url = new URL('/report/sales', window.location.origin);
+        if (dFrom) url.searchParams.set('date_from', dFrom);
+        if (dTo) url.searchParams.set('date_to', dTo);
+        openFullBtn.href = url.pathname + (url.searchParams.toString() ? ('?' + url.searchParams.toString()) : '');
+      }
+    }
+    document.getElementById('dateFrom')?.addEventListener('change', syncExportAndLinks);
+    document.getElementById('dateTo')?.addEventListener('change', syncExportAndLinks);
+    // Initial sync on load
+    syncExportAndLinks();
+
     // Short top filter by warehouse
     const shortTopWarehouse = document.getElementById('shortTopWarehouse');
     async function reloadShortTop(){
@@ -394,6 +418,16 @@
           url.searchParams.set('date_from', dFrom);
           url.searchParams.set('date_to', dTo);
           openFullBtn.href = url.pathname + '?' + url.searchParams.toString();
+        }
+        // Sync export form hidden dates and button state
+        const exportForm = document.querySelector('form[action="/export"]');
+        if (exportForm){
+          const hidFrom = exportForm.querySelector('input[name="date_from"]');
+          const hidTo = exportForm.querySelector('input[name="date_to"]');
+          if (hidFrom) hidFrom.value = dFrom;
+          if (hidTo) hidTo.value = dTo;
+          const exportBtn = exportForm.querySelector('button[type="submit"]');
+          if (exportBtn) exportBtn.disabled = !((data.total_orders||0) > 0);
         }
         // Charts
         if (Array.isArray(data.daily_labels) && data.daily_labels.length) {

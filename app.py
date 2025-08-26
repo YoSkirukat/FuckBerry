@@ -2261,6 +2261,29 @@ def export_excel():
             top_products=[],
         )
 
+    # Normalize and validate dates
+    try:
+        df = parse_date(date_from)
+        dt = parse_date(date_to)
+        if df > dt:
+            date_from, date_to = date_to, date_from
+    except ValueError:
+        return render_template(
+            "index.html",
+            error="Неверный формат дат",
+            token=token,
+            date_from=date_from,
+            date_to=date_to,
+            orders=[],
+            total_orders=0,
+            total_revenue=0,
+            daily_labels=[],
+            daily_counts=[],
+            daily_revenue=[],
+            warehouse_summary=[],
+            top_products=[],
+        )
+
     raw_data = fetch_orders_range(token, date_from, date_to)
     rows = to_rows(raw_data, date_from, date_to)
 
