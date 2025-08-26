@@ -316,7 +316,7 @@ def fetch_fbw_supply_packages(token: str, supply_id: int | str) -> list[dict[str
             return []
 
 
-def fetch_fbw_last_supplies(token: str, limit: int = 10) -> list[dict[str, Any]]:
+def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]:
     base_list = fetch_fbw_supplies_list(token)
     supplies: list[dict[str, Any]] = []
     for it in base_list[: max(0, int(limit))]:
@@ -1801,10 +1801,10 @@ def fbw_supplies_page():
     if not supplies:
         if token:
             try:
-                # On first ever load: fetch only first 10 and cache them
-                supplies = fetch_fbw_last_supplies(token, limit=10)
+                # On first ever load: fetch first 15 and cache them
+                supplies = fetch_fbw_last_supplies(token, limit=15)
                 generated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
-                save_fbw_supplies_cache({"items": supplies, "updated_at": generated_at, "next_offset": 10})
+                save_fbw_supplies_cache({"items": supplies, "updated_at": generated_at, "next_offset": 15})
             except requests.HTTPError as http_err:
                 error = f"Ошибка API: {http_err.response.status_code}"
             except Exception as exc:  # noqa: BLE001
@@ -1834,9 +1834,9 @@ def api_fbw_supplies():
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:
-        # Refresh from WB: fetch only first 10 or a subsequent page for load-more
+        # Refresh from WB: fetch first 15 or a subsequent page for load-more
         offset = int(request.args.get("offset", "0"))
-        limit = int(request.args.get("limit", "10"))
+        limit = int(request.args.get("limit", "15"))
         if offset <= 0:
             items = fetch_fbw_last_supplies(token, limit=limit)
             next_offset = limit

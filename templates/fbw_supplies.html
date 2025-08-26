@@ -21,6 +21,7 @@
     .pkg-arrow { display: inline-block; width: 1rem; text-align: center; }
     .status-accepted { color: #14532d; background: #d1fae5; font-size: 11px; font-weight: bold; }
     .status-allowed { color: #0c4a6e; background: #e0f2fe; font-size: 11px; font-weight: bold; }
+    .status-notallowed { color: #ef3a00; background: #ffdf7d; font-size: 11px; font-weight: bold; }
     .text-free { color: #14532d; font-weight: 600; }
   </style>
   <script>
@@ -92,6 +93,7 @@
                   {% if 'Отгрузка разрешена' in st %}{% set cls = 'status-allowed' %}{% endif %}
                   {% if 'Идёт приёмка' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   {% if 'Отгружено на воротах' in st %}{% set cls = 'status-accepted' %}{% endif %}
+                  {% if 'Не запланировано' in st %}{% set cls = 'status-notallowed' %}{% endif %}
                   <span class="text-badge {{ cls }}">{{ st }}</span>
                 </td>
               </tr>
@@ -133,6 +135,7 @@ function statusClass(st){
   if(st.includes('Отгрузка разрешена')) return 'status-allowed';
   if(st.includes('Идёт приёмка')) return 'status-accepted';
   if(st.includes('Отгружено на воротах')) return 'status-accepted';
+  if(st.includes('Не запланировано')) return 'status-notallowed';
   return '';
 }
 
@@ -212,7 +215,7 @@ async function refresh(){
     rendered = 0;
     const tbody = document.getElementById('supBody');
     tbody.innerHTML = '';
-    renderChunk(10);
+    renderChunk(15);
     document.getElementById('lastUpdated').textContent = data.updated_at||'';
   }catch(e){ console.error(e); }
   finally{ btn.disabled = false; btn.textContent = 'Обновить'; }
