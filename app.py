@@ -1,6 +1,8 @@
 # FBS warehouses/stocks
 FBS_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
 FBS_STOCKS_BY_WAREHOUSE_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks/{warehouseId}"
+# Supplies API warehouses (for labels tool)
+SUPPLIES_WAREHOUSES_URL = "https://supplies-api.wildberries.ru/api/v1/warehouses"
 import io
 import os
 import json
@@ -14,6 +16,11 @@ from typing import List, Dict, Any, Tuple
 import requests
 from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory
 from openpyxl import Workbook
+from docx import Document
+from docx.shared import Pt, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from flask_login import (
@@ -111,6 +118,16 @@ def _ensure_schema_users_validity_columns() -> None:
                         conn.execute(text("ALTER TABLE users ADD COLUMN valid_from DATE"))
                     if "valid_to" not in cols:
                         conn.execute(text("ALTER TABLE users ADD COLUMN valid_to DATE"))
+                    if "phone" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(64)"))
+                    if "email" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
+                    if "shipper_name" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN shipper_name VARCHAR(255)"))
+                    if "shipper_address" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN shipper_address VARCHAR(255)"))
+                    if "contact_person" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN contact_person VARCHAR(255)"))
                 except Exception:
                     pass
             elif dialect in ("postgresql", "postgres"):
@@ -123,6 +140,26 @@ def _ensure_schema_users_validity_columns() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_to DATE"))
                 except Exception:
                     pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(64)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(120)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS shipper_name VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS shipper_address VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_person VARCHAR(255)"))
+                except Exception:
+                    pass
             elif dialect in ("mysql", "mariadb"):
                 # MySQL 8.0+ supports IF NOT EXISTS
                 try:
@@ -133,6 +170,22 @@ def _ensure_schema_users_validity_columns() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS valid_to DATE"))
                 except Exception:
                     pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(64)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(120)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS shipper_name VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS shipper_address VARCHAR(255)"))
+                except Exception:
+                    pass
             else:
                 # Best-effort generic
                 try:
@@ -141,6 +194,26 @@ def _ensure_schema_users_validity_columns() -> None:
                     pass
                 try:
                     conn.execute(text("ALTER TABLE users ADD COLUMN valid_to DATE"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(64)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN shipper_name VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN shipper_address VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN contact_person VARCHAR(255)"))
                 except Exception:
                     pass
     except Exception:
@@ -676,6 +749,11 @@ class User(UserMixin, db.Model):
     wb_token = db.Column(db.Text, nullable=True)
     valid_from = db.Column(db.Date, nullable=True)
     valid_to = db.Column(db.Date, nullable=True)
+    phone = db.Column(db.String(64), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    shipper_name = db.Column(db.String(255), nullable=True)
+    shipper_address = db.Column(db.String(255), nullable=True)
+    contact_person = db.Column(db.String(255), nullable=True)
 
     def get_id(self):  # type: ignore[override]
         return str(self.id)
@@ -2203,10 +2281,33 @@ def profile_token():
     try:
         current_user.wb_token = new_token or None
         db.session.commit()
-        flash("Токен успешно добавлен" if new_token else "Токен удален")
+        if new_token:
+            hint = []
+            if not (current_user.phone and current_user.email and current_user.shipper_address):
+                hint.append(" Заполните телефон, email и адрес склада для этикеток в профиле.")
+            flash("Токен успешно добавлен." + (hint[0] if hint else ""))
+        else:
+            flash("Токен удален")
     except Exception:
         db.session.rollback()
         flash("Ошибка сохранения токена")
+    return redirect(url_for("profile"))
+
+
+@app.route("/profile/shipping", methods=["POST"]) 
+@login_required
+def profile_shipping():
+    current_user.shipper_name = (request.form.get("shipper_name") or "").strip() or None
+    current_user.contact_person = (request.form.get("contact_person") or "").strip() or None
+    current_user.phone = (request.form.get("phone") or "").strip() or None
+    current_user.email = (request.form.get("email") or "").strip() or None
+    current_user.shipper_address = (request.form.get("shipper_address") or "").strip() or None
+    try:
+        db.session.commit()
+        flash("Реквизиты сохранены")
+    except Exception:
+        db.session.rollback()
+        flash("Ошибка сохранения реквизитов")
     return redirect(url_for("profile"))
 
 
@@ -3945,6 +4046,124 @@ def _init_db_once_per_process():
         except Exception:
             pass
     _DB_INIT_DONE = True
+
+
+# -------------------------
+# Tools: Labels for boxes
+# -------------------------
+
+@app.route("/tools/labels", methods=["GET"]) 
+@login_required
+def tools_labels_page():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    warehouses = []
+    if token:
+        try:
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = get_with_retry(SUPPLIES_WAREHOUSES_URL, headers, params={})
+            warehouses = resp.json() or []
+        except Exception:
+            try:
+                headers2 = {"Authorization": f"{token}"}
+                resp = get_with_retry(SUPPLIES_WAREHOUSES_URL, headers2, params={})
+                warehouses = resp.json() or []
+            except Exception:
+                warehouses = []
+    return render_template(
+        "tools_labels.html",
+        warehouses=warehouses,
+    )
+
+
+@app.route("/tools/labels/download", methods=["POST"]) 
+@login_required
+def tools_labels_download():
+    # Inputs
+    warehouse_name = (request.form.get("warehouse") or "").strip()
+    boxes = int(request.form.get("boxes") or 0)
+    if boxes <= 0:
+        return jsonify({"error": "bad_boxes"}), 400
+
+    shipper_name = (request.form.get("shipper_name") or current_user.shipper_name or "").strip()
+    contact_person = (request.form.get("contact_person") or getattr(current_user, 'contact_person', None) or "").strip()
+    phone = (request.form.get("phone") or current_user.phone or "").strip()
+    email = (request.form.get("email") or current_user.email or "").strip()
+    address = (request.form.get("shipper_address") or current_user.shipper_address or "").strip()
+
+    # Build DOCX
+    doc = Document()
+    section = doc.sections[0]
+    section.left_margin = Cm(1.2)
+    section.right_margin = Cm(1.2)
+    section.top_margin = Cm(0.7)
+    section.bottom_margin = Cm(0.7)
+
+    # Flow labels as table rows; prevent row splitting so на страницу попадают только целые этикетки
+    labels_table = doc.add_table(rows=0, cols=1)
+    labels_table.autofit = True
+
+    for n in range(1, boxes + 1):
+        row = labels_table.add_row()
+        # запрет разрыва строки таблицы между страницами
+        tr = row._tr
+        trPr = tr.get_or_add_trPr()
+        cantSplit = OxmlElement('w:cantSplit')
+        trPr.append(cantSplit)
+
+        cell = row.cells[0]
+
+        # Title line: increase font (approx 28pt)
+        p1 = cell.add_paragraph()
+        p1.paragraph_format.space_before = Pt(0)
+        p1.paragraph_format.space_after = Pt(0)
+        p1.paragraph_format.line_spacing = 1.0
+        r1 = p1.add_run(f"Доставить на WB {warehouse_name}")
+        r1.bold = True
+        r1.font.size = Pt(28)
+        p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Counter line: increase font (approx 32pt)
+        p2 = cell.add_paragraph()
+        p2.paragraph_format.space_before = Pt(0)
+        p2.paragraph_format.space_after = Pt(2)
+        p2.paragraph_format.line_spacing = 1.0
+        r2 = p2.add_run(f"{n} из {boxes} КОРОБОК")
+        r2.bold = True
+        r2.font.size = Pt(32)
+        p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Supplier line in one sentence
+        supplier_line = ", ".join(filter(None, [shipper_name, f"Контактное лицо: {contact_person}" if contact_person else None, phone, email, address]))
+        p3 = cell.add_paragraph(supplier_line)
+        p3.paragraph_format.space_before = Pt(0)
+        p3.paragraph_format.space_after = Pt(2)
+        p3.paragraph_format.line_spacing = 1.0
+        p3.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        for run in p3.runs:
+            run.font.size = Pt(11)
+
+        # Horizontal line separator in the cell
+        p_sep = cell.add_paragraph()
+        p_sep.paragraph_format.space_before = Pt(2)
+        p_sep.paragraph_format.space_after = Pt(2)
+        p_sep.paragraph_format.line_spacing = 1.0
+        p_sep.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p = p_sep._p
+        pPr = p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        bottom = OxmlElement('w:bottom')
+        bottom.set(qn('w:val'), 'single')
+        bottom.set(qn('w:sz'), '8')
+        bottom.set(qn('w:space'), '0')
+        bottom.set(qn('w:color'), 'auto')
+        pBdr.append(bottom)
+        pPr.append(pBdr)
+
+    out = io.BytesIO()
+    doc.save(out)
+    out.seek(0)
+    fname = f"labels_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    return send_file(out, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -69,6 +69,39 @@
       </div>
     </div>
 
+    <div class="row g-3 mt-3">
+      <div class="col-md-12">
+        <div class="card"><div class="card-body">
+          <h6 class="mb-3">Реквизиты для этикеток</h6>
+          <form method="post" action="/profile/shipping" class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Наименование отправителя</label>
+              <input name="shipper_name" type="text" class="form-control" value="{{ current_user.shipper_name or '' }}" placeholder="ООО Ромашка / ИП Иванов..." />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Контактное лицо</label>
+              <input name="contact_person" type="text" class="form-control" value="{{ current_user.contact_person or '' }}" placeholder="ФИО" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Телефон</label>
+              <input name="phone" type="text" class="form-control" value="{{ current_user.phone or '' }}" placeholder="+7..." />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Email</label>
+              <input name="email" type="email" class="form-control" value="{{ current_user.email or '' }}" placeholder="you@example.com" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Адрес склада отгрузки</label>
+              <input name="shipper_address" type="text" class="form-control" value="{{ current_user.shipper_address or '' }}" placeholder="г. ..., ул. ..., склад ..." />
+            </div>
+            <div class="col-12 d-grid d-md-block">
+              <button class="btn btn-primary" type="submit">Сохранить реквизиты</button>
+            </div>
+          </form>
+        </div></div>
+      </div>
+    </div>
+
     <div class="card mt-4"><div class="card-body">
       <h6 class="mb-2">Срок действия учётной записи</h6>
       <div>Действует с: <strong>{{ valid_from or '-' }}</strong></div>

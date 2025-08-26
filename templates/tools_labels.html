@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Этикетки для коробов</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <h1 class="mb-4" style="font-size:1.6rem;">Этикетки для коробов</h1>
+
+    <div class="row g-3">
+      <div class="col-md-6">
+        <div class="card"><div class="card-body">
+          <form id="labelsForm" method="post" action="/tools/labels/download">
+            <div class="mb-3">
+              <label class="form-label">Склад отгрузки</label>
+              <select name="warehouse" class="form-select" required>
+                {% if warehouses and warehouses|length %}
+                  {% for w in warehouses %}
+                    <option value="{{ w.name or w.warehouseName or w.address or w.city or w.id }}">{{ w.name or w.warehouseName or w.address or w.city or ('Склад #' ~ (w.id or w.warehouseId)) }}</option>
+                  {% endfor %}
+                {% else %}
+                  <option value="">— нет доступных складов —</option>
+                {% endif %}
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Кол-во коробов</label>
+              <input name="boxes" type="number" min="1" step="1" value="10" class="form-control" required />
+            </div>
+            <hr>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Наименование отправителя</label>
+                <input name="shipper_name" type="text" class="form-control" value="{{ current_user.shipper_name or '' }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Контактное лицо</label>
+                <input name="contact_person" type="text" class="form-control" value="{{ current_user.contact_person or '' }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Телефон</label>
+                <input name="phone" type="text" class="form-control" value="{{ current_user.phone or '' }}" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Email</label>
+                <input name="email" type="email" class="form-control" value="{{ current_user.email or '' }}" />
+              </div>
+              <div class="col-12">
+                <label class="form-label">Адрес склада отгрузки</label>
+                <input name="shipper_address" type="text" class="form-control" value="{{ current_user.shipper_address or '' }}" />
+              </div>
+            </div>
+            <div class="text-muted mb-3">
+              Подставлены значения из профиля — при необходимости отредактируйте перед выгрузкой.
+            </div>
+            <button class="btn btn-primary" type="submit">Скачать этикетки</button>
+          </form>
+        </div></div>
+      </div>
+      <div class="col-md-6">
+        <div class="alert alert-info">
+          Выберите склад отгрузки, укажите количество коробов и нажмите кнопку "Скачать этикетки". При необходимости отредактируйте данные отправителя.
+        </div>
+      </div>
+    </div>
+  </div>
+  {% include '_footer.html' %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+
