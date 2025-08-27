@@ -489,6 +489,48 @@ def extract_nm(value: Any) -> str:
 app.jinja_env.filters["extract_nm"] = extract_nm
 
 
+def days_left_from_str(date_str: str | None) -> int | None:
+    try:
+        if not date_str:
+            return None
+        # входящие значения формата "ДД.ММ.ГГГГ" (мы так форматируем planned_date)
+        dt = datetime.strptime(date_str.strip(), "%d.%m.%Y")
+        today = datetime.now(MOSCOW_TZ).date()
+        diff = (dt.date() - today).days
+        return diff
+    except Exception:
+        return None
+
+
+app.jinja_env.filters["days_left"] = days_left_from_str
+
+def _merge_package_counts(items: list[dict[str, Any]], cached_items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    try:
+        cache_map: dict[str, int] = {}
+        for it in (cached_items or []):
+            sid = str(it.get("supply_id") or it.get("supplyID") or it.get("supplyId") or it.get("id") or "")
+            pc = it.get("package_count")
+            try:
+                pc_int = int(pc)
+            except Exception:
+                pc_int = 0
+            if sid and pc_int > 0:
+                cache_map[sid] = pc_int
+        merged: list[dict[str, Any]] = []
+        for it in items:
+            sid = str(it.get("supply_id") or it.get("supplyID") or it.get("supplyId") or it.get("id") or "")
+            if sid in cache_map and (not it.get("package_count") or int(it.get("package_count") or 0) == 0):
+                # Copy to avoid mutating original
+                new_it = dict(it)
+                new_it["package_count"] = cache_map[sid]
+                merged.append(new_it)
+            else:
+                merged.append(it)
+        return merged
+    except Exception:
+        return items
+
+
 def time_ago_ru(dt_val: Any) -> str:
     try:
         if dt_val is None:
@@ -1922,6 +1964,10 @@ def api_fbw_supplies():
             # Always derive items from the same globally sorted list to avoid gaps
             items = fetch_fbw_supplies_range(token, offset=offset, limit=limit)
             next_offset = offset + limit
+        # Merge cached package_count so они не теряются между обновлениями
+        cached_for_user = load_fbw_supplies_cache() or {}
+        cached_items = cached_for_user.get("items") or []
+        items = _merge_package_counts(items, cached_items)
         updated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         if offset <= 0:
             save_fbw_supplies_cache({"items": items, "updated_at": updated_at, "next_offset": next_offset})
@@ -2112,6 +2158,41 @@ def api_fbw_supply_details(supply_id: str):
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
+
+@app.route("/api/fbw/supplies/<supply_id>/package-count", methods=["GET"]) 
+@login_required
+def api_fbw_supply_package_count(supply_id: str):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        packages = fetch_fbw_supply_packages(token, supply_id)
+        count = len(packages) if isinstance(packages, list) else 0
+        # Try update cache to persist the count
+        try:
+            cached = load_fbw_supplies_cache() or {}
+            items = cached.get("items") or []
+            changed = False
+            for it in items:
+                sid = str(it.get("supply_id") or it.get("supplyID") or it.get("supplyId") or it.get("id") or "")
+                if sid == str(supply_id):
+                    it["package_count"] = int(count)
+                    changed = True
+                    break
+            if changed:
+                # Keep updated_at and next_offset intact
+                save_fbw_supplies_cache({
+                    "items": items,
+                    "updated_at": cached.get("updated_at", ""),
+                    "next_offset": cached.get("next_offset", 0),
+                })
+        except Exception:
+            pass
+        return jsonify({"package_count": int(count)})
+    except requests.HTTPError as http_err:
+        return jsonify({"error": f"api_{http_err.response_status}"}), 500
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
 
 @app.route("/api/orders-refresh", methods=["POST"]) 
 @login_required

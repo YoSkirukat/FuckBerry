@@ -10,6 +10,8 @@
     h1 { font-size: 1.7rem; }
     .table-sm td, .table-sm th { font-size: 0.9rem; }
     th, td { vertical-align: middle; }
+    .wh-name { position: relative; display: inline-block; max-width: 100%; white-space: nowrap; overflow: hidden; vertical-align: middle; }
+    .wh-name.truncate-fade::after { content: ""; position: absolute; right: 0; top: 0; height: 100%; width: 2rem; pointer-events: none; background: linear-gradient(to right, rgba(255,255,255,0), #fff 60%); }
     .text-badge {
       display: inline-block;
       padding: 0.15rem 0.35rem;
@@ -22,6 +24,7 @@
     .status-accepted { color: #14532d; background: #d1fae5; font-size: 11px; font-weight: bold; }
     .status-allowed { color: #0c4a6e; background: #e0f2fe; font-size: 11px; font-weight: bold; }
     .status-notallowed { color: #ef3a00; background: #ffdf7d; font-size: 11px; font-weight: bold; }
+    .status-planned { color: #0c4a6e; background: #e0f2fe; font-size: 11px; font-weight: bold; }
     .text-free { color: #14532d; font-weight: 600; }
   </style>
   <script>
@@ -44,6 +47,10 @@
       <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
 
+    <div class="mb-2 small text-muted" id="fbwStats" style="display:none;">
+      <span class="me-3">Товаров в доставке: <strong id="fbwStatGoods">0</strong></span>
+      <span>Коробов в доставке: <strong id="fbwStatBoxes">0</strong></span>
+    </div>
     <div class="card">
       <div class="card-body">
         <div class="table-responsive">
@@ -55,6 +62,7 @@
                 <th>Тип поставки</th>
                 <th>Дата создания</th>
                 <th>Всего товаров</th>
+                <th>Кол-во коробов</th>
                 <th class="text-start">Склад</th>
                 <th>Коэфициент приёмки</th>
                 <th class="text-start">Стоимость приёмки</th>
@@ -71,7 +79,8 @@
                 <td class="text-center text-nowrap">{{ s.type }}</td>
                 <td class="text-center text-nowrap">{{ s.created_at }}</td>
                 <td class="text-center">{{ s.total_goods if s.total_goods is not none else '-' }}</td>
-                <td class="text-start">{{ s.warehouse }}</td>
+                <td class="text-center" data-pkg-cell="1">{% if s.package_count is defined and s.package_count %}{{ s.package_count }}{% else %}-{% endif %}</td>
+                <td class="text-start"><span class="wh-name" data-full-name="{{ s.warehouse }}">{{ s.warehouse }}</span></td>
                 <td class="text-center">
                   {% if s.acceptance_coefficient is not none %}
                     {% if s.acceptance_coefficient == 0 %}
@@ -84,7 +93,13 @@
                 <td class="text-start">
                   {% if s.acceptance_cost is not none %}{{ s.acceptance_cost }} ₽{% else %}-{% endif %}
                 </td>
-                <td class="text-center text-nowrap">{{ s.planned_date }}</td>
+                <td class="text-center text-nowrap">
+                  <div>{{ s.planned_date }}</div>
+                  {% set dl = (s.planned_date|days_left) %}
+                  {% if dl is not none and ('Принято' not in (s.status or '')) %}
+                    <div class="text-muted" style="font-size: 0.8em;">Осталось дней: {{ dl }}</div>
+                  {% endif %}
+                </td>
                 <td class="text-center text-nowrap">{{ s.fact_date.split(' ')|first if s.fact_date else '' }}</td>
                 <td class="text-center">
                   {% set st = s.status or '' %}
@@ -94,11 +109,12 @@
                   {% if 'Идёт приёмка' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   {% if 'Отгружено на воротах' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   {% if 'Не запланировано' in st %}{% set cls = 'status-notallowed' %}{% endif %}
+                  {% if 'Запланировано' in st %}{% set cls = 'status-planned' %}{% endif %}
                   <span class="text-badge {{ cls }}">{{ st }}</span>
                 </td>
               </tr>
               <tr class="supply-details" data-for="{{ s.supply_id }}" style="display:none;">
-                <td colspan="11">
+                <td colspan="12">
                   <div class="p-2 bg-light border rounded">
                     <div class="supply-summary small text-muted mb-2" data-for="{{ s.supply_id }}"></div>
                     <div class="fw-semibold mb-2">Упаковки</div>
@@ -108,7 +124,7 @@
               </tr>
               {% endfor %}
               {% if not supplies %}
-              <tr><td colspan="11" class="text-center text-muted">Нет данных</td></tr>
+              <tr><td colspan="12" class="text-center text-muted">Нет данных</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -129,6 +145,29 @@
 let supAll = [];
 let rendered = 0;
 
+// Ленивая подзагрузка количества коробов с ограничением параллелизма
+let __pkgQueue = [];
+let __pkgActive = 0;
+const __PKG_MAX = 3;
+function __pumpPkg(){
+  while (__pkgActive < __PKG_MAX && __pkgQueue.length){
+    const row = __pkgQueue.shift();
+    if (!row) continue;
+    const id = row.getAttribute('data-supply-id');
+    const cell = row.querySelector('td[data-pkg-cell]');
+    if (!cell || cell.textContent.trim() !== '-') { continue; }
+    __pkgActive++;
+    fetch(`/api/fbw/supplies/${encodeURIComponent(id)}/package-count`).then(r=>r.json()).then(d=>{
+      const val = (d && typeof d.package_count !== 'undefined') ? d.package_count : '-';
+      if (cell) cell.textContent = (val && Number(val) > 0) ? String(val) : '-';
+    }).catch(()=>{}).finally(()=>{ __pkgActive--; __pumpPkg(); });
+  }
+}
+function __enqueuePkgRow(row){
+  __pkgQueue.push(row);
+  __pumpPkg();
+}
+
 function statusClass(st){
   if(!st) return '';
   if(st.includes('Принято')) return 'status-accepted';
@@ -136,12 +175,58 @@ function statusClass(st){
   if(st.includes('Идёт приёмка')) return 'status-accepted';
   if(st.includes('Отгружено на воротах')) return 'status-accepted';
   if(st.includes('Не запланировано')) return 'status-notallowed';
+  if(st.includes('Запланировано')) return 'status-planned';
   return '';
 }
 
 function onlyDate(s){
   if(!s) return '';
   return s.split(' ')[0] || s;
+}
+
+function parseDMY(s){
+  try{
+    const [d,m,y] = String(s||'').split('.').map(x=>parseInt(x,10));
+    if(!d||!m||!y) return null;
+    return new Date(y, m-1, d);
+  }catch(_){ return null; }
+}
+
+function daysLeftText(dateStr){
+  try{
+    const dt = parseDMY(dateStr);
+    if(!dt) return '';
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const end = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    const diffMs = end - start;
+    const days = Math.round(diffMs/86400000);
+    return `Осталось дней: ${days}`;
+  }catch(_){ return ''; }
+}
+
+function recomputeStats(){
+  const block = document.getElementById('fbwStats');
+  if (!block) return;
+  try{
+    let goods = 0; let boxes = 0;
+    const rows = Array.from(document.querySelectorAll('#supBody tr.supply-row'));
+    rows.forEach(tr=>{
+      const tds = tr.querySelectorAll('td');
+      const status = (tds[11]?.textContent || '').trim();
+      if (status.includes('Отгрузка разрешена')){
+        const goodsStr = (tds[4]?.textContent || '').replace(/\s+/g,'').trim();
+        const goodsVal = parseInt(goodsStr, 10);
+        if (!isNaN(goodsVal)) goods += goodsVal;
+        const boxStr = (tds[5]?.textContent || '').replace(/\s+/g,'').trim();
+        const boxVal = parseInt(boxStr, 10);
+        if (!isNaN(boxVal)) boxes += boxVal;
+      }
+    });
+    document.getElementById('fbwStatGoods').textContent = goods.toString();
+    document.getElementById('fbwStatBoxes').textContent = boxes.toString();
+    block.style.display = '';
+  }catch(_){ }
 }
 
 function renderChunk(count){
@@ -175,21 +260,32 @@ function renderChunk(count){
       <td class="text-center text-nowrap">${s.type||''}</td>
       <td class="text-center text-nowrap">${s.created_at||''}</td>
       <td class="text-center">${(s.total_goods ?? '-') }</td>
-      <td class="text-start">${s.warehouse||''}</td>
+      <td class="text-center" data-pkg-cell="1">${(s.package_count ? s.package_count : '-') }</td>
+      <td class="text-start"><span class="wh-name" data-full-name="${s.warehouse||''}">${s.warehouse||''}</span></td>
       <td class="text-center">${coefHtml}</td>
       <td class="text-start">${costText}</td>
-      <td class="text-center text-nowrap">${s.planned_date||''}</td>
+      <td class="text-center text-nowrap">
+        <div>${s.planned_date||''}</div>
+        ${(!s.status || !String(s.status).includes('Принято')) ? (`<div class=\"text-muted\" style=\"font-size: 0.8em;\">${daysLeftText(s.planned_date)}</div>`) : ''}
+      </td>
       <td class="text-center text-nowrap">${onlyDate(s.fact_date)}</td>
       <td class="text-center"><span class="text-badge ${statusClass(s.status)}">${s.status||''}</span></td>
     `;
     tbody.appendChild(tr);
+    // Ленивая подзагрузка количества коробов для добавленной строки
+    (function(){
+      try{
+        const pkgCell = tr.querySelector('td[data-pkg-cell]');
+        if (pkgCell && pkgCell.textContent.trim() === '-') __enqueuePkgRow(tr);
+      }catch(_){}
+    })();
     // details row skeleton
     const dtr = document.createElement('tr');
     dtr.className = 'supply-details';
     dtr.setAttribute('data-for', s.supply_id||'');
     dtr.style.display = 'none';
     dtr.innerHTML = `
-      <td colspan="11">
+      <td colspan="12">
         <div class="p-2 bg-light border rounded">
           <div class="supply-summary small text-muted mb-2" data-for="${s.supply_id||''}"></div>
           <div class="fw-semibold mb-2">Упаковки</div>
@@ -202,6 +298,8 @@ function renderChunk(count){
   // Не блокируем кнопку по длине локального массива, так как на сервере могут быть ещё записи
   const lm = document.getElementById('loadMoreBtn');
   if (lm) lm.disabled = false;
+  // Пересчёт статистики после дорисовки
+  try{ recomputeStats(); }catch(_){}
 }
 
 async function refresh(){
@@ -217,6 +315,15 @@ async function refresh(){
     tbody.innerHTML = '';
     renderChunk(15);
     document.getElementById('lastUpdated').textContent = data.updated_at||'';
+    try{ recomputeStats(); }catch(_){}
+    // Для уже отрисованных строк: если колонка с коробами '-', запускаем ленивую подгрузку
+    try{
+      const rows = Array.from(document.querySelectorAll('#supBody tr.supply-row'));
+      rows.forEach((tr)=>{
+        const cell = tr.querySelector('td[data-pkg-cell]');
+        if (cell && cell.textContent.trim() === '-') __enqueuePkgRow(tr);
+      });
+    }catch(_){}
   }catch(e){ console.error(e); }
   finally{ btn.disabled = false; btn.textContent = 'Обновить'; }
 }
@@ -236,6 +343,7 @@ document.getElementById('loadMoreBtn')?.addEventListener('click', ()=>{
     // Добавляем в общий массив и отрисовываем ровно полученную порцию
     supAll = supAll.concat(items);
     renderChunk(items.length);
+    try{ recomputeStats(); }catch(_){}
     // Если сервер вернул пусто — дальше блокируем кнопку
     if (items.length === 0) btn.disabled = true;
   }).catch(console.error).finally(()=>{ btn.disabled = false; btn.textContent = 'Загрузить ещё'; });
@@ -380,12 +488,13 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
         type: tds[2]?.textContent.trim(),
         created_at: tds[3]?.textContent.trim(),
         total_goods: tds[4]?.textContent.trim(),
-        warehouse: tds[5]?.textContent.trim(),
-        acceptance_coefficient: tds[6]?.textContent.trim(),
-        acceptance_cost: tds[7]?.textContent.trim(),
-        planned_date: tds[8]?.textContent.trim(),
-        fact_date: tds[9]?.textContent.trim(),
-        status: statusSpan ? statusSpan.textContent.trim() : tds[10]?.textContent.trim()
+        package_count: tds[5]?.textContent.trim(),
+        warehouse: tds[6]?.textContent.trim(),
+        acceptance_coefficient: tds[7]?.textContent.trim(),
+        acceptance_cost: tds[8]?.textContent.trim(),
+        planned_date: tds[9]?.textContent.trim(),
+        fact_date: tds[10]?.textContent.trim(),
+        status: statusSpan ? statusSpan.textContent.trim() : tds[11]?.textContent.trim()
       };
     });
     // Уже отрисовано сервером (считаем только строки поставок)
@@ -399,7 +508,47 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
         if (moreBtn) moreBtn.disabled = false; // всегда активна, даже если в кэше только 10
       }
     }).catch(()=>{});
+    // Ленивая подзагрузка количества коробов для уже отрисованных строк
+    try{
+      rows.forEach((tr)=>{
+        const cell = tr.querySelector('td[data-pkg-cell]');
+        if (cell && cell.textContent.trim() === '-') __enqueuePkgRow(tr);
+      });
+    }catch(_){}
+    try{ recomputeStats(); }catch(_){}
   }catch(_){ supAll = []; }
+})();
+
+// Инициализация затухания и тултипов только для обрезанных названий складов
+(function initTooltips(){
+  try{
+    const isTruncated = (el)=>{ try{ return el.scrollWidth > el.clientWidth; }catch(_){ return false; } };
+    const initOrDestroyTooltip = (el)=>{
+      try{
+        const needs = isTruncated(el);
+        // управляем fade и тултипом
+        if (needs){
+          el.classList.add('truncate-fade');
+          el.setAttribute('title', el.getAttribute('data-full-name') || el.textContent || '');
+          el.setAttribute('data-bs-toggle', 'tooltip');
+          // если тултип ещё не создан — создаём
+          if (!el._wbTooltipInstance){ el._wbTooltipInstance = new bootstrap.Tooltip(el); }
+        } else {
+          el.classList.remove('truncate-fade');
+          // удалить тултип, если был
+          if (el._wbTooltipInstance){ try{ el._wbTooltipInstance.dispose(); }catch(_){}; el._wbTooltipInstance = null; }
+          el.removeAttribute('data-bs-toggle');
+          el.removeAttribute('title');
+        }
+      }catch(_){ }
+    };
+    const whs = [].slice.call(document.querySelectorAll('.wh-name'));
+    whs.forEach(el=>{
+      initOrDestroyTooltip(el);
+      const ro = new ResizeObserver(()=>{ initOrDestroyTooltip(el); });
+      try{ ro.observe(el); }catch(_){ }
+    });
+  }catch(_){ }
 })();
 
 </script>
