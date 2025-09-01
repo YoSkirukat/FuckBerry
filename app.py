@@ -246,6 +246,7 @@ FBW_SUPPLY_PACKAGE_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{i
 # Wildberries Content API: cards list
 WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 STOCKS_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
+FIN_REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 
 # Wildberries Content API: cards list
 WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
@@ -888,6 +889,14 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
     raise RuntimeError("Request failed after retries")
 
 
+def get_with_retry_json(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 8, timeout_s: int = 60) -> Any:
+    resp = get_with_retry(url, headers, params, max_retries=max_retries, timeout_s=timeout_s)
+    try:
+        return resp.json()
+    except Exception:
+        raise RuntimeError("Invalid JSON from API")
+
+
 def fetch_orders_page(token: str, date_from_iso: str, flag: int = 0) -> List[Dict[str, Any]]:
     headers = {"Authorization": f"Bearer {token}"}
     params = {"dateFrom": date_from_iso, "flag": flag}
@@ -993,6 +1002,76 @@ def fetch_sales_range(token: str, start_date: str, end_date: str) -> List[Dict[s
         time.sleep(0.2)
 
     return collected
+
+
+def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 100000) -> List[Dict[str, Any]]:
+    """Fetch financial report details v5 with rrdid pagination.
+
+    According to docs, start with rrdid=0 and then pass last row's rrd_id until empty list is returned.
+    date_from must be RFC3339 in MSK; we'll accept YYYY-MM-DD and convert to T00:00:00.
+    date_to is YYYY-MM-DD (end date).
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    # Compose RFC3339-like dateFrom in MSK start of day
+    try:
+        df_iso = datetime.strptime(date_from, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00")
+    except Exception:
+        df_iso = f"{date_from}T00:00:00"
+    params_base: Dict[str, Any] = {"dateFrom": df_iso, "dateTo": date_to, "limit": max(1, min(100000, int(limit)))}
+    all_rows: List[Dict[str, Any]] = []
+    rrdid = 0
+    while True:
+        params = dict(params_base)
+        params["rrdid"] = rrdid
+        data = get_with_retry_json(FIN_REPORT_URL, headers, params, max_retries=8, timeout_s=60)
+        if not isinstance(data, list) or not data:
+            break
+        all_rows.extend(data)
+        try:
+            last = data[-1]
+            rrdid = int(last.get("rrd_id") or last.get("rrdid") or last.get("rrdId") or 0)
+        except Exception:
+            break
+        # If received less than limit rows, it's the last page — stop without extra call (avoid long 429 waits)
+        try:
+            if len(data) < params_base.get("limit", 100000):
+                break
+        except Exception:
+            pass
+        # Небольшая пауза между страницами (обычно не требуется, т.к. limit=100000 закрывает весь период одной страницей)
+        time.sleep(1.1)
+    return all_rows
+
+
+def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate rows by product (nm_id + supplierArticle) to qty and revenue.
+    Fields per docs: realize/prices/quantities. We'll use 'quantity' and 'retail_amount' if present.
+    """
+    by_key: Dict[tuple[Any, Any], Dict[str, Any]] = {}
+    for r in rows:
+        nm_id = r.get("nm_id") or r.get("nmId") or r.get("nm")
+        prod = r.get("supplier_article") or r.get("supplierArticle") or r.get("supplierArticleName") or ""
+        key = (nm_id, prod)
+        item = by_key.get(key)
+        qty = 0
+        rev = 0.0
+        # common fields in WB v5: quantity, retail_amount
+        try:
+            qty = int(r.get("quantity") or r.get("sale_qty") or r.get("qty") or 0)
+        except Exception:
+            qty = 0
+        try:
+            rev = float(r.get("retail_amount") or r.get("retailAmount") or r.get("sum_price") or 0)
+        except Exception:
+            rev = 0.0
+        if item is None:
+            by_key[key] = {"nm_id": nm_id, "product": prod, "qty": max(qty, 0), "revenue": max(rev, 0.0)}
+        else:
+            item["qty"] = int(item.get("qty", 0)) + max(qty, 0)
+            item["revenue"] = float(item.get("revenue", 0.0)) + max(rev, 0.0)
+    items = list(by_key.values())
+    items.sort(key=lambda x: (x.get("revenue") or 0.0), reverse=True)
+    return items
 
 
 def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -2742,6 +2821,408 @@ def api_report_sales():
         }), 200
     except Exception as exc:
         return jsonify({"items": [], "error": str(exc)}), 200
+
+
+@app.route("/report/finance", methods=["GET"]) 
+@login_required
+def report_finance_page():
+    # initial render without data
+    if not request.args.get("date_from") and not request.args.get("date_to"):
+        # Try restore last viewed period and data for this user
+        cached = load_last_results() or {}
+        dfv = cached.get("finance_date_from") or ""
+        dtv = cached.get("finance_date_to") or ""
+        metrics = cached.get("finance_metrics") or {}
+        rows = cached.get("finance_rows") or []
+        return render_template(
+            "finance_report.html",
+            error=None,
+            rows=rows,
+            date_from_fmt=(metrics.get("date_from_fmt") or ""),
+            date_to_fmt=(metrics.get("date_to_fmt") or ""),
+            date_from_val=dfv,
+            date_to_val=dtv,
+            finance_metrics=metrics,
+        ), 200
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return render_template(
+            "finance_report.html",
+            error="Требуется API токен (Статистика)",
+            items=[],
+            date_from_fmt="",
+            date_to_fmt="",
+            date_from_val=(request.args.get("date_from") or ""),
+            date_to_val=(request.args.get("date_to") or ""),
+        ), 200
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    try:
+        raw = fetch_finance_report(token, req_from, req_to)
+        date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+        date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+    except Exception as exc:
+        return render_template(
+            "finance_report.html",
+            error=str(exc),
+            rows=[],
+            date_from_fmt="",
+            date_to_fmt="",
+            date_from_val=req_from,
+            date_to_val=req_to,
+        ), 200
+    return render_template(
+        "finance_report.html",
+        error=None,
+        rows=raw,
+        date_from_fmt=date_from_fmt,
+        date_to_fmt=date_to_fmt,
+        date_from_val=req_from,
+        date_to_val=req_to,
+    ), 200
+
+
+@app.route("/api/report/finance", methods=["GET"]) 
+@login_required
+def api_report_finance():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    if not (token and req_from and req_to):
+        return jsonify({"items": [], "error": None}), 200
+    try:
+        # Always fetch fresh report for the period (не кэшируем данные отчёта)
+        raw = fetch_finance_report(token, req_from, req_to)
+        total_qty = 0
+        total_sum = 0.0
+        # WB реализовал (по retail_amount с фильтрами по основаниям оплаты)
+        wbr_plus = 0.0
+        wbr_minus = 0.0
+        total_logistics = 0.0
+        total_storage = 0.0
+        total_acceptance = 0.0
+        total_for_pay = 0.0
+        total_buyouts = 0.0
+        total_returns = 0.0
+        total_acquiring = 0.0
+        total_commission_wb = 0.0
+        total_other_deductions = 0.0
+        total_penalties = 0.0
+        total_additional_payment = 0.0
+        # Компенсация брака составная метрика по ppvz_for_pay
+        x1 = x2 = x3 = x4 = x5 = x6 = x7 = x8 = 0.0
+        # Комиссия компоненты K1..K9
+        k1 = k2 = k3 = k4 = k5 = k6 = k7 = k8 = k9 = 0.0
+        # Компенсация ущерба компоненты U1..U14
+        u1 = u2 = u3 = u4 = u5 = u6 = u7 = u8 = u9 = u10 = u11 = u12 = u13 = u14 = 0.0
+        # Выкупы и возвраты считаем по колонке "supplier_oper_name"
+        # Выкупы: one of ["Продажа","Сторно возвратов","Корректная продажа","коррекция продаж"] -> sum(retail_price)
+        buyout_oper_values_lower = {"продажа", "сторно возвратов", "корректная продажа", "коррекция продаж"}
+        for r in raw:
+            try:
+                total_qty += int(r.get("quantity") or 0)
+            except Exception:
+                pass
+            try:
+                total_sum += float(r.get("retail_amount") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_logistics += float(r.get("delivery_rub") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_storage += float(r.get("storage_fee") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_acceptance += float(r.get("acceptance") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_for_pay += float(r.get("ppvz_for_pay") or 0.0)
+            except Exception:
+                pass
+            # Выкупы: суммируем розничную цену для нужных оснований оплаты
+            try:
+                oper = (r.get("supplier_oper_name") or "").strip()
+                if oper and oper.lower() in buyout_oper_values_lower:
+                    total_buyouts += float(r.get("retail_price") or 0.0)
+            except Exception:
+                pass
+            # WB реализовал: retail_amount с суммированием по основаниям оплаты
+            try:
+                oper_lc = (r.get("supplier_oper_name") or "").strip().lower()
+                amt = float(r.get("retail_amount") or 0.0)
+                if oper_lc in {"продажа","сторно возвратов","корректная продажа","коррекция продаж"}:
+                    wbr_plus += amt
+                elif oper_lc in {"возврат","сторно продаж","корректный возврат"}:
+                    wbr_minus += amt
+            except Exception:
+                pass
+            # Возвраты: supplier_oper_name == "Возврат"; суммируем retail_price
+            try:
+                oper = (r.get("supplier_oper_name") or "").strip()
+                if oper == "Возврат":
+                    total_returns += float(r.get("retail_price") or 0.0)
+            except Exception:
+                pass
+            # Эквайринг по формуле: E1 - E2 + E3
+            # E1: doc_type_name == "Продажа" AND acquiring_percent > 0 -> sum acquiring_fee
+            # E2: doc_type_name == "Возврат" AND acquiring_percent > 0 -> sum acquiring_fee
+            # E3: supplier_oper_name == "Корректировка эквайринга" -> sum ppvz_for_pay
+            try:
+                dt_name = (r.get("doc_type_name") or "").strip()
+                acq_pct = float(r.get("acquiring_percent") or 0.0)
+                afee = float(r.get("acquiring_fee") or 0.0)
+                if dt_name == "Продажа" and acq_pct > 0:
+                    total_acquiring += afee
+                elif dt_name == "Возврат" and acq_pct > 0:
+                    total_acquiring -= afee
+                oper_name = (r.get("supplier_oper_name") or "").strip()
+                if oper_name == "Корректировка эквайринга":
+                    total_acquiring += float(r.get("ppvz_for_pay") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_commission_wb += float(r.get("ppvz_vw") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_other_deductions += float(r.get("deduction") or 0.0)
+                total_other_deductions += float(r.get("additional_payment") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_penalties += float(r.get("penalty") or 0.0)
+            except Exception:
+                pass
+            try:
+                total_additional_payment += float(r.get("additional_payment") or 0.0)
+            except Exception:
+                pass
+            # Компенсация брака: считаем X1..X8 по supplier_oper_name + doc_type_name, суммируя ppvz_for_pay
+            try:
+                oper_l = (r.get("supplier_oper_name") or "").strip().lower()
+                doc_l = (r.get("doc_type_name") or "").strip().lower()
+                pay_val = float(r.get("ppvz_for_pay") or 0.0)
+                if oper_l == "компенсация брака" and doc_l == "продажа":
+                    x1 += pay_val
+                if oper_l == "оплата брака" and doc_l == "продажа":
+                    x2 += pay_val
+                if oper_l == "компенсация брака" and doc_l == "возврат":
+                    x3 += pay_val
+                if oper_l == "оплата брака" and doc_l == "возврат":
+                    x4 += pay_val
+                if oper_l == "частичная компенсация брака" and doc_l == "продажа":
+                    x5 += pay_val
+                if oper_l == "частичная компенсация брака" and doc_l == "возврат":
+                    x6 += pay_val
+                if oper_l == "добровольная компенсация при возврате" and doc_l == "продажа":
+                    x7 += pay_val
+                if oper_l == "добровольная компенсация при возврате" and doc_l == "возврат":
+                    x8 += pay_val
+                # Комиссия: K1..K9 — также на основе ppvz_for_pay
+                if oper_l == "продажа":
+                    k1 += pay_val
+                if oper_l == "сторно возвратов":
+                    k2 += pay_val
+                if oper_l == "корректная продажа":
+                    k3 += pay_val
+                if oper_l == "коррекция продаж" and doc_l == "продажа":
+                    k4 += pay_val
+                if oper_l == "возврат":
+                    k5 += pay_val
+                if oper_l == "сторно продаж":
+                    k6 += pay_val
+                if oper_l == "коррекция продаж" and doc_l == "возврат":
+                    k7 += pay_val
+                if oper_l == "корректный возврат":
+                    k8 += pay_val
+                if oper_l == "корректировка эквайринга":
+                    k9 += pay_val
+                # Компенсация ущерба: U1..U14 по условиям, суммируем ppvz_for_pay
+                if oper_l == "оплата потерянного товара" and doc_l == "продажа":
+                    u1 += pay_val
+                if oper_l == "компенсация потерянного товара" and doc_l == "продажа":
+                    u2 += pay_val
+                if oper_l == "оплата потерянного товара" and doc_l == "возврат":
+                    u3 += pay_val
+                if oper_l == "компенсация потерянного товара" and doc_l == "возврат":
+                    u4 += pay_val
+                if oper_l == "авансовая оплата за товар без движения" and doc_l == "продажа":
+                    u5 += pay_val
+                if oper_l == "авансовая оплата за товар без движения" and doc_l == "возврат":
+                    u6 += pay_val
+                if oper_l == "компенсация подмененного товара" and doc_l == "продажа":
+                    u7 += pay_val
+                if oper_l == "компенсация подмен" and doc_l == "продажа":
+                    u8 += pay_val
+                if oper_l == "компенсация подмененного товара" and doc_l == "возврат":
+                    u9 += pay_val
+                if oper_l == "компенсация подмен" and doc_l == "возврат":
+                    u10 += pay_val
+                if oper_l == "компенсация ущерба" and doc_l == "продажа":
+                    u11 += pay_val
+                if oper_l == "компенсация ущерба" and doc_l == "возврат":
+                    u12 += pay_val
+                if oper_l == "компенсация подмена" and doc_l == "продажа":
+                    u13 += pay_val
+                if oper_l == "компенсация подмен" and doc_l == "возврат":
+                    u14 += pay_val
+            except Exception:
+                pass
+        date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+        date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+        # Save last viewed period and last computed metrics/rows to restore on page reload
+        try:
+            save_last_results({
+                "finance_date_from": req_from,
+                "finance_date_to": req_to,
+                "finance_rows": raw,
+                "finance_metrics": {
+                    "total_qty": int(total_qty),
+                    "total_sum": round(total_sum, 2),
+                    "total_logistics": round(total_logistics, 2),
+                    "total_storage": round(total_storage, 2),
+                    "total_acceptance": round(total_acceptance, 2),
+                    "total_for_pay": round(total_for_pay, 2),
+                    "total_buyouts": round(total_buyouts, 2),
+                    "total_returns": round(total_returns, 2),
+                    "revenue": round(revenue_calc, 2),
+                    "total_commission": round(commission_total, 2),
+                    "total_acquiring": round(total_acquiring, 2),
+                    "total_other_deductions": round(total_other_deductions, 2),
+                    "total_penalties": round(total_penalties, 2),
+                    "total_defect_compensation": round(defect_comp, 2),
+                    "total_damage_compensation": round(damage_comp, 2),
+                    "total_additional_payment": round(total_additional_payment, 2),
+                    "total_deductions": round(total_deductions, 2),
+                    "total_for_transfer": round(total_for_transfer, 2),
+                    "date_from_fmt": date_from_fmt,
+                    "date_to_fmt": date_to_fmt,
+                }
+            })
+        except Exception:
+            pass
+        revenue_calc = total_buyouts - total_returns
+        defect_comp = x1 + x2 - x3 - x4 + x5 - x6 + x7 - x8
+        total_wb_realized = wbr_plus - wbr_minus
+        # Комиссия = Выручка - (K1+K2+K3+K4 - (K5+K6+K7+K8)) - Эквайринг - |K9|
+        commission_total = (
+            revenue_calc
+            - (k1 + k2 + k3 + k4)
+            + (k5 + k6 + k7 + k8)
+            - total_acquiring
+            - abs(k9)
+        )
+        damage_comp = u1 + u2 - u3 - u4 + u5 - u6 + u7 + u8 - u9 - u10 + u11 - u12 + u13 - u14
+        
+        # Удержания и компенсации WB = Комиссия + Эквайринг + Логистика + Хранение + Прочие удержания + Приёмка - Компенсация брака - Компенсация ущерба + Штрафы + Доплаты
+        total_deductions = (
+            commission_total + 
+            total_acquiring + 
+            total_logistics + 
+            total_storage + 
+            total_other_deductions + 
+            total_acceptance - 
+            defect_comp - 
+            damage_comp + 
+            total_penalties + 
+            total_additional_payment
+        )
+        
+        # К перечислению = Выручка - Удержания и компенсации WB + E3
+        # E3: supplier_oper_name == "Корректировка эквайринга" -> sum ppvz_for_pay
+        e3_correction = 0
+        for r in raw:
+            try:
+                oper_name = (r.get("supplier_oper_name") or "").strip()
+                if oper_name == "Корректировка эквайринга":
+                    e3_correction += float(r.get("ppvz_for_pay") or 0.0)
+            except Exception:
+                pass
+        
+        total_for_transfer = revenue_calc - total_deductions + e3_correction
+        
+        return jsonify({
+            "rows": raw,
+            "total_qty": int(total_qty),
+            "total_sum": round(total_sum, 2),
+            "total_logistics": round(total_logistics, 2),
+            "total_storage": round(total_storage, 2),
+            "total_acceptance": round(total_acceptance, 2),
+            "total_for_pay": round(total_for_pay, 2),
+            "total_buyouts": round(total_buyouts, 2),
+            "total_returns": round(total_returns, 2),
+            "revenue": round(revenue_calc, 2),
+            "total_wb_realized": round(total_wb_realized, 2),
+            "total_commission": round(commission_total, 2),
+            "total_acquiring": round(total_acquiring, 2),
+            "total_commission_wb": round(total_commission_wb, 2),
+            "total_other_deductions": round(total_other_deductions, 2),
+            "total_penalties": round(total_penalties, 2),
+            "total_defect_compensation": round(defect_comp, 2),
+                                "total_damage_compensation": round(damage_comp, 2),
+                    "total_additional_payment": round(total_additional_payment, 2),
+                    "total_deductions": round(total_deductions, 2),
+                    "total_for_transfer": round(total_for_transfer, 2),
+                    "date_from_fmt": date_from_fmt,
+                    "date_to_fmt": date_to_fmt,
+        }), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
+
+
+@app.route("/report/finance/export", methods=["GET"]) 
+@login_required
+def export_finance_xls():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    if not (token and req_from and req_to):
+        return ("Требуются даты и токен", 400)
+    try:
+        # Always fetch fresh for export
+        rows = fetch_finance_report(token, req_from, req_to)
+        # Build XLS (not XLSX) to match requirement "XLS"
+        try:
+            import xlwt  # type: ignore
+        except Exception:
+            return ("На сервере отсутствует зависимость xlwt (для .xls)", 500)
+        wb = xlwt.Workbook()
+        ws = wb.add_sheet("finance")
+        header_style = xlwt.easyxf("font: bold on; align: horiz center")
+        num_style = xlwt.easyxf("align: horiz right")
+        cols = [
+            'realizationreport_id','date_from','date_to','create_dt','currency_name','suppliercontract_code','rrd_id','gi_id','dlv_prc','fix_tariff_date_from','fix_tariff_date_to','subject_name','nm_id','brand_name','sa_name','ts_name','barcode','doc_type_name','quantity','retail_price','retail_amount','sale_percent','commission_percent','office_name','supplier_oper_name','order_dt','sale_dt','rr_dt','shk_id','retail_price_withdisc_rub','delivery_amount','return_amount','delivery_rub','gi_box_type_name','product_discount_for_report','supplier_promo','ppvz_spp_prc','ppvz_kvw_prc_base','ppvz_kvw_prc','sup_rating_prc_up','is_kgvp_v2','ppvz_sales_commission','ppvz_for_pay','ppvz_reward','acquiring_fee','acquiring_percent','payment_processing','acquiring_bank','ppvz_vw','ppvz_vw_nds','ppvz_office_name','ppvz_office_id','ppvz_supplier_id','ppvz_supplier_name','ppvz_inn','declaration_number','bonus_type_name','sticker_id','site_country','srv_dbs','penalty','additional_payment','rebill_logistic_cost','rebill_logistic_org','storage_fee','deduction','acceptance','assembly_id','kiz','srid','report_type','is_legal_entity','trbx_id','installment_cofinancing_amount','wibes_wb_discount_percent','cashback_amount','cashback_discount'
+        ]
+        headers_ru = [
+            "Номер отчёта","Дата начала периода","Дата конца периода","Дата формирования","Валюта","Договор","Номер строки","Номер поставки","Фикс. коэф. склада","Начало фиксации","Конец фиксации","Предмет","Артикул WB","Бренд","Артикул продавца","Размер","Баркод","Тип документа","Количество","Цена розничная","Реализовано (Пр)","Скидка, %","кВВ, %","Склад","Обоснование оплаты","Дата заказа","Дата продажи","Дата операции","Штрихкод","Розничная с уч. скидки","Кол-во доставок","Кол-во возвратов","Доставка, руб","Тип коробов","Итог. продукт. скидка, %","Промокод, %","СПП, %","Базовый кВВ без НДС, %","Итоговый кВВ без НДС, %","Снижение кВВ (рейтинг), %","Снижение кВВ (акция), %","Вознаграждение с продаж","К перечислению продавцу","Возмещение ПВЗ","Эквайринг","Эквайринг, %","Тип платежа эквайринга","Банк-эквайер","Вознаграждение ВВ","НДС ВВ","Офис доставки","ID офиса","ID партнёра","Партнёр","ИНН партнёра","№ декларации","Тип логистики/штрафа","ID стикера","Страна продажи","Платная доставка","Штрафы","Корректировка ВВ","Возмещение логистики","Организатор перевозки","Хранение","Удержания","Платная приёмка","ID сборочного","Код маркировки","SRID","Тип отчёта","B2B","ID короба приёмки","Софинансирование","Скидка Wibes, %","Баллы (удержано)","Компенсация скидки"
+        ]
+        for ci, title in enumerate(headers_ru, start=1):
+            ws.write(0, ci-1, title, header_style)
+        row_idx = 1
+        for r in rows:
+            for ci, key in enumerate(cols, start=1):
+                val = r.get(key)
+                if isinstance(val, (dict, list)):
+                    try:
+                        import json as _json
+                        val = _json.dumps(val, ensure_ascii=False)
+                    except Exception:
+                        val = str(val)
+                ws.write(row_idx, ci-1, val if val is not None else "")
+            row_idx += 1
+        out = io.BytesIO()
+        wb.save(out)
+        out.seek(0)
+        filename = f"finance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+        return send_file(out, mimetype="application/vnd.ms-excel", as_attachment=True, download_name=filename)
+    except requests.HTTPError as http_err:
+        return (f"Ошибка API: {http_err.response.status_code}", 502)
+    except Exception as exc:
+        return (f"Ошибка: {exc}", 500)
 
 @app.route("/fbs", methods=["GET", "POST"]) 
 @login_required

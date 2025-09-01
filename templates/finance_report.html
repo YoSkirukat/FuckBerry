@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Финансовый отчёт</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <style>
+    input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 10px; width: 1.2em; height: 1.2em; }
+    .table-fixed-head { max-height: 70vh; overflow: auto; }
+    .mb-2 {
+    margin-bottom: 1.4rem !important;
+}
+  </style>
+  <script>
+    function bindDateOpener(wrapId, inputId){
+      const wrap = document.getElementById(wrapId);
+      const input = document.getElementById(inputId);
+      if (!wrap || !input) return;
+      const openPicker = () => { input.showPicker ? input.showPicker() : input.focus(); };
+      wrap.addEventListener('click', (e) => { if (e.target === input) return; openPicker(); });
+      input.addEventListener('click', () => openPicker());
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); }});
+    }
+    document.addEventListener('DOMContentLoaded', function(){
+      bindDateOpener('fDateFromWrap','fDateFrom');
+      bindDateOpener('fDateToWrap','fDateTo');
+      const form = document.getElementById('financeForm');
+      const loadBtn = document.getElementById('financeLoadBtn');
+      const exportBtn = document.getElementById('financeExportBtn');
+      const dfInput = document.getElementById('fDateFrom');
+      const dtInput = document.getElementById('fDateTo');
+      const dateWarn = document.getElementById('finDateWarn');
+      function fmtRu(ymd){
+        if (!ymd) return '';
+        const parts = String(ymd).split('-');
+        if (parts.length !== 3) return ymd;
+        const [y,m,d] = parts;
+        return `${d}.${m}.${y}`;
+      }
+      function validateDates(){
+        const df = dfInput?.value || '';
+        const dt = dtInput?.value || '';
+        // set min/max constraints
+        if (df && dtInput){ dtInput.min = df; } else if (dtInput){ dtInput.removeAttribute('min'); }
+        if (dt && dfInput){ dfInput.max = dt; } else if (dfInput){ dfInput.removeAttribute('max'); }
+        // validate order
+        let ok = true; let msg = '';
+        if (df && dt && df > dt){ ok = false; msg = 'Дата по не может быть меньше даты с.'; }
+        if (!ok){
+          if (dateWarn){ dateWarn.textContent = msg; dateWarn.style.display = 'block'; }
+          if (loadBtn){ loadBtn.disabled = true; }
+        } else {
+          if (dateWarn){ dateWarn.style.display = 'none'; dateWarn.textContent = ''; }
+          if (loadBtn){ loadBtn.disabled = false; }
+        }
+        return ok;
+      }
+      dfInput?.addEventListener('change', validateDates);
+      dtInput?.addEventListener('change', validateDates);
+      // initial validation
+      validateDates();
+      // hydrate UI from server-provided cached data (if any)
+      try{
+        const mnode = document.getElementById('finServerMetrics');
+        const rnode = document.getElementById('finServerRows');
+        if (mnode && rnode){
+          const metrics = JSON.parse(mnode.textContent || '{}');
+          const rowsSrv = JSON.parse(rnode.textContent || '[]');
+          if (Array.isArray(rowsSrv) && rowsSrv.length){
+            // mimic subset of API response
+            const data = Object.assign({rows: rowsSrv}, metrics || {});
+            // update important fields similarly to submit handler
+            const revenueEl = document.getElementById('finRevenueVal'); if (revenueEl) revenueEl.textContent = ((Number(data.revenue)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const buyoutsEl = document.getElementById('finBuyoutsVal'); if (buyoutsEl) buyoutsEl.textContent = ((Number(data.total_buyouts)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const returnsEl = document.getElementById('finReturnsVal'); if (returnsEl) returnsEl.textContent = ((Number(data.total_returns)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const logisticsEl = document.getElementById('finLogisticsVal'); if (logisticsEl) logisticsEl.textContent = ((Number(data.total_logistics)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const storageEl = document.getElementById('finStorageVal'); if (storageEl) storageEl.textContent = ((Number(data.total_storage)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const acceptanceEl = document.getElementById('finAcceptanceVal'); if (acceptanceEl) acceptanceEl.textContent = ((Number(data.total_acceptance)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const acquiringEl = document.getElementById('finAcquiringVal'); if (acquiringEl) acquiringEl.textContent = ((Number(data.total_acquiring)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const otherDedEl = document.getElementById('finOtherDedVal'); if (otherDedEl) otherDedEl.textContent = ((Number(data.total_other_deductions)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const penaltiesEl = document.getElementById('finPenaltiesVal'); if (penaltiesEl) penaltiesEl.textContent = ((Number(data.total_penalties)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const addPayEl = document.getElementById('finAdditionalPayVal'); if (addPayEl) addPayEl.textContent = ((Number(data.total_additional_payment)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const defectCompEl = document.getElementById('finDefectCompVal'); if (defectCompEl) defectCompEl.textContent = ((Number(data.total_defect_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const damageCompEl = document.getElementById('finDamageCompVal'); if (damageCompEl) damageCompEl.textContent = ((Number(data.total_damage_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const commissionEl = document.getElementById('finCommissionVal'); if (commissionEl) commissionEl.textContent = ((Number(data.total_commission)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const wbRealEl = document.getElementById('finWbRealizedVal'); if (wbRealEl) wbRealEl.textContent = ((Number(data.total_wb_realized)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const wbDed = ((Number(data.total_commission)||0) + (Number(data.total_acquiring)||0) + (Number(data.total_logistics)||0) + (Number(data.total_storage)||0) + (Number(data.total_other_deductions)||0) + (Number(data.total_acceptance)||0) - (Number(data.total_defect_compensation)||0) - (Number(data.total_damage_compensation)||0) + (Number(data.total_penalties)||0) + (Number(data.total_additional_payment)||0));
+            const wbDedEl = document.getElementById('finWbDedTotal'); if (wbDedEl) wbDedEl.textContent = Number(wbDed).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const forPayEl2 = document.getElementById('finForPayVal'); if (forPayEl2) forPayEl2.textContent = (Number(data.total_for_transfer || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const buyoutOps = new Set(['продажа','сторно возвратов','корректная продажа','коррекция продаж']);
+            const buyoutsQty = rowsSrv.reduce((acc, r) => { const op = (r && r.supplier_oper_name ? String(r.supplier_oper_name).trim().toLowerCase() : ''); return acc + (buyoutOps.has(op) ? 1 : 0); }, 0);
+            const buyoutsQtyEl = document.getElementById('finBuyoutsQty'); if (buyoutsQtyEl) buyoutsQtyEl.textContent = (Number(buyoutsQty).toLocaleString('ru-RU'));
+            const returnOps = new Set(['возврат','сторно продаж','корректный возврат']);
+            const returnsQty = rowsSrv.reduce((acc, r) => { const op = (r && r.supplier_oper_name ? String(r.supplier_oper_name).trim().toLowerCase() : ''); return acc + (returnOps.has(op) ? 1 : 0); }, 0);
+            const returnsQtyEl = document.getElementById('finReturnsQty'); if (returnsQtyEl) returnsQtyEl.textContent = (Number(returnsQty).toLocaleString('ру-RU'));
+            const revenueQtyEl = document.getElementById('finRevenueQty'); if (revenueQtyEl) revenueQtyEl.textContent = (Number(Math.max(0, buyoutsQty - returnsQty)).toLocaleString('ru-RU'));
+            const resWrap = document.getElementById('finResults'); if (resWrap) resWrap.style.display = rowsSrv.length ? 'block' : 'none';
+            if (exportBtn) exportBtn.disabled = !(rowsSrv && rowsSrv.length > 0);
+          }
+        }
+      } catch(e){}
+      form?.addEventListener('submit', async function(e){
+        e.preventDefault();
+        if (!loadBtn) return;
+        if (!validateDates()) return; // stop if dates invalid
+        try{
+          loadBtn.disabled = true; const prev = loadBtn.textContent; loadBtn.textContent = 'Загрузка...';
+          const params = new URLSearchParams(new FormData(form));
+          const res = await fetch(`/api/report/finance?${params.toString()}`);
+          const data = await res.json();
+          // error handling
+          if (data && data.error){
+            const alertBox = document.getElementById('finAlert');
+            if (alertBox){ alertBox.textContent = data.error; alertBox.style.display = 'block'; }
+          } else {
+            const alertBox = document.getElementById('finAlert');
+            if (alertBox){ alertBox.style.display = 'none'; alertBox.textContent = ''; }
+          }
+          const rows = (data.rows || []);
+          const revenueEl = document.getElementById('finRevenueVal');
+          if (revenueEl) revenueEl.textContent = ((Number(data.revenue)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const buyoutsEl = document.getElementById('finBuyoutsVal');
+          if (buyoutsEl) buyoutsEl.textContent = ((Number(data.total_buyouts)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const returnsEl = document.getElementById('finReturnsVal');
+          if (returnsEl) returnsEl.textContent = ((Number(data.total_returns)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          // Кол-во возвратов: суммируем по операторам Возврат, Сторно продаж, Корректный возврат
+          const returnOps = new Set(['возврат','сторно продаж','корректный возврат']);
+          const returnsQty = rows.reduce((acc, r) => {
+            const op = (r && r.supplier_oper_name ? String(r.supplier_oper_name).trim().toLowerCase() : '');
+            return acc + (returnOps.has(op) ? 1 : 0);
+          }, 0);
+          const returnsQtyEl = document.getElementById('finReturnsQty');
+          if (returnsQtyEl) returnsQtyEl.textContent = (Number(returnsQty).toLocaleString('ru-RU'));
+          const wbRealEl = document.getElementById('finWbRealizedVal');
+          if (wbRealEl) wbRealEl.textContent = ((Number(data.total_wb_realized)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const logisticsEl = document.getElementById('finLogisticsVal');
+          if (logisticsEl) logisticsEl.textContent = ((Number(data.total_logistics)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const logisticsPctEl = document.getElementById('finLogisticsPct');
+          if (logisticsPctEl){
+            const revL = Number(data.revenue)||0; const vL = Number(data.total_logistics)||0;
+            logisticsPctEl.textContent = (revL ? (vL/revL*100) : 0).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' %';
+          }
+          const storageEl = document.getElementById('finStorageVal');
+          if (storageEl) storageEl.textContent = ((Number(data.total_storage)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const storagePctEl = document.getElementById('finStoragePct');
+          if (storagePctEl){
+            const revS = Number(data.revenue)||0; const vS = Number(data.total_storage)||0;
+            storagePctEl.textContent = (revS ? (vS/revS*100) : 0).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' %';
+          }
+          const acceptanceEl = document.getElementById('finAcceptanceVal');
+          if (acceptanceEl) acceptanceEl.textContent = ((Number(data.total_acceptance)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const acceptancePctEl = document.getElementById('finAcceptancePct');
+          if (acceptancePctEl){
+            const revA = Number(data.revenue)||0; const vA = Number(data.total_acceptance)||0;
+            acceptancePctEl.textContent = (revA ? (vA/revA*100) : 0).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' %';
+          }
+          const forPayEl = document.getElementById('finForPayVal');
+          if (forPayEl) forPayEl.textContent = ((Number(data.total_for_transfer)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const acquiringEl = document.getElementById('finAcquiringVal');
+          if (acquiringEl) acquiringEl.textContent = ((Number(data.total_acquiring)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const acquiringPctEl = document.getElementById('finAcquiringPct');
+          if (acquiringPctEl){
+            const rev = Number(data.revenue)||0;
+            const acq = Number(data.total_acquiring)||0;
+            const pctA = rev ? (acq / rev) * 100 : 0;
+            acquiringPctEl.textContent = pctA.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' %';
+          }
+          const otherDedEl = document.getElementById('finOtherDedVal');
+          if (otherDedEl) otherDedEl.textContent = ((Number(data.total_other_deductions)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const otherDedPctEl = document.getElementById('finOtherDedPct');
+          if (otherDedPctEl){
+            const revO = Number(data.revenue)||0; const vO = Number(data.total_other_deductions)||0;
+            otherDedPctEl.textContent = (revO ? (vO/revO*100) : 0).toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' %';
+          }
+          const penaltiesEl = document.getElementById('finPenaltiesVal');
+          if (penaltiesEl) penaltiesEl.textContent = ((Number(data.total_penalties)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const addPayEl = document.getElementById('finAdditionalPayVal');
+          if (addPayEl) addPayEl.textContent = ((Number(data.total_additional_payment)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const defectCompEl = document.getElementById('finDefectCompVal');
+          if (defectCompEl) defectCompEl.textContent = ((Number(data.total_defect_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const damageCompEl = document.getElementById('finDamageCompVal');
+          if (damageCompEl) damageCompEl.textContent = ((Number(data.total_damage_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const commissionEl = document.getElementById('finCommissionVal');
+          if (commissionEl) commissionEl.textContent = ((Number(data.total_commission)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const commissionPctEl = document.getElementById('finCommissionPct');
+          if (commissionPctEl){
+            const rev = Number(data.revenue)||0;
+            const comm = Number(data.total_commission)||0;
+            const pct = rev ? (comm / rev) * 100 : 0;
+            commissionPctEl.textContent = pct.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' %';
+          }
+          // Итог по блоку Удержания и компенсации WB
+          const wbDed = (
+            (Number(data.total_commission)||0)
+            + (Number(data.total_acquiring)||0)
+            + (Number(data.total_logistics)||0)
+            + (Number(data.total_storage)||0)
+            + (Number(data.total_other_deductions)||0)
+            + (Number(data.total_acceptance)||0)
+            - (Number(data.total_defect_compensation)||0)
+            - (Number(data.total_damage_compensation)||0)
+            + (Number(data.total_penalties)||0)
+            + (Number(data.total_additional_payment)||0)
+          );
+          const wbDedEl = document.getElementById('finWbDedTotal');
+          if (wbDedEl) wbDedEl.textContent = Number(wbDed).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+          const wbDedPctEl = document.getElementById('finWbDedPct');
+          if (wbDedPctEl){
+            const revW = Number(data.revenue)||0; const pW = revW ? (wbDed/revW*100) : 0;
+            wbDedPctEl.textContent = pW.toLocaleString('ru-RU', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' %';
+          }
+          // К перечислению = Выручка - Удержания + E3 (корректировка эквайринга)
+          const forPayEl2 = document.getElementById('finForPayVal');
+          if (forPayEl2) forPayEl2.textContent = (Number(data.total_for_transfer || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+
+          // Кол-во выкупов (шт.) = количество строк с supplier_oper_name в нужных значениях
+          const buyoutOps = new Set(['продажа','сторно возвратов','корректная продажа','коррекция продаж']);
+          const buyoutsQty = rows.reduce((acc, r) => {
+            const op = (r && r.supplier_oper_name ? String(r.supplier_oper_name).trim().toLowerCase() : '');
+            return acc + (buyoutOps.has(op) ? 1 : 0);
+          }, 0);
+          const buyoutsQtyEl = document.getElementById('finBuyoutsQty');
+          if (buyoutsQtyEl) buyoutsQtyEl.textContent = (Number(buyoutsQty).toLocaleString('ru-RU'));
+          // Кол-во возвратов — уже посчитано выше как returnsQty
+          const revenueQtyEl = document.getElementById('finRevenueQty');
+          if (revenueQtyEl) revenueQtyEl.textContent = (Number(Math.max(0, buyoutsQty - (returnsQty || 0))).toLocaleString('ru-RU'));
+          // Показываем блок результатов
+          const resWrap = document.getElementById('finResults');
+          if (resWrap) resWrap.style.display = rows.length ? 'block' : 'none';
+          if (exportBtn) exportBtn.disabled = !(rows && rows.length > 0);
+          loadBtn.textContent = prev; loadBtn.disabled = false;
+        } catch(err){
+          console.error(err);
+          const alertBox = document.getElementById('finAlert');
+          if (alertBox){ alertBox.textContent = 'Ошибка загрузки отчёта'; alertBox.style.display = 'block'; }
+          if (loadBtn){ loadBtn.disabled = false; }
+        }
+      });
+    });
+  </script>
+  <script type="application/json" id="finServerRows">{{ (rows or []) | tojson | safe }}</script>
+  <script type="application/json" id="finServerMetrics">{{ (finance_metrics or {}) | tojson | safe }}</script>
+  <script>
+    function submitExport(){
+      const form = document.getElementById('financeForm');
+      if (!form) return;
+      const a = document.createElement('a');
+      const params = new URLSearchParams(new FormData(form));
+      a.href = `/report/finance/export?${params.toString()}`;
+      a.click();
+    }
+  </script>
+  <style>
+    /* Стили для квадратиков компенсаций */
+    .compensation-card .text-muted {
+      color: #009688 !important;
+    }
+    
+    /* Стили для квадратиков удержаний */
+    .deduction-card .text-muted {
+      color: #ff574b !important;
+    }
+    
+    /* Стили для квадратика "К перечислению" */
+    .for-pay-card {
+      background-color: #90ee9040;
+    }
+    
+    .for-pay-card .text-muted {
+      color: #337736 !important;
+      font-weight: bold;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <h1 class="mb-3" style="font-size:1.6rem;">Финансовый отчёт</h1>
+    {% if error %}
+      <div class="alert alert-warning">{{ error }}</div>
+    {% endif %}
+
+    <form class="row g-3 mb-3" id="financeForm" method="get" action="/report/finance">
+      <div class="col-sm-2 col-md-2">
+        <label class="form-label">Дата с</label>
+        <div class="input-group" id="fDateFromWrap">
+          <input type="date" class="form-control" name="date_from" id="fDateFrom" value="{{ date_from_val or '' }}" required />
+          <span class="input-group-text" style="cursor:pointer;">📅</span>
+        </div>
+      </div>
+      <div class="col-sm-2 col-md-2">
+        <label class="form-label">Дата по</label>
+        <div class="input-group" id="fDateToWrap">
+          <input type="date" class="form-control" name="date_to" id="fDateTo" value="{{ date_to_val or '' }}" required />
+          <span class="input-group-text" style="cursor:pointer;">📅</span>
+        </div>
+      </div>
+      <div class="col-sm-2 col-md-2 d-flex align-items-end">
+        <button id="financeLoadBtn" class="btn btn-primary w-100" type="submit">Загрузить</button>
+      </div>
+      <div class="col-sm-2 col-md-2 d-flex align-items-end">
+        <button id="financeExportBtn" type="button" class="btn btn-success w-100" onclick="submitExport()" {% if not rows or not rows|length %}disabled{% endif %}>Скачать XLS</button>
+      </div>
+    </form>
+
+    <div id="finDateWarn" class="alert alert-warning py-1" role="alert" style="display:none;"></div>
+
+    <div id="finAlert" class="alert alert-warning" role="alert" style="display:none;"></div>
+    <div id="finResults" {% if rows and rows|length %}style="display:block;"{% else %}style="display:none;"{% endif %}>
+      <h5 class="mb-2">Продажи</h5>
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-2">
+          <div class="card h-100"><div class="card-body">
+            <div class="text-muted">Выручка</div>
+            <div class="fs-6"><strong id="finRevenueVal">0</strong></div>
+            <div class="text-muted small">Кол-во: <span id="finRevenueQty">0</span> шт.</div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="card h-100"><div class="card-body">
+            <div class="text-muted">Выкупы</div>
+            <div class="fs-6"><strong id="finBuyoutsVal">0</strong></div>
+            <div class="text-muted small">Кол-во: <span id="finBuyoutsQty">0</span> шт.</div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-2">
+          <div class="card h-100"><div class="card-body">
+            <div class="text-muted">Возвраты</div>
+            <div class="fs-6"><strong id="finReturnsVal">0</strong></div>
+            <div class="text-muted small">Кол-во: <span id="finReturnsQty">0</span> шт.</div>
+          </div></div>
+        </div>
+        <div class="col-12 col-md-3">
+          <div class="card h-100"><div class="card-body">
+            <div class="text-muted">WB реализовал</div>
+            <div class="fs-6"><strong id="finWbRealizedVal">0</strong></div>
+          </div></div>
+        </div>
+        <div class="col-12 col-md-3">
+          <div class="card h-100 for-pay-card"><div class="card-body">
+            <div class="text-muted">К перечислению</div>
+            <div class="fs-4" style="text-align: center;"><strong id="finForPayVal">0</strong></div>
+          </div></div>
+        </div>
+      </div>
+      <hr/>
+      <h5 class="mb-2">Удержания и компенсации WB <span class="text-muted">(<span id="finWbDedTotal">0</span> руб., <span id="finWbDedPct">0,00 %</span> от выручки)</span></h5>
+      <div class="row g-3">
+        <div class="col-12 col-md-3">
+          <div class="card h-100 compensation-card"><div class="card-body">
+            <div class="text-muted">Компенсация брака</div>
+            <div class="fs-6"><strong id="finDefectCompVal">0</strong></div>
+          </div></div>
+        </div>
+        <div class="col-12 col-md-3">
+          <div class="card h-100 compensation-card"><div class="card-body">
+            <div class="text-muted">Компенсация ущерба</div>
+            <div class="fs-6"><strong id="finDamageCompVal">0</strong></div>
+          </div></div>
+        </div>
+        <div class="col-12 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Комиссия</div>
+            <div class="fs-6"><strong id="finCommissionVal">0</strong></div>
+            <div class="small">От выручки: <span id="finCommissionPct">0,00 %</span></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Логистика</div>
+            <div class="fs-6"><strong id="finLogisticsVal">0</strong></div>
+            <div class="small">От выручки: <span id="finLogisticsPct">0,00 %</span></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Хранение</div>
+            <div class="fs-6"><strong id="finStorageVal">0</strong></div>
+            <div class="small">От выручки: <span id="finStoragePct">0,00 %</span></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Приёмка</div>
+            <div class="fs-6"><strong id="finAcceptanceVal">0</strong></div>
+            <div class="small">От выручки: <span id="finAcceptancePct">0,00 %</span></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Эквайринг</div>
+            <div class="fs-6"><strong id="finAcquiringVal">0</strong></div>
+            <div class="small">От выручки: <span id="finAcquiringPct">0,00 %</span></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Прочие удержания</div>
+            <div class="fs-6"><strong id="finOtherDedVal">0</strong></div>
+            <div class="small">От выручки: <span id="finOtherDedPct">0,00 %</span></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Штрафы</div>
+            <div class="fs-6"><strong id="finPenaltiesVal">0</strong></div>
+          </div></div>
+        </div>
+        <div class="col-6 col-md-3">
+          <div class="card h-100 deduction-card"><div class="card-body">
+            <div class="text-muted">Доплата</div>
+            <div class="fs-6"><strong id="finAdditionalPayVal">0</strong></div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% include '_footer.html' %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+
