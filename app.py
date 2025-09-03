@@ -2979,9 +2979,8 @@ def api_report_finance():
                     total_acquiring += afee
                 elif dt_name == "Возврат" and acq_pct > 0:
                     total_acquiring -= afee
-                oper_name = (r.get("supplier_oper_name") or "").strip()
-                if oper_name == "Корректировка эквайринга":
-                    total_acquiring += float(r.get("ppvz_for_pay") or 0.0)
+                # Корректировка эквайринга не включается в "Эквайринг", 
+                # а учитывается отдельно в формуле "К перечислению"
             except Exception:
                 pass
             try:
@@ -3108,13 +3107,13 @@ def api_report_finance():
         revenue_calc = total_buyouts - total_returns
         defect_comp = x1 + x2 - x3 - x4 + x5 - x6 + x7 - x8
         total_wb_realized = wbr_plus - wbr_minus
-        # Комиссия = Выручка - (K1+K2+K3+K4 - (K5+K6+K7+K8)) - Эквайринг - |K9|
+        # Комиссия = Выручка - (K1+K2+K3+K4 - (K5+K6+K7+K8)) - Эквайринг
+        # (K9 - корректировка эквайринга учитывается отдельно в формуле "К перечислению")
         commission_total = (
             revenue_calc
             - (k1 + k2 + k3 + k4)
             + (k5 + k6 + k7 + k8)
             - total_acquiring
-            - abs(k9)
         )
         damage_comp = u1 + u2 - u3 - u4 + u5 - u6 + u7 + u8 - u9 - u10 + u11 - u12 + u13 - u14
         
