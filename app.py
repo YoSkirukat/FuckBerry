@@ -1088,6 +1088,10 @@ def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[
             continue
         if not (start <= d <= end):
             continue
+        # Фильтруем отмененные заказы
+        is_cancelled = sale.get("isCancel")
+        if is_cancelled is True or str(is_cancelled).lower() in ('true', '1', 'истина'):
+            continue
         rows.append({
             "Дата": date_str,
             "Дата и время обновления информации в сервисе": sale.get("lastChangeDate"),
