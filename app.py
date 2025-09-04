@@ -906,11 +906,14 @@ def fetch_orders_page(token: str, date_from_iso: str, flag: int = 0) -> List[Dic
 
 
 def fetch_orders_range(token: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-    """Fetch orders from WB by paginating with lastChangeDate until end_date inclusive."""
+    """Fetch orders from WB by paginating with lastChangeDate, but filter by actual order date."""
     start_dt = parse_date(start_date)
     end_dt = parse_date(end_date)
 
-    cursor_dt = datetime.combine(start_dt.date(), datetime.min.time())
+    # Загружаем данные с запасом: начинаем за 7 дней до start_date
+    # чтобы захватить заказы, которые могли быть обновлены позже
+    extended_start = start_dt - timedelta(days=7)
+    cursor_dt = datetime.combine(extended_start.date(), datetime.min.time())
 
     collected: List[Dict[str, Any]] = []
     seen_srid: set[str] = set()
@@ -929,15 +932,14 @@ def fetch_orders_range(token: str, start_date: str, end_date: str) -> List[Dict[
             pass
 
         last_page_lcd: datetime | None = parse_wb_datetime(page[-1].get("lastChangeDate"))
-        page_exceeds = last_page_lcd and last_page_lcd.date() > end_dt.date()
+        # Останавливаемся, когда lastChangeDate превышает end_date + 1 день
+        page_exceeds = last_page_lcd and last_page_lcd.date() > (end_dt.date() + timedelta(days=1))
 
         for item in page:
             srid = str(item.get("srid", ""))
             if srid and srid in seen_srid:
                 continue
-            lcd = parse_wb_datetime(item.get("lastChangeDate"))
-            if lcd and lcd.date() > end_dt.date():
-                continue
+            # Убираем фильтрацию по lastChangeDate здесь - будем фильтровать по date в to_rows
             if srid:
                 seen_srid.add(srid)
             collected.append(item)
@@ -1076,11 +1078,13 @@ def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    """Преобразует данные заказов и фильтрует по реальной дате заказа (date), исключая отмененные."""
     start = parse_date(start_date).date()
     end = parse_date(end_date).date()
 
     rows: List[Dict[str, Any]] = []
     for sale in data:
+        # Фильтруем по реальной дате заказа (date), а не по lastChangeDate
         date_str = str(sale.get("date", ""))[:10]
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -3160,10 +3164,22 @@ def api_top_products_orders():
     warehouse = request.args.get("warehouse", "") or None
     cached = load_last_results()
     if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
-        return jsonify({"items": []})
+        return jsonify({"items": [], "total_qty": 0, "total_sum": 0})
     orders = cached.get("orders", [])
     items = aggregate_top_products_orders(orders, warehouse, limit=50)
-    return jsonify({"items": items})
+    
+    # Рассчитываем общие суммы для выбранного склада
+    total_qty = 0
+    total_sum = 0.0
+    for item in items:
+        total_qty += item.get("qty", 0)
+        total_sum += item.get("sum", 0.0)
+    
+    return jsonify({
+        "items": items,
+        "total_qty": total_qty,
+        "total_sum": round(total_sum, 2)
+    })
 
 
 @app.route("/report/sales", methods=["GET"]) 

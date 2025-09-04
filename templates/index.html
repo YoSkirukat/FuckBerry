@@ -274,6 +274,30 @@
       const tbody = document.getElementById('ordersTopShortBody');
       if (!tbody) return;
       tbody.innerHTML = '';
+      
+      // Обновляем заголовки с общими суммами
+      const qtyVal = document.getElementById('colQtyVal');
+      const sumVal = document.getElementById('colSumVal');
+      if (qtyVal && sumVal) {
+        if (wh) {
+          // Если выбран конкретный склад - используем данные из API
+          qtyVal.textContent = (data.total_qty || 0).toLocaleString('ru-RU');
+          sumVal.textContent = (Number(data.total_sum) || 0).toLocaleString('ru-RU');
+        } else {
+          // Если выбраны все склады - используем общие значения из KPI
+          const kpiText = document.querySelectorAll('.kpi')[0]?.textContent || '';
+          const totalOrdersMatch = kpiText.match(/(\d+(?:\s\d+)*)/);
+          const totalOrders = totalOrdersMatch ? totalOrdersMatch[1].replace(/\s/g, '') : '0';
+          
+          const revenueText = document.querySelectorAll('.kpi')[1]?.textContent || '';
+          const totalRevenueMatch = revenueText.match(/(\d+(?:\s\d+)*)/);
+          const totalRevenue = totalRevenueMatch ? totalRevenueMatch[1].replace(/\s/g, '') : '0';
+          
+          qtyVal.textContent = totalOrders;
+          sumVal.textContent = totalRevenue;
+        }
+      }
+      
       const src = (data.items || []).slice(0, 15);
       if (!src.length){
         const tr = document.createElement('tr');
@@ -397,11 +421,6 @@
         // KPI
         document.querySelectorAll('.kpi')[0].textContent = 'Всего заказов: ' + (data.total_orders || 0).toLocaleString('ru-RU') + ' шт.';
         document.querySelectorAll('.kpi')[1].textContent = 'Выручка (итог): ' + (data.total_revenue || 0).toLocaleString('ru-RU') + ',00 руб.';
-        // Update short top headers with totals
-        const qtyVal = document.getElementById('colQtyVal');
-        if (qtyVal) qtyVal.textContent = (data.total_orders||0).toLocaleString('ru-RU');
-        const sumVal = document.getElementById('colSumVal');
-        if (sumVal) sumVal.textContent = (Number(data.total_revenue)||0).toLocaleString('ru-RU');
         if (updatedAtEl) updatedAtEl.textContent = data.updated_at || '';
         // Titles with formatted dates
         const df = data.date_from_fmt || dFrom; const dt = data.date_to_fmt || dTo;
@@ -517,6 +536,8 @@
             if (typeof reloadTopPivot === 'function') { await reloadTopPivot(); }
           }
         } catch (e) { console.error(e); }
+        // Обновляем сводную таблицу с учетом выбранного склада
+        if (typeof reloadShortTop === 'function') { await reloadShortTop(); }
         msg.style.display = '';
         // Duration
         const elapsedSec = Math.max(0, Math.round((performance.now() - t0) / 1000));
