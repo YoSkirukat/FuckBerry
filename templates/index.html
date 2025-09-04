@@ -101,7 +101,7 @@
     <div class="row g-3 mb-3">
       <div class="col-md-4">
         <div class="card h-100"><div class="card-body">
-          <h6 id="titleWarehouses" class="mb-3">Продажи по складам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
+          <h6 id="titleWarehouses" class="mb-3">Заказы по складам с {{ date_from_fmt }} по {{ date_to_fmt }}</h6>
           <div class="table-responsive">
             <table class="table table-sm table-striped mb-0">
               <thead>
@@ -427,7 +427,7 @@
         const dfmt = df; const dtmt = dt;
         const tCount = document.getElementById('titleCount'); if (tCount) tCount.textContent = `Количество заказов и продаж по дням с ${dfmt} по ${dtmt}`;
         const tRev = document.getElementById('titleRevenue'); if (tRev) tRev.textContent = `Выручка по дням (заказы и продажи) с ${dfmt} по ${dtmt}`;
-        const tWh = document.getElementById('titleWarehouses'); if (tWh) tWh.textContent = `Продажи по складам с ${dfmt} по ${dtmt}`;
+        const tWh = document.getElementById('titleWarehouses'); if (tWh) tWh.textContent = `Заказы по складам с ${dfmt} по ${dtmt}`;
         const modeLabel = (data.top_mode === 'sales') ? 'по продажам' : 'по заказам';
         const tTop = document.getElementById('titleTop'); if (tTop) tTop.textContent = `ТОП товаров ${modeLabel} с ${dfmt} по ${dtmt}`;
         const tTopPivot = document.getElementById('titleTopPivot'); if (tTopPivot) tTopPivot.textContent = `Сводная таблица: ТОП товаров ${modeLabel} с ${dfmt} по ${dtmt}`;
