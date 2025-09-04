@@ -9,6 +9,7 @@ import json
 import uuid
 import time
 import random
+import threading
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple
@@ -1726,16 +1727,27 @@ def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[di
     url = FBS_STOCKS_BY_WAREHOUSE_URL.format(warehouseId=warehouse_id)
     headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     body = {"stocks": items[:1000]}
+    
+    print(f"Updating stocks for warehouse {warehouse_id}, items: {len(items)}")
+    print(f"Request body: {body}")
+    
     try:
         # WB expects 204 No Content
         resp = requests.put(url, headers=headers1, json=body, timeout=60)
+        print(f"Response status: {resp.status_code}")
         if resp.status_code != 204:
+            print(f"Response text: {resp.text}")
             raise requests.HTTPError(response=resp)
-    except Exception:
+        print("Successfully updated with Bearer token")
+    except Exception as e:
+        print(f"Bearer token failed: {e}, trying without Bearer")
         headers2 = {"Authorization": f"{token}", "Content-Type": "application/json"}
         resp = requests.put(url, headers=headers2, json=body, timeout=60)
+        print(f"Response status (no Bearer): {resp.status_code}")
         if resp.status_code != 204:
+            print(f"Response text (no Bearer): {resp.text}")
             raise requests.HTTPError(response=resp)
+        print("Successfully updated without Bearer token")
 
 
 def _fbs_stock_cache_path_for_user() -> str:
@@ -1765,6 +1777,432 @@ def save_fbs_stock_cache(payload: Dict[str, Any]) -> None:
             json.dump(enriched, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+def _auto_update_settings_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"auto_update_settings_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "auto_update_settings_anon.json")
+
+
+def load_auto_update_settings() -> Dict[str, Any]:
+    path = _auto_update_settings_path_for_user()
+    if not os.path.isfile(path):
+        return {
+            "global": {
+                "url": "",
+                "interval": 60,
+                "enabled": False,
+                "lastCheck": None,
+                "history": []
+            },
+            "warehouses": {}
+        }
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # Migrate old format to new format
+            if "url" in data and "warehouses" not in data:
+                return {
+                    "global": {
+                        "url": data.get("url", ""),
+                        "interval": data.get("interval", 60),
+                        "enabled": data.get("enabled", False),
+                        "lastCheck": data.get("lastCheck"),
+                        "history": data.get("history", [])
+                    },
+                    "warehouses": {}
+                }
+            return data
+    except Exception:
+        return {
+            "global": {
+                "url": "",
+                "interval": 60,
+                "enabled": False,
+                "lastCheck": None,
+                "history": []
+            },
+            "warehouses": {}
+        }
+
+
+def save_auto_update_settings(settings: Dict[str, Any], user_id: int = None) -> None:
+    if user_id is None:
+        path = _auto_update_settings_path_for_user()
+    else:
+        path = os.path.join(CACHE_DIR, f"auto_update_settings_user_{user_id}.json")
+    
+    try:
+        enriched = dict(settings)
+        if user_id is not None:
+            enriched["_user_id"] = user_id
+        elif hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def test_remote_file(url: str) -> Dict[str, Any]:
+    """Test connection to remote file and return file info"""
+    try:
+        response = requests.head(url, timeout=30)
+        response.raise_for_status()
+        
+        size = int(response.headers.get('content-length', 0))
+        last_modified = response.headers.get('last-modified', '')
+        
+        return {
+            "size": size,
+            "lastModified": last_modified,
+            "accessible": True
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "accessible": False
+        }
+
+
+def download_and_process_remote_file(url: str, user_id: int) -> Dict[str, Any]:
+    """Download remote file and process it for stock updates"""
+    try:
+        # Download file
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        
+        # Parse Excel file
+        import xlrd
+        workbook = xlrd.open_workbook(file_contents=response.content)
+        sheet = workbook.sheet_by_index(0)
+        
+        # Find column indices
+        header_row = sheet.row_values(0)
+        barcode_col = -1
+        quantity_col = -1
+        
+        for i, cell in enumerate(header_row):
+            cell_value = str(cell).strip().lower()
+            if cell_value in ['баркод', 'barcode']:
+                barcode_col = i
+            elif cell_value in ['кол-во', 'количество', 'quantity']:
+                quantity_col = i
+        
+        if barcode_col == -1 or quantity_col == -1:
+            return {"success": False, "error": "Не найдены необходимые колонки"}
+        
+        # Parse data
+        file_data = {}
+        for row_idx in range(1, sheet.nrows):
+            row = sheet.row_values(row_idx)
+            if len(row) > max(barcode_col, quantity_col):
+                barcode = str(row[barcode_col]).strip()
+                # Remove .0 from barcode if it exists (Excel sometimes adds .0 to numbers)
+                if barcode.endswith('.0'):
+                    barcode = barcode[:-2]
+                
+                try:
+                    quantity = int(float(row[quantity_col]))
+                    if barcode:
+                        file_data[barcode] = quantity
+                except (ValueError, TypeError):
+                    continue
+        
+        return {"success": True, "data": file_data}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_reserved_quantities_from_fbs_tasks(user_id: int) -> Dict[str, int]:
+    """Get reserved quantities from FBS tasks for each barcode"""
+    print(f"=== GET_RESERVED_QUANTITIES_FROM_FBS_TASKS CALLED ===")
+    print(f"User ID: {user_id}")
+    
+    try:
+        # Load FBS tasks cache
+        cached_tasks = load_fbs_tasks_cache() or {}
+        tasks_rows = cached_tasks.get("rows") or []
+        
+        print(f"Found {len(tasks_rows)} FBS tasks")
+        
+        # Debug: print first few tasks to see structure
+        if tasks_rows:
+            print(f"First task structure: {tasks_rows[0]}")
+            print(f"All task keys: {list(tasks_rows[0].keys()) if tasks_rows else 'No tasks'}")
+        
+        # Aggregate reserved quantities by barcode
+        reserved_quantities = {}
+        
+        for i, task in enumerate(tasks_rows):
+            print(f"Task {i}: {task}")
+            
+            barcode = task.get("barcode")
+            if not barcode:
+                print(f"Task {i}: No barcode found, skipping")
+                continue
+                
+            print(f"Task {i}: Found barcode {barcode}")
+                
+            # Get quantity from task (usually 1 per task, but could be more)
+            quantity = 1  # Default quantity per task
+            if "Количество" in task:
+                try:
+                    quantity = int(task["Количество"])
+                except (ValueError, TypeError):
+                    quantity = 1
+            
+            # Add to reserved quantities
+            if barcode in reserved_quantities:
+                reserved_quantities[barcode] += quantity
+            else:
+                reserved_quantities[barcode] = quantity
+            
+            print(f"Task {i}: Added {quantity} to reserved for barcode {barcode}")
+        
+        print(f"Reserved quantities: {reserved_quantities}")
+        return reserved_quantities
+        
+    except Exception as e:
+        print(f"Error getting reserved quantities from FBS tasks: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+
+
+def adjust_stock_quantities_for_reserved(file_data: Dict[str, int], user_id: int) -> Dict[str, int]:
+    """Adjust stock quantities by subtracting reserved quantities from FBS tasks"""
+    print(f"=== ADJUST_STOCK_QUANTITIES_FOR_RESERVED CALLED ===")
+    print(f"Original file data: {file_data}")
+    
+    # Get reserved quantities from FBS tasks
+    reserved_quantities = get_reserved_quantities_from_fbs_tasks(user_id)
+    
+    # Adjust quantities
+    adjusted_data = {}
+    for barcode, quantity in file_data.items():
+        reserved = reserved_quantities.get(barcode, 0)
+        adjusted_quantity = max(0, quantity - reserved)  # Don't go below 0
+        
+        if reserved > 0:
+            print(f"Barcode {barcode}: original={quantity}, reserved={reserved}, adjusted={adjusted_quantity}")
+        
+        adjusted_data[barcode] = adjusted_quantity
+    
+    print(f"Adjusted data: {adjusted_data}")
+    return adjusted_data
+
+
+def update_stocks_from_remote_data(file_data: Dict[str, int], user_id: int, enabled_warehouse_ids: list = None) -> int:
+    """Update stocks in the cache based on remote file data"""
+    print(f"=== UPDATE_STOCKS_FROM_REMOTE_DATA CALLED ===")
+    print(f"File data: {file_data}")
+    print(f"User ID: {user_id}")
+    print(f"Enabled warehouse IDs: {enabled_warehouse_ids}")
+    
+    # Adjust stock quantities by subtracting reserved quantities from FBS tasks
+    adjusted_file_data = adjust_stock_quantities_for_reserved(file_data, user_id)
+    print(f"Using adjusted file data: {adjusted_file_data}")
+    
+    try:
+        # Get user token from database
+        from app import app, User
+        
+        with app.app_context():
+            print("Getting user from database...")
+            user = User.query.get(user_id)
+            print(f"User found: {user}")
+            
+            if not user or not user.wb_token:
+                print(f"No token found for user {user_id}")
+                return 0
+            
+            token = user.wb_token
+            print(f"Token found: {token[:10]}...")
+            
+            # Get warehouses
+            print("Fetching warehouses...")
+            warehouses = fetch_fbs_warehouses(token)
+            print(f"Warehouses found: {warehouses}")
+            
+            if not warehouses:
+                print("No warehouses found")
+                return 0
+            
+            total_updated = 0
+            
+            # Update stocks for each warehouse
+            for i, warehouse in enumerate(warehouses):
+                warehouse_id = warehouse.get("id") or warehouse.get("warehouseId") or warehouse.get("warehouseID")
+                
+                if not warehouse_id:
+                    print(f"No warehouse ID found for warehouse: {warehouse}")
+                    continue
+                
+                # Skip warehouse if not in enabled list
+                if enabled_warehouse_ids and warehouse_id not in enabled_warehouse_ids:
+                    print(f"Warehouse {warehouse_id} not enabled for auto-update, skipping")
+                    continue
+                
+                print(f"Processing warehouse {i+1}/{len(warehouses)}: {warehouse}")
+                print(f"Warehouse ID: {warehouse_id}")
+                
+                # Get current stocks for this warehouse to check which SKUs are valid
+                try:
+                    print(f"Getting current stocks for warehouse {warehouse_id}...")
+                    current_stocks = fetch_fbs_stocks_by_warehouse(token, int(warehouse_id), list(adjusted_file_data.keys()))
+                    print(f"Current stocks: {current_stocks}")
+                    
+                    # Filter file data to only include SKUs that exist in this warehouse
+                    valid_skus = {stock.get('sku') for stock in current_stocks if stock.get('sku')}
+                    print(f"Valid SKUs for warehouse {warehouse_id}: {valid_skus}")
+                    
+                    # Prepare stock updates only for valid SKUs
+                    stock_updates = []
+                    for barcode, quantity in adjusted_file_data.items():
+                        if barcode in valid_skus:
+                            stock_updates.append({"sku": barcode, "amount": quantity})
+                        else:
+                            print(f"SKU {barcode} not found in warehouse {warehouse_id}, skipping")
+                    
+                    print(f"Prepared {len(stock_updates)} stock updates for warehouse {warehouse_id}")
+                    
+                    if not stock_updates:
+                        print(f"No valid stock updates for warehouse {warehouse_id}")
+                        continue
+                    
+                    # Update stocks via WB API for this warehouse
+                    print(f"Updating {len(stock_updates)} stocks for warehouse {warehouse_id}")
+                    update_fbs_stocks_by_warehouse(token, int(warehouse_id), stock_updates)
+                    total_updated += len(stock_updates)
+                    print(f"Successfully updated {len(stock_updates)} stocks for warehouse {warehouse_id}")
+                    
+                    # Add delay between requests to avoid rate limiting
+                    if i < len(warehouses) - 1:  # Don't delay after the last warehouse
+                        print("Waiting 2 seconds before next warehouse...")
+                        time.sleep(2)
+                        
+                except Exception as e:
+                    print(f"Error updating stocks for warehouse {warehouse_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            print(f"Total updated {total_updated} stocks for user {user_id}")
+            return total_updated
+        
+    except Exception as e:
+        print(f"Error updating stocks from remote data: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+
+def auto_update_worker():
+    """Background worker for automatic stock updates"""
+    while True:
+        try:
+            # Get all user settings
+            settings_files = [f for f in os.listdir(CACHE_DIR) if f.startswith('auto_update_settings_user_')]
+            
+            for settings_file in settings_files:
+                try:
+                    user_id = int(settings_file.replace('auto_update_settings_user_', '').replace('.json', ''))
+                    settings_path = os.path.join(CACHE_DIR, settings_file)
+                    
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        settings = json.load(f)
+                    
+                    global_settings = settings.get('global', settings)  # Support old format
+                    if not global_settings.get('enabled') or not global_settings.get('url'):
+                        continue
+                    
+                    # Check if it's time to check
+                    last_check = global_settings.get('lastCheck')
+                    interval_minutes = global_settings.get('interval', 60)
+                    
+                    if last_check:
+                        last_check_time = datetime.fromisoformat(last_check)
+                        if datetime.now() - last_check_time < timedelta(minutes=interval_minutes):
+                            continue
+                    
+                    # Test file
+                    file_info = test_remote_file(global_settings['url'])
+                    if not file_info.get('accessible'):
+                        # Log error
+                        history_entry = {
+                            "timestamp": datetime.now().isoformat(),
+                            "success": False,
+                            "message": f"Ошибка доступа к файлу: {file_info.get('error', 'Неизвестная ошибка')}"
+                        }
+                        global_settings['history'].insert(0, history_entry)
+                        global_settings['history'] = global_settings['history'][:50]  # Keep last 50 entries
+                        global_settings['lastCheck'] = datetime.now().isoformat()
+                        save_auto_update_settings(settings, user_id)
+                        continue
+                    
+                    # Check if file changed
+                    current_size = file_info.get('size', 0)
+                    current_modified = file_info.get('lastModified', '')
+                    
+                    last_size = global_settings.get('lastFileSize', 0)
+                    last_modified = global_settings.get('lastFileModified', '')
+                    
+                    if current_size == last_size and current_modified == last_modified:
+                        # No changes, just update last check time
+                        global_settings['lastCheck'] = datetime.now().isoformat()
+                        save_auto_update_settings(settings, user_id)
+                        continue
+                    
+                    # File changed, process it
+                    result = download_and_process_remote_file(global_settings['url'], user_id)
+                    
+                    if result['success']:
+                        # Get enabled warehouses
+                        enabled_warehouse_ids = []
+                        for warehouse_id, warehouse_settings in settings.get('warehouses', {}).items():
+                            if warehouse_settings.get('enabled'):
+                                enabled_warehouse_ids.append(int(warehouse_id))
+                        
+                        # Update stocks in the interface (this will automatically adjust for FBS tasks)
+                        updated_count = update_stocks_from_remote_data(result['data'], user_id, enabled_warehouse_ids)
+                        history_entry = {
+                            "timestamp": datetime.now().isoformat(),
+                            "success": True,
+                            "message": f"Файл обновлен, обработано {len(result['data'])} товаров, обновлено {updated_count} остатков (с учетом FBS заданий)"
+                        }
+                    else:
+                        history_entry = {
+                            "timestamp": datetime.now().isoformat(),
+                            "success": False,
+                            "message": f"Ошибка обработки файла: {result['error']}"
+                        }
+                    
+                    # Update settings
+                    global_settings['lastCheck'] = datetime.now().isoformat()
+                    global_settings['lastFileSize'] = current_size
+                    global_settings['lastFileModified'] = current_modified
+                    global_settings['history'].insert(0, history_entry)
+                    global_settings['history'] = global_settings['history'][:50]  # Keep last 50 entries
+                    save_auto_update_settings(settings, user_id)
+                    
+                except Exception as e:
+                    print(f"Error processing auto-update for user {user_id}: {e}")
+                    continue
+            
+            # Sleep for 1 minute before next check
+            time.sleep(60)
+            
+        except Exception as e:
+            print(f"Error in auto-update worker: {e}")
+            time.sleep(60)
+
+
+# Start auto-update worker in background
+auto_update_thread = threading.Thread(target=auto_update_worker, daemon=True)
+auto_update_thread.start()
 
 @app.route("/", methods=["GET", "POST"]) 
 def root():
@@ -2218,6 +2656,138 @@ def api_fbs_stock_by_warehouse(warehouse_id: int):
     except requests.HTTPError as http_err:
         return jsonify({"error": f"api_{http_err.response.status_code}"}), http_err.response.status_code
     except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/fbs-stock/auto-update/settings", methods=["GET", "POST"])
+@login_required
+def api_fbs_stock_auto_update_settings():
+    if request.method == "GET":
+        try:
+            settings = load_auto_update_settings()
+            return jsonify(settings)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+    
+    # POST - save settings
+    try:
+        payload = request.get_json(silent=True) or {}
+        url = payload.get("url", "").strip()
+        interval = int(payload.get("interval", 60))
+        enabled = bool(payload.get("enabled", False))
+        warehouse_settings = payload.get("warehouses", {})
+        
+        # Load current settings
+        settings = load_auto_update_settings()
+        
+        # Update global settings
+        settings["global"] = {
+            "url": url,
+            "interval": interval,
+            "enabled": enabled,
+            "lastCheck": settings["global"].get("lastCheck"),
+            "history": settings["global"].get("history", [])
+        }
+        
+        # Update warehouse-specific settings
+        if warehouse_settings:
+            settings["warehouses"] = warehouse_settings
+        
+        save_auto_update_settings(settings)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/fbs-stock/auto-update/test", methods=["POST"])
+@login_required
+def api_fbs_stock_auto_update_test():
+    try:
+        payload = request.get_json(silent=True) or {}
+        url = payload.get("url", "").strip()
+        
+        if not url:
+            return jsonify({"error": "no_url"}), 400
+        
+        # Test connection and get file info
+        file_info = test_remote_file(url)
+        return jsonify(file_info)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/fbs-stock/auto-update/manual-update", methods=["POST"])
+@login_required
+def api_fbs_stock_auto_update_manual():
+    print("=== MANUAL UPDATE ENDPOINT CALLED ===")
+    try:
+        payload = request.get_json(silent=True) or {}
+        url = payload.get("url", "").strip()
+        
+        print(f"Payload: {payload}")
+        print(f"URL: {url}")
+        
+        if not url:
+            print("ERROR: No URL provided")
+            return jsonify({"error": "no_url"}), 400
+        
+        user_id = current_user.id if current_user.is_authenticated else None
+        print(f"User ID: {user_id}")
+        
+        if not user_id:
+            print("ERROR: No user ID")
+            return jsonify({"error": "no_user"}), 401
+        
+        print(f"Manual update requested for user {user_id}, URL: {url}")
+        
+        # Download and process file
+        print("Starting file download and processing...")
+        result = download_and_process_remote_file(url, user_id)
+        print(f"File processing result: {result}")
+        
+        if result['success']:
+            print(f"File data: {result['data']}")
+            
+            # Get enabled warehouses from settings
+            settings = load_auto_update_settings()
+            enabled_warehouse_ids = []
+            
+            # Get enabled warehouses from individual settings
+            for warehouse_id, warehouse_settings in settings.get('warehouses', {}).items():
+                if warehouse_settings.get('enabled'):
+                    enabled_warehouse_ids.append(int(warehouse_id))
+            
+            print(f"Enabled warehouse IDs: {enabled_warehouse_ids}")
+            
+            # Update stocks (this will automatically adjust for FBS tasks)
+            print("Starting stock updates...")
+            updated_count = update_stocks_from_remote_data(result['data'], user_id, enabled_warehouse_ids)
+            print(f"Updated count: {updated_count}")
+            
+            # Update settings with new history entry
+            history_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "success": True,
+                "message": f"Ручное обновление: обработано {len(result['data'])} товаров, обновлено {updated_count} остатков (с учетом FBS заданий)"
+            }
+            settings['global']['history'].insert(0, history_entry)
+            settings['global']['history'] = settings['global']['history'][:50]  # Keep last 50 entries
+            settings['global']['lastCheck'] = datetime.now().isoformat()
+            save_auto_update_settings(settings)
+            
+            print(f"Returning success: processed={len(result['data'])}, updated={updated_count}")
+            return jsonify({
+                "processed": len(result['data']),
+                "updated": updated_count
+            })
+        else:
+            print(f"File processing failed: {result['error']}")
+            return jsonify({"error": result['error']}), 400
+            
+    except Exception as exc:
+        print(f"Manual update error: {exc}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(exc)}), 500
 
 

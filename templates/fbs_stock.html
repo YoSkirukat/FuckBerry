@@ -68,12 +68,26 @@
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
           <div class="fw-semibold">Товары склада: <span id="whTitle" class="text-muted">не выбран</span></div>
-          <div class="d-flex align-items-center gap-2" style="min-width:260px;">
+          <div class="d-flex align-items-center gap-2" style="min-width:400px;">
             <input id="goodsSearch" type="search" class="form-control form-control-sm" placeholder="Поиск товара" />
+            <div class="dropdown">
+              <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" id="excelActionsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                Действия с Excel
+              </button>
+              <ul class="dropdown-menu" aria-labelledby="excelActionsDropdown">
+                <li><a class="dropdown-item" href="#" id="exportCurrentStocksBtn">📤 Выгрузить файл с текущими остатками</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" href="#" id="importStocksBtn">📥 Загрузить файл с остатками</a></li>
+                <li><a class="dropdown-item" href="#" id="downloadTemplateBtn">📄 Скачать шаблон</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" href="#" id="autoUpdateSettingsBtn">⚙️ Настроить автоматическое обновление</a></li>
+              </ul>
+            </div>
             <button id="applyStocksBtn" class="btn btn-success btn-sm text-nowrap" type="button" disabled>Обновить остатки</button>
           </div>
         </div>
         <div id="noticeContainer" class="mt-2" style="display:none;"></div>
+        <input id="fileInput" type="file" accept=".xlsx,.xls" style="display:none;" />
         <div class="table-responsive" style="max-height:60vh;">
           <table class="table table-sm align-middle mb-0" id="goodsTable">
             <thead class="table-light text-center" style="position: sticky; top: 0; z-index: 1; background:#fff;">
@@ -96,8 +110,82 @@
   </div>
 
   <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
+
+  <!-- Auto Update Settings Modal -->
+  <div class="modal fade" id="autoUpdateModal" tabindex="-1" aria-labelledby="autoUpdateModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="autoUpdateModalLabel">⚙️ Настройки автоматического обновления</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label for="remoteFileUrl" class="form-label">URL файла с остатками</label>
+            <input type="url" class="form-control" id="remoteFileUrl" placeholder="https://example.com/path/to/stocks.xlsx">
+            <div class="form-text">Ссылка на Excel файл с колонками "Баркод" и "Кол-во"</div>
+          </div>
+          
+          <div class="mb-3">
+            <label for="checkInterval" class="form-label">Интервал проверки (минуты)</label>
+            <select class="form-select" id="checkInterval">
+              <option value="5">5 минут</option>
+              <option value="10">10 минут</option>
+              <option value="15">15 минут</option>
+              <option value="30">30 минут</option>
+              <option value="60" selected>1 час</option>
+              <option value="120">2 часа</option>
+              <option value="240">4 часа</option>
+              <option value="480">8 часов</option>
+            </select>
+          </div>
+
+          <div class="mb-3">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="autoUpdateEnabled">
+              <label class="form-check-label" for="autoUpdateEnabled">
+                Включить автоматическое обновление
+              </label>
+            </div>
+          </div>
+
+          <div class="mb-3" id="warehouseSettingsContainer" style="display:none;">
+            <label class="form-label">Настройки по складам</label>
+            <div id="warehouseSettings" class="border rounded p-3" style="max-height: 300px; overflow-y: auto;">
+              <div class="text-muted small">Загрузка складов...</div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Статус</label>
+            <div id="autoUpdateStatus" class="alert alert-info">
+              <div id="statusText">Автоматическое обновление отключено</div>
+              <div id="lastCheckTime" class="text-muted small mt-1"></div>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Последние обновления</label>
+            <div id="updateHistory" class="border rounded p-2" style="max-height: 200px; overflow-y: auto;">
+              <div class="text-muted small">История обновлений пуста</div>
+            </div>
+          </div>
+          
+          <div id="modalNoticeContainer" class="mt-2" style="display:none;"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+          <button type="button" class="btn btn-success" id="manualUpdateBtn">Обновить из файла</button>
+          <button type="button" class="btn btn-primary" id="saveAutoUpdateSettings">Сохранить настройки</button>
+          <button type="button" class="btn btn-outline-danger" id="testConnectionBtn">Тест подключения</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script>
     // Hover preview like on /products
     const preview = document.getElementById('imgPreview');
@@ -275,8 +363,494 @@
         });
       }
     })();
+
+    // Excel actions dropdown functionality
+    document.getElementById('downloadTemplateBtn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      downloadTemplateFile();
+    });
+
+    document.getElementById('exportCurrentStocksBtn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      exportCurrentStocks();
+    });
+
+    document.getElementById('importStocksBtn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('fileInput').click();
+    });
+
+    document.getElementById('autoUpdateSettingsBtn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      loadAutoUpdateSettings();
+      new bootstrap.Modal(document.getElementById('autoUpdateModal')).show();
+    });
+
+    document.getElementById('autoUpdateEnabled')?.addEventListener('change', async (e) => {
+      if (e.target.checked) {
+        await loadWarehousesForSettings({});
+      } else {
+        document.getElementById('warehouseSettingsContainer').style.display = 'none';
+      }
+    });
+
+    document.getElementById('fileInput')?.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const importBtn = document.getElementById('importStocksBtn');
+      const originalText = importBtn.textContent;
+      importBtn.style.pointerEvents = 'none';
+      importBtn.textContent = 'Обрабатываем файл...';
+
+      try {
+        const data = await readExcelFile(file);
+        const result = updateStocksFromFile(data);
+        showNotice(result.message, result.success ? 'success' : 'danger');
+      } catch (error) {
+        console.error('Error processing file:', error);
+        showNotice('Ошибка обработки файла: ' + error.message, 'danger');
+      } finally {
+        importBtn.style.pointerEvents = '';
+        importBtn.textContent = originalText;
+        e.target.value = ''; // Clear file input
+      }
+    });
+
+    function readExcelFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            resolve(jsonData);
+          } catch (error) {
+            reject(new Error('Не удалось прочитать Excel файл'));
+          }
+        };
+        reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    function updateStocksFromFile(data) {
+      if (!data || data.length < 2) {
+        return { success: false, message: 'Файл пуст или содержит недостаточно данных' };
+      }
+
+      // Find column indices
+      const headerRow = data[0];
+      const barcodeCol = findColumnIndex(headerRow, ['Баркод', 'barcode', 'Barcode', 'БАРКОД']);
+      const quantityCol = findColumnIndex(headerRow, ['Кол-во', 'Количество', 'quantity', 'Quantity', 'КОЛ-ВО', 'КОЛИЧЕСТВО']);
+
+      if (barcodeCol === -1 || quantityCol === -1) {
+        return { 
+          success: false, 
+          message: 'Не найдены необходимые колонки. Ожидаются колонки "Баркод" и "Кол-во"' 
+        };
+      }
+
+      // Get current warehouse goods
+      const stockInputs = document.querySelectorAll('.stock-input');
+      if (stockInputs.length === 0) {
+        return { success: false, message: 'Сначала выберите склад' };
+      }
+
+      let updated = 0;
+      let notFound = 0;
+      const fileData = new Map();
+
+      // Parse file data
+      for (let i = 1; i < data.length; i++) {
+        const row = data[i];
+        if (!row || row.length <= Math.max(barcodeCol, quantityCol)) continue;
+        
+        const barcode = String(row[barcodeCol] || '').trim();
+        const quantity = parseInt(row[quantityCol], 10);
+        
+        if (barcode && !isNaN(quantity)) {
+          fileData.set(barcode, quantity);
+        }
+      }
+
+      // Update stock inputs
+      stockInputs.forEach(input => {
+        const sku = input.getAttribute('data-sku');
+        if (fileData.has(sku)) {
+          const newValue = fileData.get(sku);
+          input.value = newValue;
+          // Trigger input event to update edited map
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          updated++;
+        } else {
+          notFound++;
+        }
+      });
+
+      const total = updated + notFound;
+      return {
+        success: true,
+        message: `Обновлено количество остатка у ${updated} товаров из ${total}, не обновлено у ${notFound} товаров`
+      };
+    }
+
+    function findColumnIndex(headerRow, possibleNames) {
+      for (let i = 0; i < headerRow.length; i++) {
+        const cellValue = String(headerRow[i] || '').trim();
+        if (possibleNames.some(name => cellValue.toLowerCase() === name.toLowerCase())) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function downloadTemplateFile() {
+      // Create template data
+      const templateData = [
+        ['Баркод', 'Кол-во'],
+        ['1234567890123', '10'],
+        ['2345678901234', '25'],
+        ['3456789012345', '0'],
+        ['4567890123456', '100']
+      ];
+
+      // Create workbook and worksheet
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(templateData);
+      
+      // Set column widths
+      ws['!cols'] = [
+        { wch: 15 }, // Баркод
+        { wch: 10 }  // Кол-во
+      ];
+
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(wb, ws, 'Остатки');
+
+      // Generate filename with current date
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const filename = `шаблон_остатков_${dateStr}.xlsx`;
+
+      // Download file
+      XLSX.writeFile(wb, filename);
+    }
+
+    function exportCurrentStocks() {
+      // Check if warehouse is selected
+      const stockInputs = document.querySelectorAll('.stock-input');
+      if (stockInputs.length === 0) {
+        showNotice('Сначала выберите склад', 'danger');
+        return;
+      }
+
+      // Get current warehouse name
+      const warehouseName = document.getElementById('whTitle').textContent || 'склад';
+      
+      // Prepare data
+      const exportData = [
+        ['Артикул продавца', 'Артикул WB', 'Баркод', 'Остаток']
+      ];
+
+      // Collect data from table rows
+      const tableRows = document.querySelectorAll('#goodsBody tr');
+      tableRows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 6) {
+          const vendorCode = cells[2].textContent.trim();
+          const nmId = cells[3].textContent.trim();
+          const barcode = cells[4].textContent.trim();
+          const stockInput = cells[5].querySelector('.stock-input');
+          const stock = stockInput ? stockInput.value : '0';
+          
+          exportData.push([vendorCode, nmId, barcode, stock]);
+        }
+      });
+
+      // Create workbook and worksheet
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(exportData);
+      
+      // Set column widths
+      ws['!cols'] = [
+        { wch: 20 }, // Артикул продавца
+        { wch: 15 }, // Артикул WB
+        { wch: 15 }, // Баркод
+        { wch: 10 }  // Остаток
+      ];
+
+      // Add worksheet to workbook
+      XLSX.utils.book_append_sheet(wb, ws, 'Остатки');
+
+      // Generate filename with current date and warehouse
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10);
+      const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, '-');
+      const filename = `остатки_${warehouseName.replace(/[^a-zA-Z0-9]/g, '_')}_${dateStr}_${timeStr}.xlsx`;
+
+      // Download file
+      XLSX.writeFile(wb, filename);
+      
+      showNotice(`Файл с остатками скачан: ${filename}`, 'success');
+    }
+
+    // Auto Update Settings Functions
+    function showModalNotice(message, kind) {
+      const container = document.getElementById('modalNoticeContainer');
+      const isError = (kind === 'danger' || kind === 'error');
+      const cls = isError ? 'alert-danger' : 'alert-success';
+      const id = 'modal-n' + String(Date.now());
+      container.innerHTML = `
+        <div id="${id}" class="alert ${cls} alert-dismissible fade show d-flex align-items-center" role="alert" style="position:relative;">
+          <div class="me-2" aria-hidden="true">${isError ? '⚠️' : '✅'}</div>
+          <div class="flex-grow-1">${message}</div>
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          <div class="progress" style="position:absolute; left:0; right:0; bottom:-2px; height:2px; background:transparent;">
+            <div class="progress-bar ${isError ? 'bg-danger' : 'bg-success'}" style="width:100%"></div>
+          </div>
+        </div>`;
+      container.style.display = '';
+      const alertEl = document.getElementById(id);
+      const bar = alertEl.querySelector('.progress-bar');
+      let left = 5000; const step = 100; // 5s
+      const timer = setInterval(()=>{
+        left -= step; if (left <= 0) { clearInterval(timer); const bsAlert = bootstrap.Alert.getOrCreateInstance(alertEl); bsAlert.close(); return; }
+        const pct = Math.max(0, Math.round((left/5000)*100));
+        bar.style.width = pct + '%';
+      }, step);
+      alertEl.addEventListener('closed.bs.alert', ()=>{ clearInterval(timer); container.style.display = 'none'; container.innerHTML=''; });
+    }
+
+    function formatDateTime(dateString) {
+      if (!dateString) return '';
+      const date = new Date(dateString);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      const seconds = String(date.getSeconds()).padStart(2, '0');
+      return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
+    }
+
+    document.getElementById('saveAutoUpdateSettings')?.addEventListener('click', async () => {
+      const url = document.getElementById('remoteFileUrl').value.trim();
+      const interval = parseInt(document.getElementById('checkInterval').value);
+      const enabled = document.getElementById('autoUpdateEnabled').checked;
+
+      if (enabled && !url) {
+        showModalNotice('Введите URL файла для автоматического обновления', 'danger');
+        return;
+      }
+
+      // Collect warehouse settings
+      const warehouseSettings = {};
+      document.querySelectorAll('.warehouse-checkbox').forEach(checkbox => {
+        const warehouseId = checkbox.getAttribute('data-warehouse-id');
+        warehouseSettings[warehouseId] = {
+          enabled: checkbox.checked
+        };
+      });
+
+      try {
+        const response = await fetch('/api/fbs-stock/auto-update/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, interval, enabled, warehouses: warehouseSettings })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          showModalNotice('Настройки автоматического обновления сохранены', 'success');
+          loadAutoUpdateSettings();
+        } else {
+          showModalNotice('Ошибка сохранения настроек: ' + (data.error || 'Неизвестная ошибка'), 'danger');
+        }
+      } catch (error) {
+        showModalNotice('Ошибка сохранения настроек: ' + error.message, 'danger');
+      }
+    });
+
+    document.getElementById('testConnectionBtn')?.addEventListener('click', async () => {
+      const url = document.getElementById('remoteFileUrl').value.trim();
+      if (!url) {
+        showModalNotice('Введите URL файла для тестирования', 'danger');
+        return;
+      }
+
+      const btn = document.getElementById('testConnectionBtn');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Тестируем...';
+
+      try {
+        const response = await fetch('/api/fbs-stock/auto-update/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          showModalNotice(`Подключение успешно! Файл найден. Размер: ${data.size} байт, дата: ${data.lastModified}`, 'success');
+        } else {
+          showModalNotice('Ошибка подключения: ' + (data.error || 'Не удалось получить файл'), 'danger');
+        }
+      } catch (error) {
+        showModalNotice('Ошибка тестирования: ' + error.message, 'danger');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+
+    document.getElementById('manualUpdateBtn')?.addEventListener('click', async () => {
+      const url = document.getElementById('remoteFileUrl').value.trim();
+      if (!url) {
+        showModalNotice('Введите URL файла для обновления', 'danger');
+        return;
+      }
+
+      const btn = document.getElementById('manualUpdateBtn');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Обновляем...';
+
+      try {
+        const response = await fetch('/api/fbs-stock/auto-update/manual-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+
+        const data = await response.json();
+        if (response.ok) {
+          showModalNotice(`Обновление завершено! Обработано ${data.processed} товаров, обновлено ${data.updated} остатков`, 'success');
+          loadAutoUpdateSettings(); // Refresh settings to show updated history
+        } else {
+          showModalNotice('Ошибка обновления: ' + (data.error || 'Неизвестная ошибка'), 'danger');
+        }
+      } catch (error) {
+        showModalNotice('Ошибка обновления: ' + error.message, 'danger');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+
+    async function loadAutoUpdateSettings() {
+      try {
+        const response = await fetch('/api/fbs-stock/auto-update/settings');
+        const data = await response.json();
+        
+        if (response.ok) {
+          const globalSettings = data.global || data; // Support old format
+          document.getElementById('remoteFileUrl').value = globalSettings.url || '';
+          document.getElementById('checkInterval').value = globalSettings.interval || 60;
+          document.getElementById('autoUpdateEnabled').checked = globalSettings.enabled || false;
+          
+          updateStatusDisplay(globalSettings);
+          updateHistoryDisplay(globalSettings.history || []);
+          
+          // Load warehouses if auto-update is enabled
+          if (globalSettings.enabled) {
+            await loadWarehousesForSettings(data.warehouses || {});
+          } else {
+            document.getElementById('warehouseSettingsContainer').style.display = 'none';
+          }
+        }
+      } catch (error) {
+        console.error('Error loading auto-update settings:', error);
+      }
+    }
+
+    async function loadWarehousesForSettings(warehouseSettings) {
+      try {
+        // Get warehouses from the current page data
+        const warehouseRows = document.querySelectorAll('#stockBody tr.warehouse-row');
+        const warehouseSettingsContainer = document.getElementById('warehouseSettings');
+        
+        if (warehouseRows.length === 0) {
+          warehouseSettingsContainer.innerHTML = '<div class="text-muted small">Сначала обновите данные складов</div>';
+          document.getElementById('warehouseSettingsContainer').style.display = 'block';
+          return;
+        }
+        
+        let html = '';
+        warehouseRows.forEach(row => {
+          const warehouseId = row.getAttribute('data-wid');
+          const warehouseName = row.getAttribute('data-wname');
+          const isEnabled = warehouseSettings[warehouseId]?.enabled || false;
+          
+          html += `
+            <div class="form-check mb-2">
+              <input class="form-check-input warehouse-checkbox" type="checkbox" 
+                     id="warehouse_${warehouseId}" 
+                     data-warehouse-id="${warehouseId}"
+                     ${isEnabled ? 'checked' : ''}>
+              <label class="form-check-label" for="warehouse_${warehouseId}">
+                ${warehouseName}
+              </label>
+            </div>
+          `;
+        });
+        
+        warehouseSettingsContainer.innerHTML = html;
+        document.getElementById('warehouseSettingsContainer').style.display = 'block';
+        
+      } catch (error) {
+        console.error('Error loading warehouses:', error);
+        document.getElementById('warehouseSettings').innerHTML = '<div class="text-danger small">Ошибка загрузки складов</div>';
+      }
+    }
+
+    function updateStatusDisplay(settings) {
+      const statusDiv = document.getElementById('autoUpdateStatus');
+      const statusText = document.getElementById('statusText');
+      const lastCheckTime = document.getElementById('lastCheckTime');
+
+      if (settings.enabled) {
+        statusDiv.className = 'alert alert-success';
+        statusText.textContent = `Автоматическое обновление активно (проверка каждые ${settings.interval} мин)`;
+        lastCheckTime.textContent = settings.lastCheck ? `Последняя проверка: ${formatDateTime(settings.lastCheck)}` : '';
+      } else {
+        statusDiv.className = 'alert alert-info';
+        statusText.textContent = 'Автоматическое обновление отключено';
+        lastCheckTime.textContent = '';
+      }
+    }
+
+    function updateHistoryDisplay(history) {
+      const historyDiv = document.getElementById('updateHistory');
+      
+      if (history.length === 0) {
+        historyDiv.innerHTML = '<div class="text-muted small">История обновлений пуста</div>';
+        return;
+      }
+
+      const historyHtml = history.map(entry => {
+        const statusClass = entry.success ? 'text-success' : 'text-danger';
+        const statusIcon = entry.success ? '✅' : '❌';
+        return `
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <span class="small">${statusIcon} ${formatDateTime(entry.timestamp)}</span>
+            <span class="small ${statusClass}">${entry.message}</span>
+          </div>
+        `;
+      }).join('');
+
+      historyDiv.innerHTML = historyHtml;
+    }
   </script>
 </body>
 </html>
+
+
+
+
 
 
