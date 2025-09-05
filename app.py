@@ -4170,73 +4170,8 @@ def api_fbs_supplies():
     except Exception:
         offset_i = 0
 
-    # Check cache first (only if not refreshing)
-    if not refresh_flag:
-        cached = load_fbs_supplies_cache() or {}
-        if cached.get("all_supplies_raw"):
-            all_supplies_raw = cached.get("all_supplies_raw", [])
-            # Sort by creation date (newest first)
-            all_supplies_raw.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
-            
-            # Get only the supplies we need to process
-            supplies_to_process = all_supplies_raw[offset_i:offset_i + limit_i]
-            
-            # Process only the supplies we need
-            processed_supplies = []
-            for s in supplies_to_process:
-                supply_id = s.get("id")
-                if supply_id:
-                    # Get count from supply data or try to get from orders
-                    count = s.get("count") or 0
-                    if count == 0:
-                        # Try to get count from orders for this supply
-                        try:
-                            url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
-                            orders_resp = get_with_retry(url, [{"Authorization": f"{token}"}], params={})
-                            orders_data = orders_resp.json()
-                            orders = orders_data.get("orders", []) if isinstance(orders_data, dict) else []
-                            count = len(orders) if isinstance(orders, list) else 0
-                        except Exception as e:
-                            print(f"DEBUG: Error getting orders for supply {supply_id}: {e}")
-                            count = 0
-                    
-                    # Enrich with supply info and compute status
-                    created_at = s.get("createdAt")
-                    done = s.get("done")
-                    closed_at = s.get("closedAt")
-                    
-                    # Status per requirement
-                    if done:
-                        status_label = "Отгружено"
-                        try:
-                            _sdt = parse_wb_datetime(str(closed_at))
-                            _sdt_msk = to_moscow(_sdt) if _sdt else None
-                            status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else str(closed_at)
-                        except Exception:
-                            status_dt = str(closed_at)
-                    else:
-                        status_label = "Не отгружена"
-                        status_dt = None
-                    
-                    # Date column should use createdAt
-                    date_dt = parse_wb_datetime(str(created_at)) if created_at else None
-                    date_msk = to_moscow(date_dt) if date_dt else None
-                    date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else ""
-                    
-                    processed_supplies.append({
-                        "supplyId": str(supply_id),
-                        "date": date_str,
-                        "count": count,
-                        "status": status_label,
-                        "statusDt": status_dt or "",
-                    })
-            
-            return jsonify({
-                "items": processed_supplies,
-                "lastUpdated": cached.get("lastUpdated"),
-                "total": len(all_supplies_raw),
-                "hasMore": offset_i + limit_i < len(all_supplies_raw)
-            }), 200
+    # Always load from API for now (to ensure we get fresh data)
+    # TODO: Implement proper caching later
 
     try:
         # Load ALL supplies at once (fast - 262ms as per user's test)
@@ -4244,33 +4179,25 @@ def api_fbs_supplies():
             {"Authorization": f"{token}"},
             {"Authorization": f"Bearer {token}"},
         ]
-        print("DEBUG: Loading ALL supplies at once")
         all_supplies_raw = []
         
         for hdrs in headers_list:
             try:
-                print(f"DEBUG: Loading all supplies with limit=1000, next=0")
                 resp = get_with_retry(FBS_SUPPLIES_LIST_URL, hdrs, params={"limit": 1000, "next": 0})
-                print(f"DEBUG: Response status: {resp.status_code}")
                 data = resp.json()
                 
                 # Handle both list and dict response formats
                 if isinstance(data, list):
                     all_supplies_raw = data
-                    print(f"DEBUG: Got list with {len(all_supplies_raw)} supplies")
                 elif isinstance(data, dict):
                     all_supplies_raw = data.get("supplies", []) or data.get("data", []) or []
-                    print(f"DEBUG: Got dict with {len(all_supplies_raw)} supplies")
                 else:
-                    print(f"DEBUG: Unexpected response format: {data}")
                     continue
                 break
             except Exception as e:
-                print(f"DEBUG: Error with headers {list(hdrs.keys())}: {e}")
                 continue
         
         if not all_supplies_raw:
-            print("DEBUG: No supplies loaded, falling back to old logic")
             orders = _collect_fbs_orders_for_supplies(token, max_pages=10, limit=200)
             all_supplies_raw = _aggregate_fbs_supplies(orders)
         
@@ -4280,26 +4207,21 @@ def api_fbs_supplies():
         # Get only the supplies we need to process (based on offset and limit)
         supplies_to_process = all_supplies_raw[offset_i:offset_i + limit_i]
         
-        print(f"DEBUG: Processing only {len(supplies_to_process)} supplies from offset {offset_i}")
-        
         # Process only the supplies we need
         processed_supplies = []
         for s in supplies_to_process:
             supply_id = s.get("id")
             if supply_id:
-                # Get count from supply data or try to get from orders
-                count = s.get("count") or 0
-                if count == 0:
-                    # Try to get count from orders for this supply
-                    try:
-                        url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
-                        orders_resp = get_with_retry(url, headers_list[0], params={})
-                        orders_data = orders_resp.json()
-                        orders = orders_data.get("orders", []) if isinstance(orders_data, dict) else []
-                        count = len(orders) if isinstance(orders, list) else 0
-                    except Exception as e:
-                        print(f"DEBUG: Error getting orders for supply {supply_id}: {e}")
-                        count = 0
+                # Get count from orders for this supply (API doesn't provide count directly)
+                count = 0
+                try:
+                    url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
+                    orders_resp = get_with_retry(url, headers_list[0], params={})
+                    orders_data = orders_resp.json()
+                    orders = orders_data.get("orders", []) if isinstance(orders_data, dict) else []
+                    count = len(orders) if isinstance(orders, list) else 0
+                except Exception as e:
+                    count = 0
                 
                 # Enrich with supply info (createdAt, done, closedAt) and compute status
                 created_at = s.get("createdAt")
@@ -4332,7 +4254,7 @@ def api_fbs_supplies():
                     "statusDt": status_dt or "",
                 })
         
-        # Save all raw supplies to cache (for future pagination)
+        # Save raw supplies to cache (for future pagination)
         now_msk = datetime.now(MOSCOW_TZ)
         cache_payload = {
             "all_supplies_raw": all_supplies_raw,  # Store raw data for pagination
@@ -4341,7 +4263,6 @@ def api_fbs_supplies():
         }
         save_fbs_supplies_cache(cache_payload)
         
-        print(f"DEBUG: Returning {len(processed_supplies)} items from offset {offset_i}, total: {len(all_supplies_raw)}")
         return jsonify({
             "items": processed_supplies,
             "lastUpdated": cache_payload["lastUpdated"],

@@ -162,6 +162,7 @@
       let suppliesTotal = 0;
       let suppliesOffset = 0;
       let hasMoreSupplies = false;
+      let displayedSuppliesCount = 0; // Track how many supplies are currently displayed
 
       function setSuppliesLoading(isLoading){
         const btn = document.getElementById('suppliesRefreshBtn');
@@ -178,6 +179,7 @@
         
         if (!append) {
           tbody.innerHTML = '';
+          displayedSuppliesCount = 0; // Reset counter when refreshing
         }
         
         suppliesTotal = Number(data.total || 0);
@@ -194,7 +196,7 @@
                           <td class=\"text-center\"></td>
                           <td class=\"text-center\"></td>
                           <td class=\"text-center\"></td>`;
-          tr.children[0].textContent = (idx + 1).toString();
+          tr.children[0].textContent = (displayedSuppliesCount + idx + 1).toString();
           tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
           tr.children[2].textContent = s.count != null ? s.count : '';
           const statusCell = tr.children[3];
@@ -257,6 +259,10 @@
             }
           });
         });
+        
+        // Update displayed count
+        displayedSuppliesCount += (data.items || []).length;
+        
         if ((data.items || []).length === 0){
           tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
         }
