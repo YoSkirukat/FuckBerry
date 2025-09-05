@@ -160,6 +160,8 @@
       // Supplies: cached initial load (limit=5), show more and refresh support
       let suppliesLimit = 5;
       let suppliesTotal = 0;
+      let suppliesOffset = 0;
+      let hasMoreSupplies = false;
 
       function setSuppliesLoading(isLoading){
         const btn = document.getElementById('suppliesRefreshBtn');
@@ -169,13 +171,21 @@
         }
       }
 
-      function renderSupplies(data){
+      function renderSupplies(data, append = false){
         const tbody = document.querySelector('#suppliesTable tbody');
         const updatedAtEl = document.getElementById('suppliesUpdatedAt');
         const moreBtn = document.getElementById('suppliesMoreBtn');
-        tbody.innerHTML = '';
-        suppliesTotal = Number(data.total || (data.items || []).length || 0);
+        
+        if (!append) {
+          tbody.innerHTML = '';
+        }
+        
+        suppliesTotal = Number(data.total || 0);
+        hasMoreSupplies = data.hasMore || false;
+        
         if (updatedAtEl){ updatedAtEl.textContent = data.lastUpdated || '—'; }
+        
+        // Render new items
         (data.items || []).forEach((s, idx) => {
           const tr = document.createElement('tr');
           tr.setAttribute('data-supply-id', s.supplyId || '');
@@ -251,7 +261,7 @@
           tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
         }
         if (moreBtn){
-          if (suppliesLimit < suppliesTotal){
+          if (hasMoreSupplies){
             moreBtn.classList.remove('d-none');
           } else {
             moreBtn.classList.add('d-none');
@@ -261,11 +271,22 @@
 
       async function loadSupplies(opts){
         const refresh = opts && opts.refresh;
+        const append = opts && opts.append;
         try{
           setSuppliesLoading(true);
-          const res = await fetch(`/api/fbs/supplies?limit=${encodeURIComponent(suppliesLimit)}${refresh ? '&refresh=1' : ''}`);
+          let url = `/api/fbs/supplies?limit=${encodeURIComponent(suppliesLimit)}`;
+          if (refresh) {
+            url += '&refresh=1';
+            suppliesOffset = 0; // Reset offset on refresh
+          }
+          if (append) {
+            suppliesOffset += suppliesLimit;
+            url += `&offset=${encodeURIComponent(suppliesOffset)}`;
+          }
+          
+          const res = await fetch(url);
           const data = await res.json();
-          renderSupplies(data);
+          renderSupplies(data, append);
         }catch(e){
           console.error(e);
           const tbody = document.querySelector('#suppliesTable tbody');
@@ -280,8 +301,7 @@
         loadSupplies({refresh: true});
       });
       document.getElementById('suppliesMoreBtn')?.addEventListener('click', function(){
-        suppliesLimit += 5;
-        loadSupplies({refresh: false});
+        loadSupplies({refresh: false, append: true});
       });
 
       // initial cached load
