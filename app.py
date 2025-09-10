@@ -1590,6 +1590,7 @@ def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "nm_id": o.get("nmID") or o.get("nmId") or None,
             "barcode": None,
             "photo": None,
+            "orderId": order_id,  # Добавляем orderId для JavaScript
         })
     return rows
 
@@ -3934,9 +3935,14 @@ def api_fbs_tasks():
             if cached.get("rows"):
                 return jsonify({"items": cached.get("rows"), "updated_at": cached.get("updated_at")})
         # Fetch fresh
+        print(f"=== FETCHING FRESH FBS TASKS ===")
         raw = fetch_fbs_new_orders(token)
+        print(f"Raw tasks count: {len(raw)}")
         raw_sorted = sorted(raw, key=_extract_created_at)
         rows = to_fbs_rows(raw_sorted)
+        print(f"Processed rows count: {len(rows)}")
+        if rows:
+            print(f"First row: {rows[0]}")
         # Enrich from products cache
         prod_cached = load_products_cache() or {}
         items = (prod_cached.get("items") or [])
@@ -4228,32 +4234,32 @@ def api_fbs_supplies():
                 done = s.get("done")
                 closed_at = s.get("closedAt")
                 
-                # Status per requirement
-                if done:
-                    status_label = "Отгружено"
-                    try:
-                        _sdt = parse_wb_datetime(str(closed_at))
-                        _sdt_msk = to_moscow(_sdt) if _sdt else None
-                        status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else str(closed_at)
-                    except Exception:
-                        status_dt = str(closed_at)
-                else:
-                    status_label = "Не отгружена"
-                    status_dt = None
+            # Status per requirement
+            if done:
+                status_label = "Отгружено"
+                try:
+                    _sdt = parse_wb_datetime(str(closed_at))
+                    _sdt_msk = to_moscow(_sdt) if _sdt else None
+                    status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else str(closed_at)
+                except Exception:
+                    status_dt = str(closed_at)
+            else:
+                status_label = "Не отгружена"
+                status_dt = None
                 
-                # Date column should use createdAt
-                date_dt = parse_wb_datetime(str(created_at)) if created_at else None
-                date_msk = to_moscow(date_dt) if date_dt else None
-                date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else ""
-                
-                processed_supplies.append({
-                    "supplyId": str(supply_id),
-                    "date": date_str,
-                    "count": count,
-                    "status": status_label,
-                    "statusDt": status_dt or "",
-                })
-        
+            # Date column should use createdAt
+            date_dt = parse_wb_datetime(str(created_at)) if created_at else None
+            date_msk = to_moscow(date_dt) if date_dt else None
+            date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else ""
+            
+            processed_supplies.append({
+                "supplyId": str(supply_id),
+                "date": date_str,
+                "count": count,
+                "status": status_label,
+                "statusDt": status_dt or "",
+            })
+
         # Save raw supplies to cache (for future pagination)
         now_msk = datetime.now(MOSCOW_TZ)
         cache_payload = {
@@ -4262,7 +4268,7 @@ def api_fbs_supplies():
             "ts": int(now_msk.timestamp())
         }
         save_fbs_supplies_cache(cache_payload)
-        
+
         return jsonify({
             "items": processed_supplies,
             "lastUpdated": cache_payload["lastUpdated"],
@@ -4354,6 +4360,79 @@ def api_fbs_supply_orders(supply_id: str):
         return jsonify({"items": []}), 200
     except Exception as exc:
         return jsonify({"items": [], "error": str(exc)}), 200
+
+
+@app.route("/api/fbs/supplies/<supply_id>/orders/<order_id>", methods=["PATCH"])
+@login_required
+def api_fbs_add_order_to_supply(supply_id: str, order_id: str):
+    """Добавить сборочное задание в поставку"""
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "No token"}), 401
+    
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    
+    # URL для добавления задания в поставку
+    url = f"https://marketplace-api.wildberries.ru/api/v3/supplies/{supply_id}/orders/{order_id}"
+    
+    last_err = None
+    for hdrs in headers_list:
+        try:
+            resp = requests.patch(url, headers=hdrs, timeout=30)
+            if resp.status_code in [200, 204]:  # 204 = No Content (успешно)
+                return jsonify({"success": True}), 200
+            elif resp.status_code == 409:
+                # Задание уже в поставке
+                return jsonify({"error": "Order already in supply"}), 409
+            else:
+                last_err = f"HTTP {resp.status_code}: {resp.text}"
+                continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+    
+    return jsonify({"error": last_err or "Unknown error"}), 500
+
+
+@app.route("/api/fbs/supplies/create", methods=["POST"])
+@login_required
+def api_fbs_create_supply():
+    """Создать новую поставку"""
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "No token"}), 401
+    
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    
+    # URL для создания поставки
+    url = "https://marketplace-api.wildberries.ru/api/v3/supplies"
+    
+    last_err = None
+    for hdrs in headers_list:
+        try:
+            # Добавляем Content-Type для JSON
+            hdrs_with_content_type = hdrs.copy()
+            hdrs_with_content_type["Content-Type"] = "application/json"
+            
+            resp = requests.post(url, headers=hdrs_with_content_type, json={}, timeout=30)
+            if resp.status_code in [200, 201]:
+                data = resp.json()
+                supply_id = data.get("id") or data.get("supplyId") or "Неизвестно"
+                return jsonify({"success": True, "supplyId": supply_id}), 200
+            else:
+                last_err = f"HTTP {resp.status_code}: {resp.text}"
+                continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+    
+    return jsonify({"error": last_err or "Unknown error"}), 500
 
 
 @app.route("/coefficients", methods=["GET", "POST"]) 

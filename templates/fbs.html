@@ -57,6 +57,9 @@
           <table class="table table-sm table-striped">
             <thead>
               <tr>
+                <th class="text-center" style="width:40px;">
+                  <input type="checkbox" id="selectAllTasks" class="form-check-input">
+                </th>
                 <th class="text-center" style="width:60px;">#</th>
                 <th class="text-center">Номер и дата задания</th>
                 <th class="text-center" style="width:70px;">Фото</th>
@@ -69,6 +72,9 @@
             <tbody id="tasksBody">
               {% for r in rows %}
                 <tr>
+                  <td class="text-center">
+                    <input type="checkbox" class="form-check-input task-checkbox" data-order-id="{{ r.get('orderId', '') }}">
+                  </td>
                   <td class="text-center">{{ loop.index }}</td>
                   <td>
                     {% set parts = (r["Номер и дата задания"] or "").split(' | ') %}
@@ -91,13 +97,18 @@
                 </tr>
               {% endfor %}
               {% if not rows %}
-                <tr><td colspan="7" class="text-muted text-center">Нет новых заданий на сборку</td></tr>
+                <tr><td colspan="8" class="text-muted text-center">Нет новых заданий на сборку</td></tr>
               {% endif %}
             </tbody>
           </table>
-          <form method="post" action="/fbs/export" class="mt-2">
+          <div class="d-flex justify-content-between mt-2">
+            <button id="addToSupplyBtn" class="btn btn-primary btn-sm" disabled>
+              Добавить в поставку (<span id="selectedTasksCount">0</span>)
+            </button>
+            <form method="post" action="/fbs/export">
             <button class="btn btn-success btn-sm" type="submit">Сохранить в Excel</button>
           </form>
+          </div>
         </div>
       </div>
     </div>
@@ -107,7 +118,10 @@
     <div class="card">
       <div class="card-body">
         <div class="d-flex flex-wrap align-items-center justify-content-between mb-2 gap-2">
-          <h6 class="mb-0">Поставки FBS</h6>
+          <div class="d-flex flex-column">
+            <h6 class="mb-0">Поставки FBS</h6>
+            <button id="createSupplyBtn" class="btn btn-sm btn-primary mt-1" style="width: fit-content;margin-top: 15px !important;">Создать поставку</button>
+          </div>
           <div class="d-flex align-items-center gap-2 small text-muted">
             <span>Обновлено: <span id="suppliesUpdatedAt">—</span></span>
             <button id="suppliesRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить</button>
@@ -157,198 +171,603 @@
           previewImg.src = '';
         }
       });
-      // Supplies: cached initial load (limit=5), show more and refresh support
-      let suppliesLimit = 5;
-      let suppliesTotal = 0;
-      let suppliesOffset = 0;
-      let hasMoreSupplies = false;
-      let displayedSuppliesCount = 0; // Track how many supplies are currently displayed
+      // Supplies: обработчики событий вынесены в глобальную область
 
-      function setSuppliesLoading(isLoading){
-        const btn = document.getElementById('suppliesRefreshBtn');
-        if (btn){
-          btn.disabled = !!isLoading;
-          btn.textContent = isLoading ? 'Загрузка…' : 'Обновить';
-        }
-      }
+      // Tasks block logic - обработчики вынесены в глобальную область
+    })();
 
-      function renderSupplies(data, append = false){
-        const tbody = document.querySelector('#suppliesTable tbody');
-        const updatedAtEl = document.getElementById('suppliesUpdatedAt');
-        const moreBtn = document.getElementById('suppliesMoreBtn');
-        
-        if (!append) {
-          tbody.innerHTML = '';
-          displayedSuppliesCount = 0; // Reset counter when refreshing
-        }
-        
-        suppliesTotal = Number(data.total || 0);
-        hasMoreSupplies = data.hasMore || false;
-        
-        if (updatedAtEl){ updatedAtEl.textContent = data.lastUpdated || '—'; }
-        
-        // Render new items
-        (data.items || []).forEach((s, idx) => {
-          const tr = document.createElement('tr');
-          tr.setAttribute('data-supply-id', s.supplyId || '');
-          tr.style.cursor = 'pointer';
-          tr.innerHTML = `<td class=\"text-center\"></td>
-                          <td class=\"text-center\"></td>
-                          <td class=\"text-center\"></td>
-                          <td class=\"text-center\"></td>`;
-          tr.children[0].textContent = (displayedSuppliesCount + idx + 1).toString();
-          tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
-          tr.children[2].textContent = s.count != null ? s.count : '';
-          const statusCell = tr.children[3];
-          if (s.status === 'Отгружено'){
-            const badge = document.createElement('span');
-            badge.className = 'status-badge status-ok';
-            badge.textContent = 'Отгружено';
-            statusCell.innerHTML = '';
-            statusCell.appendChild(badge);
-            if (s.statusDt){
-              const small = document.createElement('div');
-              small.className = 'supply-date';
-              small.textContent = s.statusDt;
-              statusCell.appendChild(small);
-            }
-          } else {
-            const badge = document.createElement('span');
-            badge.className = 'status-badge status-pending';
-            badge.textContent = s.status || 'Не отгружена';
-            statusCell.innerHTML = '';
-            statusCell.appendChild(badge);
-          }
-          tbody.appendChild(tr);
-          const details = document.createElement('tr');
-          details.className = 'd-none supply-details-row';
-          details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
-          tbody.appendChild(details);
-          tr.addEventListener('click', async () => {
-            document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
-              if (row !== details) row.classList.add('d-none');
-            });
-            details.classList.toggle('d-none');
-            const wrap = document.getElementById(`details-${s.supplyId}`);
-            if (!wrap) return;
-            if (wrap.getAttribute('data-loaded') === '1') return;
-            try{
-              const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(s.supplyId)}/orders`);
-              const d = await r.json();
-              const items = d.items || [];
-              if (!items.length){
-                wrap.innerHTML = '<div class="text-muted">Нет товаров в поставке</div>';
-              } else {
-                const table = document.createElement('table');
-                table.className = 'table table-sm mb-0';
-                table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
-                const tb = table.querySelector('tbody');
-                items.forEach(it => {
-                  const tr2 = document.createElement('tr');
-                  const img = it.photo ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">` : '';
-                  tr2.innerHTML = `<td class="text-center">${img}</td><td>${(it.article||'')}</td><td class="text-center">${(it.barcode||'')}</td><td class="text-center">${(it.createdAt||'')}</td>`;
-                  tb.appendChild(tr2);
-                });
-                wrap.innerHTML = '';
-                wrap.appendChild(table);
-              }
-              wrap.setAttribute('data-loaded','1');
-            } catch(e){
-              console.error(e);
-              wrap.innerHTML = '<div class="text-danger">Ошибка загрузки списка товаров</div>';
-            }
-          });
-        });
-        
-        // Update displayed count
-        displayedSuppliesCount += (data.items || []).length;
-        
-        if ((data.items || []).length === 0){
-          tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
-        }
-        if (moreBtn){
-          if (hasMoreSupplies){
-            moreBtn.classList.remove('d-none');
-          } else {
-            moreBtn.classList.add('d-none');
-          }
-        }
-      }
+    // Глобальные переменные и функции для загрузки данных (вынесены из блока выше)
+    let suppliesOffset = 0;
+    let suppliesLimit = 5;
+    let suppliesTotal = 0;
+    let hasMoreSupplies = false;
+    let displayedSuppliesCount = 0; // Track how many supplies are currently displayed
+    let suppliesBtn, suppliesMoreBtn, suppliesTime, tasksBtn, tasksTime;
 
-      async function loadSupplies(opts){
-        const refresh = opts && opts.refresh;
-        const append = opts && opts.append;
-        try{
-          setSuppliesLoading(true);
-          let url = `/api/fbs/supplies?limit=${encodeURIComponent(suppliesLimit)}`;
-          if (refresh) {
-            url += '&refresh=1';
-            suppliesOffset = 0; // Reset offset on refresh
-          }
-          if (append) {
-            suppliesOffset += suppliesLimit;
-            url += `&offset=${encodeURIComponent(suppliesOffset)}`;
-          }
-          
-          const res = await fetch(url);
-          const data = await res.json();
-          renderSupplies(data, append);
-        }catch(e){
-          console.error(e);
-          const tbody = document.querySelector('#suppliesTable tbody');
-          tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Ошибка загрузки</td></tr>';
-        } finally {
-          setSuppliesLoading(false);
-        }
-      }
-
-      document.getElementById('suppliesRefreshBtn')?.addEventListener('click', function(){
+    // Инициализация элементов DOM после загрузки страницы
+    document.addEventListener('DOMContentLoaded', function() {
+      suppliesBtn = document.getElementById('suppliesRefreshBtn');
+      suppliesMoreBtn = document.getElementById('suppliesMoreBtn');
+      suppliesTime = document.getElementById('suppliesUpdatedAt');
+      tasksBtn = document.getElementById('tasksRefreshBtn');
+      tasksTime = document.getElementById('tasksUpdatedAt');
+      
+      // Добавляем обработчики событий
+      suppliesBtn?.addEventListener('click', function(){
         suppliesLimit = 5;
         loadSupplies({refresh: true});
       });
-      document.getElementById('suppliesMoreBtn')?.addEventListener('click', function(){
+      
+      suppliesMoreBtn?.addEventListener('click', function(){
         loadSupplies({refresh: false, append: true});
       });
-
-      // initial cached load
-      loadSupplies({refresh: false});
-
-      // Tasks block logic
-      const tasksBtn = document.getElementById('tasksRefreshBtn');
-      const tasksTime = document.getElementById('tasksUpdatedAt');
-      async function loadTasks(refresh){
-        try{
-          if (tasksBtn){ tasksBtn.disabled = true; tasksBtn.textContent = 'Загрузка...'; }
-          const res = await fetch('/api/fbs/tasks' + (refresh ? '?refresh=1' : ''));
-          const data = await res.json();
-          const tbody = document.getElementById('tasksBody');
-          if (!tbody) return;
-          tbody.innerHTML = '';
-          (data.items || []).forEach((r, idx) => {
-            const tr = document.createElement('tr');
-            const parts = String(r['Номер и дата задания']||'').split(' | ');
-            const num = parts[0]||''; const dt = parts[1]||'';
-            tr.innerHTML = `<td class=\"text-center\">${idx+1}</td>
-              <td><div>${num}</div>${dt?`<div class='text-muted' style='font-size:0.68rem;'>${dt}</div>`:''}</td>
-              <td class=\"text-center\">${r.photo ? `<img src='${r.photo}' class='product-thumb' style='width:31px;height:42px;object-fit:cover;'>` : '—'}</td>
-              <td>${r['Наименование товара']||''}</td>
-              <td class=\"text-center\">${(r['Цена']!=null ? r['Цена'] : r['Стоимость товара'])||''}</td>
-              <td>${r['Склад']||''}</td>
-              <td>${r.barcode || '—'}</td>`;
-            tbody.appendChild(tr);
+      
+      tasksBtn?.addEventListener('click', ()=> loadTasks({refresh: true}));
+      
+      // Обработчик кнопки "Создать поставку"
+      document.getElementById('createSupplyBtn')?.addEventListener('click', async function() {
+        const btn = this;
+        try {
+          btn.disabled = true;
+          btn.innerHTML = 'Создание... <span class="spinner-border spinner-border-sm ms-1" role="status"></span>';
+          
+          const response = await fetch('/api/fbs/supplies/create', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            credentials: 'include'
           });
-          if (tasksTime) tasksTime.textContent = data.updated_at || '—';
-          if (!((data.items||[]).length)){
-            tbody.innerHTML = '<tr><td colspan="7" class="text-muted text-center">Нет новых заданий на сборку</td></tr>';
+          
+          const data = await response.json();
+          
+          if (response.ok && data.success) {
+            showNotification(`Поставка ${data.supplyId} успешно создана`, 'success');
+            // Обновляем список поставок
+            loadSupplies({refresh: true});
+          } else {
+            showNotification(data.error || 'Ошибка при создании поставки', 'error');
           }
-        }catch(e){ console.error(e); }
-        finally{ if (tasksBtn){ tasksBtn.disabled=false; tasksBtn.textContent='Обновить'; } }
+        } catch (error) {
+          console.error('Ошибка при создании поставки:', error);
+          showNotification('Ошибка при создании поставки', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = 'Создать поставку';
+        }
+      });
+      
+      // Начальная загрузка данных
+      loadSupplies({refresh: false});
+      loadTasks({refresh: false});
+    });
+
+    function setSuppliesLoading(isLoading){
+      if (suppliesBtn){
+        suppliesBtn.disabled = !!isLoading;
+        suppliesBtn.textContent = isLoading ? 'Загрузка…' : 'Обновить';
       }
-      tasksBtn?.addEventListener('click', ()=> loadTasks(true));
-      // initial cached
-      loadTasks(false);
-    })();
+    }
+
+    function renderSupplies(data, append = false){
+      console.log('renderSupplies получила данные:', data.items?.length || 0, 'поставок');
+      if (data.items && data.items.length > 0) {
+        console.log('Первая поставка:', data.items[0]);
+      }
+      const tbody = document.querySelector('#suppliesTable tbody');
+      const updatedAtEl = suppliesTime;
+      const moreBtn = suppliesMoreBtn;
+      
+      if (!append) {
+        tbody.innerHTML = '';
+        displayedSuppliesCount = 0; // Reset counter when refreshing
+      }
+      
+      suppliesTotal = Number(data.total || 0);
+      hasMoreSupplies = data.hasMore || false;
+      
+      if (updatedAtEl){ updatedAtEl.textContent = data.lastUpdated || '—'; }
+      
+      // Render new items
+      (data.items || []).forEach((s, idx) => {
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-supply-id', s.supplyId || '');
+        tr.style.cursor = 'pointer';
+        tr.innerHTML = `<td class=\"text-center\"></td>
+                        <td class=\"text-center\"></td>
+                        <td class=\"text-center\"></td>
+                        <td class=\"text-center\"></td>`;
+        tr.children[0].textContent = (displayedSuppliesCount + idx + 1).toString();
+        tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
+        tr.children[2].textContent = s.count != null ? s.count : '';
+        const statusCell = tr.children[3];
+        if (s.status === 'Отгружено'){
+          const badge = document.createElement('span');
+          badge.className = 'status-badge status-ok';
+          badge.textContent = 'Отгружено';
+          statusCell.innerHTML = '';
+          statusCell.appendChild(badge);
+          if (s.statusDt){
+            const small = document.createElement('div');
+            small.className = 'supply-date';
+            small.textContent = s.statusDt;
+            statusCell.appendChild(small);
+          }
+        } else {
+          const badge = document.createElement('span');
+          badge.className = 'status-badge status-pending';
+          badge.textContent = s.status || 'Не отгружена';
+          statusCell.innerHTML = '';
+          statusCell.appendChild(badge);
+        }
+        tbody.appendChild(tr);
+        const details = document.createElement('tr');
+        details.className = 'd-none supply-details-row';
+        details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
+        tbody.appendChild(details);
+        tr.addEventListener('click', async () => {
+          document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
+            if (row !== details) row.classList.add('d-none');
+          });
+          details.classList.toggle('d-none');
+          const wrap = document.getElementById(`details-${s.supplyId}`);
+          if (!wrap) return;
+          if (wrap.getAttribute('data-loaded') === '1') return;
+          try{
+            const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(s.supplyId)}/orders`);
+            const d = await r.json();
+            const items = d.items || [];
+            if (!items.length){
+              wrap.innerHTML = '<div class="text-muted text-center">Нет товаров в поставке</div>';
+            } else {
+              const table = document.createElement('table');
+              table.className = 'table table-sm mb-0';
+              table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
+              const tb = table.querySelector('tbody');
+              items.forEach(it => {
+                const tr2 = document.createElement('tr');
+                const img = it.photo ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">` : '';
+                tr2.innerHTML = `<td class="text-center">${img}</td><td>${(it.article||'')}</td><td class="text-center">${(it.barcode||'')}</td><td class="text-center">${(it.createdAt||'')}</td>`;
+                tb.appendChild(tr2);
+              });
+              wrap.innerHTML = '';
+              wrap.appendChild(table);
+            }
+            wrap.setAttribute('data-loaded','1');
+          } catch(e){
+            console.error(e);
+            wrap.innerHTML = '<div class="text-danger">Ошибка загрузки списка товаров</div>';
+          }
+        });
+      });
+      
+      // Update displayed count
+      displayedSuppliesCount += (data.items || []).length;
+      
+      if ((data.items || []).length === 0){
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
+      }
+      if (moreBtn){
+        if (hasMoreSupplies){
+          moreBtn.classList.remove('d-none');
+        } else {
+          moreBtn.classList.add('d-none');
+        }
+      }
+    }
+
+    async function loadTasks(opts){
+      const refresh = opts && opts.refresh;
+      try{
+        console.log('loadTasks вызвана, refresh:', refresh);
+        if (tasksBtn){ tasksBtn.disabled = true; tasksBtn.textContent = 'Загрузка...'; }
+        const res = await fetch('/api/fbs/tasks' + (refresh ? '?refresh=1' : ''), { credentials: 'include' });
+        const data = await res.json();
+        console.log('loadTasks получила данные:', data.items?.length || 0, 'заданий');
+        if (data.items && data.items.length > 0) {
+          console.log('Первое задание:', data.items[0]);
+        }
+        const tbody = document.getElementById('tasksBody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        (data.items || []).forEach((r, idx) => {
+          const tr = document.createElement('tr');
+          const parts = String(r['Номер и дата задания']||'').split(' | ');
+          const num = parts[0]||''; const dt = parts[1]||'';
+          tr.innerHTML = `<td class=\"text-center\"><input type=\"checkbox\" class=\"form-check-input task-checkbox\" data-order-id=\"${r.orderId || ''}\"></td>
+            <td class=\"text-center\">${idx+1}</td>
+            <td><div>${num}</div>${dt?`<div class='text-muted' style='font-size:0.68rem;'>${dt}</div>`:''}</td>
+            <td class=\"text-center\">${r.photo ? `<img src='${r.photo}' class='product-thumb' style='width:31px;height:42px;object-fit:cover;'>` : '—'}</td>
+            <td>${r['Наименование товара']||''}</td>
+            <td class=\"text-center\">${(r['Цена']!=null ? r['Цена'] : r['Стоимость товара'])||''}</td>
+            <td>${r['Склад']||''}</td>
+            <td>${r.barcode || '—'}</td>`;
+          tbody.appendChild(tr);
+        });
+        if (tasksTime) tasksTime.textContent = data.updated_at || '—';
+        if (!((data.items||[]).length)){
+          tbody.innerHTML = '<tr><td colspan="8" class="text-muted text-center">Нет новых заданий на сборку</td></tr>';
+        }
+      }catch(e){ console.error(e); }
+      finally{ 
+        console.log('loadTasks завершена');
+        if (tasksBtn){ tasksBtn.disabled=false; tasksBtn.textContent='Обновить'; } 
+      }
+    }
+
+    async function loadSupplies(opts){
+      const refresh = opts && opts.refresh;
+      const append = opts && opts.append;
+      try{
+        console.log('loadSupplies вызвана, refresh:', refresh, 'append:', append);
+        setSuppliesLoading(true);
+        let url = `/api/fbs/supplies?limit=${encodeURIComponent(suppliesLimit)}`;
+        if (refresh) {
+          url += '&refresh=1';
+          suppliesOffset = 0; // Reset offset on refresh
+        }
+        if (append) {
+          suppliesOffset += suppliesLimit;
+          url += `&offset=${encodeURIComponent(suppliesOffset)}`;
+        }
+        
+        const res = await fetch(url, { credentials: 'include' });
+        const data = await res.json();
+        renderSupplies(data, append);
+      }catch(e){
+        console.error(e);
+        const tbody = document.querySelector('#suppliesTable tbody');
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Ошибка загрузки</td></tr>';
+      } finally {
+        console.log('loadSupplies завершена');
+        setSuppliesLoading(false);
+      }
+    }
+
+    // Логика для добавления заданий в поставку
+    let selectedTasks = new Set();
+    let selectedSupplyId = null;
+
+    // Функция для показа уведомлений
+    function showNotification(message, type = 'success') {
+      const notifications = document.getElementById('notifications');
+      const notification = document.createElement('div');
+      
+      const bgClass = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : 'bg-warning';
+      const icon = type === 'success' ? '✓' : type === 'error' ? '✗' : '⚠';
+      
+      notification.className = `alert ${bgClass} text-white alert-dismissible fade show mb-2`;
+      notification.style.minWidth = '300px';
+      notification.innerHTML = `
+        <span class="me-2">${icon}</span>
+        ${message}
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+      `;
+      
+      notifications.appendChild(notification);
+      
+      // Автоматически скрываем через 5 секунд
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.remove();
+        }
+      }, 5000);
+    }
+
+    // Обработчик для чекбокса "Выбрать все"
+    document.getElementById('selectAllTasks')?.addEventListener('change', function() {
+      const checkboxes = document.querySelectorAll('.task-checkbox');
+      checkboxes.forEach(checkbox => {
+        checkbox.checked = this.checked;
+        if (this.checked) {
+          selectedTasks.add(checkbox.dataset.orderId);
+        } else {
+          selectedTasks.delete(checkbox.dataset.orderId);
+        }
+      });
+      updateAddToSupplyButton();
+    });
+
+    // Обработчики для отдельных чекбоксов
+    document.addEventListener('change', function(e) {
+      if (e.target.classList.contains('task-checkbox')) {
+        if (e.target.checked) {
+          selectedTasks.add(e.target.dataset.orderId);
+        } else {
+          selectedTasks.delete(e.target.dataset.orderId);
+        }
+        updateAddToSupplyButton();
+        updateSelectAllCheckbox();
+      }
+    });
+
+    // Обновление кнопки "Добавить в поставку"
+    function updateAddToSupplyButton() {
+      const btn = document.getElementById('addToSupplyBtn');
+      const count = document.getElementById('selectedTasksCount');
+      if (btn && count) {
+        const selectedCount = selectedTasks.size;
+        count.textContent = selectedCount;
+        btn.disabled = selectedCount === 0;
+      }
+    }
+
+    // Обновление чекбокса "Выбрать все"
+    function updateSelectAllCheckbox() {
+      const selectAll = document.getElementById('selectAllTasks');
+      const checkboxes = document.querySelectorAll('.task-checkbox');
+      if (selectAll && checkboxes.length > 0) {
+        const checkedCount = document.querySelectorAll('.task-checkbox:checked').length;
+        selectAll.checked = checkedCount === checkboxes.length;
+        selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+      }
+    }
+
+    // Обработчик кнопки "Добавить в поставку"
+    document.getElementById('addToSupplyBtn')?.addEventListener('click', async function() {
+      if (selectedTasks.size === 0) return;
+
+      try {
+        // Получаем список поставок со статусом "Не отгружена" (только последние 10)
+        const response = await fetch('/api/fbs/supplies?limit=10&next=0', {
+          credentials: 'include'
+        });
+        const data = await response.json();
+        const supplies = data.items || [];
+        
+        // Фильтруем поставки со статусом "Не отгружена"
+        const availableSupplies = supplies.filter(supply => supply.status === 'Не отгружена');
+        
+        if (availableSupplies.length === 0) {
+          // Показываем модальное окно для создания новой поставки
+          const modal = new bootstrap.Modal(document.getElementById('createSupplyModal'));
+          modal.show();
+          return;
+        }
+
+        if (availableSupplies.length === 1) {
+          // Если только одна поставка, добавляем сразу
+          await addTasksToSupply(availableSupplies[0].supplyId);
+        } else {
+          // Если несколько поставок, показываем модальное окно
+          showSupplySelectionModal(availableSupplies);
+        }
+      } catch (error) {
+        console.error('Ошибка при получении списка поставок:', error);
+        showNotification('Ошибка при получении списка поставок', 'error');
+      }
+    });
+
+    // Показать модальное окно выбора поставки
+    function showSupplySelectionModal(supplies) {
+      const supplyList = document.getElementById('supplyList');
+      const confirmBtn = document.getElementById('confirmAddToSupply');
+      
+      if (!supplyList || !confirmBtn) return;
+
+      // Очищаем список
+      supplyList.innerHTML = '';
+      selectedSupplyId = null;
+      confirmBtn.disabled = true;
+
+      // Добавляем поставки в список
+      supplies.forEach(supply => {
+        const item = document.createElement('div');
+        item.className = 'list-group-item list-group-item-action';
+        item.innerHTML = `
+          <div class="d-flex w-100 justify-content-between">
+            <h6 class="mb-1">${supply.supplyId}</h6>
+            <small>${supply.date}</small>
+          </div>
+          <p class="mb-1">Товаров: ${supply.count}</p>
+        `;
+        
+        item.addEventListener('click', function() {
+          console.log('Выбрана поставка:', supply.supplyId);
+          // Убираем выделение с других элементов
+          supplyList.querySelectorAll('.list-group-item').forEach(el => {
+            el.classList.remove('active');
+          });
+          // Выделяем текущий элемент
+          this.classList.add('active');
+          selectedSupplyId = supply.supplyId;
+          confirmBtn.disabled = false;
+          console.log('selectedSupplyId установлен:', selectedSupplyId);
+        });
+        
+        supplyList.appendChild(item);
+      });
+
+      // Показываем модальное окно
+      const modal = new bootstrap.Modal(document.getElementById('selectSupplyModal'));
+      modal.show();
+    }
+
+    // Обработчик кнопки подтверждения в модальном окне
+    document.addEventListener('DOMContentLoaded', function() {
+      const confirmBtn = document.getElementById('confirmAddToSupply');
+      if (confirmBtn) {
+        confirmBtn.addEventListener('click', async function() {
+          console.log('Кнопка "Добавить" нажата, selectedSupplyId:', selectedSupplyId);
+          if (selectedSupplyId) {
+            await addTasksToSupply(selectedSupplyId);
+            // Закрываем модальное окно
+            const modal = bootstrap.Modal.getInstance(document.getElementById('selectSupplyModal'));
+            modal.hide();
+          } else {
+            console.log('selectedSupplyId не установлен');
+          }
+        });
+      } else {
+        console.error('Кнопка confirmAddToSupply не найдена');
+      }
+
+      // Обработчик кнопки "Создать поставку" в модальном окне
+      const createSupplyBtn = document.getElementById('confirmCreateSupply');
+      if (createSupplyBtn) {
+        createSupplyBtn.addEventListener('click', async function() {
+          try {
+            // Закрываем модальное окно
+            const modal = bootstrap.Modal.getInstance(document.getElementById('createSupplyModal'));
+            modal.hide();
+            
+            // Создаем новую поставку
+            const response = await fetch('/api/fbs/supplies/create', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              credentials: 'include'
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok && data.success) {
+              showNotification(`Поставка ${data.supplyId} успешно создана`, 'success');
+              // Добавляем задания в новую поставку
+              console.log('Начинаем добавление заданий в новую поставку:', data.supplyId);
+              await addTasksToSupply(data.supplyId);
+              console.log('Завершено добавление заданий в поставку');
+            } else {
+              showNotification(data.error || 'Ошибка при создании поставки', 'error');
+            }
+          } catch (error) {
+            console.error('Ошибка при создании поставки:', error);
+            showNotification('Ошибка при создании поставки', 'error');
+          }
+        });
+      }
+    });
+
+    // Добавление заданий в поставку
+    async function addTasksToSupply(supplyId) {
+      console.log('addTasksToSupply вызвана с supplyId:', supplyId, 'selectedTasks:', selectedTasks.size);
+      if (selectedTasks.size === 0) return;
+
+      try {
+        const addBtn = document.getElementById('addToSupplyBtn');
+        if (addBtn) {
+          addBtn.disabled = true;
+          addBtn.innerHTML = 'Добавление... <span class="spinner-border spinner-border-sm ms-1" role="status"></span>';
+        }
+
+        let successCount = 0;
+        let errorCount = 0;
+
+        // Добавляем каждое задание в поставку
+        for (const orderId of selectedTasks) {
+          try {
+            const response = await fetch(`/api/fbs/supplies/${supplyId}/orders/${orderId}`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              credentials: 'include'
+            });
+
+            if (response.ok) {
+              successCount++;
+            } else {
+              errorCount++;
+              console.error(`Ошибка добавления задания ${orderId}:`, response.status);
+            }
+          } catch (error) {
+            errorCount++;
+            console.error(`Ошибка добавления задания ${orderId}:`, error);
+          }
+        }
+
+        // Показываем результат
+        if (successCount > 0) {
+          showNotification(`Успешно добавлено ${successCount} заданий в поставку ${supplyId}`, 'success');
+          // Очищаем выбор
+          selectedTasks.clear();
+          document.querySelectorAll('.task-checkbox').forEach(cb => cb.checked = false);
+          document.getElementById('selectAllTasks').checked = false;
+          updateAddToSupplyButton();
+          // Обновляем списки (сначала задания, потом поставки)
+          try {
+            console.log('=== НАЧИНАЕМ ОБНОВЛЕНИЕ СПИСКОВ ===');
+            console.log('Ждем 3 секунды для обновления API...');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            console.log('Обновляем список заданий...');
+            await loadTasks({refresh: true});
+            console.log('Ждем еще 2 секунды...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log('Обновляем список поставок...');
+            await loadSupplies({refresh: true});
+            console.log('=== СПИСКИ ОБНОВЛЕНЫ ===');
+          } catch (updateError) {
+            console.error('Ошибка при обновлении списков:', updateError);
+          }
+        }
+
+        if (errorCount > 0 && successCount === 0) {
+          // Показываем ошибку только если не было успешных добавлений
+          showNotification(`Ошибка при добавлении ${errorCount} заданий`, 'error');
+        } else if (errorCount > 0 && successCount > 0) {
+          // Если были и успехи, и ошибки - показываем предупреждение
+          showNotification(`Добавлено ${successCount} заданий, но ${errorCount} заданий не удалось добавить`, 'warning');
+        }
+
+      } catch (error) {
+        console.error('Ошибка при добавлении заданий в поставку:', error);
+        showNotification('Ошибка при добавлении заданий в поставку', 'error');
+      } finally {
+        const addBtn = document.getElementById('addToSupplyBtn');
+        if (addBtn) {
+          addBtn.disabled = selectedTasks.size === 0;
+          addBtn.innerHTML = `Добавить в поставку (<span id="selectedTasksCount">${selectedTasks.size}</span>)`;
+        }
+      }
+    }
   </script>
+
+  <!-- Уведомления -->
+  <div id="notifications" class="position-fixed" style="top: 20px; right: 20px; z-index: 9999;"></div>
+
+  <!-- Модальное окно для создания новой поставки -->
+  <div class="modal fade" id="createSupplyModal" tabindex="-1" aria-labelledby="createSupplyModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="createSupplyModalLabel">Создать новую поставку</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Нет доступных поставок со статусом "Не отгружена".</p>
+          <p>Хотите создать новую поставку и добавить в неё выбранные задания?</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" class="btn btn-primary" id="confirmCreateSupply">Создать поставку</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно для выбора поставки -->
+  <div class="modal fade" id="selectSupplyModal" tabindex="-1" aria-labelledby="selectSupplyModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="selectSupplyModalLabel">Выберите поставку</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Выберите поставку для добавления выбранных заданий:</p>
+          <div id="supplyList" class="list-group">
+            <!-- Список поставок будет загружен динамически -->
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" class="btn btn-primary" id="confirmAddToSupply" disabled>Добавить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
