@@ -61,7 +61,7 @@
                 <th>Номер поставки</th>
                 <th>Тип поставки</th>
                 <th>Дата создания</th>
-                <th>Всего товаров</th>
+                <th>Отправлено/принято</th>
                 <th>Кол-во коробов</th>
                 <th class="text-start">Склад</th>
                 <th>Коэфициент приёмки</th>
@@ -78,7 +78,15 @@
                 <td class="text-center fw-semibold">{{ s.supply_id }}</td>
                 <td class="text-center text-nowrap">{{ s.type }}</td>
                 <td class="text-center text-nowrap">{{ s.created_at }}</td>
-                <td class="text-center">{{ s.total_goods if s.total_goods is not none else '-' }}</td>
+                <td class="text-center">
+                  {% if s.total_goods is not none %}
+                    {% set sent = s.total_goods %}
+                    {% set accepted = s.accepted_goods if s.accepted_goods is not none else 0 %}
+                    {{ sent }}/{{ accepted }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
                 <td class="text-center" data-pkg-cell="1">{% if s.package_count is defined and s.package_count %}{{ s.package_count }}{% else %}-{% endif %}</td>
                 <td class="text-start"><span class="wh-name" data-full-name="{{ s.warehouse }}">{{ s.warehouse }}</span></td>
                 <td class="text-center">
@@ -216,7 +224,9 @@ function recomputeStats(){
       const status = (tds[11]?.textContent || '').trim();
       if (status.includes('Отгрузка разрешена')){
         const goodsStr = (tds[4]?.textContent || '').replace(/\s+/g,'').trim();
-        const goodsVal = parseInt(goodsStr, 10);
+        // Parse format "sent/accepted" - we want the sent part for statistics
+        const sentPart = goodsStr.split('/')[0];
+        const goodsVal = parseInt(sentPart, 10);
         if (!isNaN(goodsVal)) goods += goodsVal;
         const boxStr = (tds[5]?.textContent || '').replace(/\s+/g,'').trim();
         const boxVal = parseInt(boxStr, 10);
@@ -259,7 +269,7 @@ function renderChunk(count){
       <td class="text-center fw-semibold">${s.supply_id||''}</td>
       <td class="text-center text-nowrap">${s.type||''}</td>
       <td class="text-center text-nowrap">${s.created_at||''}</td>
-      <td class="text-center">${(s.total_goods ?? '-') }</td>
+      <td class="text-center">${s.total_goods !== undefined && s.total_goods !== null ? (s.total_goods + '/' + (s.accepted_goods !== undefined && s.accepted_goods !== null ? s.accepted_goods : 0)) : '-'}</td>
       <td class="text-center" data-pkg-cell="1">${(s.package_count ? s.package_count : '-') }</td>
       <td class="text-start"><span class="wh-name" data-full-name="${s.warehouse||''}">${s.warehouse||''}</span></td>
       <td class="text-center">${coefHtml}</td>
@@ -488,6 +498,7 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
         type: tds[2]?.textContent.trim(),
         created_at: tds[3]?.textContent.trim(),
         total_goods: tds[4]?.textContent.trim(),
+        accepted_goods: null, // Will be populated from API
         package_count: tds[5]?.textContent.trim(),
         warehouse: tds[6]?.textContent.trim(),
         acceptance_coefficient: tds[7]?.textContent.trim(),

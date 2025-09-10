@@ -405,6 +405,7 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
         warehouse_name = (details or {}).get("warehouseName") or it.get("warehouseName") or ""
         box_type = (details or {}).get("boxTypeName") or (details or {}).get("boxTypeID") or ""
         total_qty = (details or {}).get("quantity")
+        accepted_qty = (details or {}).get("acceptedQuantity")
         acceptance_cost = (details or {}).get("acceptanceCost")
         paid_coef = (details or {}).get("paidAcceptanceCoefficient")
         supplies.append(
@@ -413,6 +414,7 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
                 "type": str(box_type) if box_type is not None else "",
                 "created_at": _fmt_dt_moscow(create_date, with_time=False),
                 "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
+                "accepted_goods": int(accepted_qty) if isinstance(accepted_qty, (int, float)) and accepted_qty is not None else None,
                 "warehouse": warehouse_name or "",
                 "acceptance_coefficient": paid_coef,
                 "acceptance_cost": acceptance_cost,
@@ -441,6 +443,7 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
         warehouse_name = (details or {}).get("warehouseName") or it.get("warehouseName") or ""
         box_type = (details or {}).get("boxTypeName") or (details or {}).get("boxTypeID") or ""
         total_qty = (details or {}).get("quantity")
+        accepted_qty = (details or {}).get("acceptedQuantity")
         acceptance_cost = (details or {}).get("acceptanceCost")
         paid_coef = (details or {}).get("paidAcceptanceCoefficient")
         supplies.append(
@@ -449,6 +452,7 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
                 "type": str(box_type) if box_type is not None else "",
                 "created_at": _fmt_dt_moscow(create_date, with_time=False),
                 "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
+                "accepted_goods": int(accepted_qty) if isinstance(accepted_qty, (int, float)) and accepted_qty is not None else None,
                 "warehouse": warehouse_name or "",
                 "acceptance_coefficient": paid_coef,
                 "acceptance_cost": acceptance_cost,
