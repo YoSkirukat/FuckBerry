@@ -803,6 +803,20 @@ class User(UserMixin, db.Model):
     shipper_address = db.Column(db.String(255), nullable=True)
     contact_person = db.Column(db.String(255), nullable=True)
 
+
+class Notification(db.Model):
+    __tablename__ = "notifications"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    title = db.Column(db.String(255), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    notification_type = db.Column(db.String(50), nullable=False)  # 'fbs_new_order', 'system', etc.
+    is_read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ))
+    data = db.Column(db.Text, nullable=True)  # JSON data for additional info
+    
+    user = db.relationship('User', backref=db.backref('notifications', lazy=True))
+
     def get_id(self):  # type: ignore[override]
         return str(self.id)
 
@@ -1796,6 +1810,229 @@ def _auto_update_settings_path_for_user() -> str:
     if current_user.is_authenticated:
         return os.path.join(CACHE_DIR, f"auto_update_settings_user_{current_user.id}.json")
     return os.path.join(CACHE_DIR, "auto_update_settings_anon.json")
+
+
+# Notification system functions
+def create_notification(user_id: int, title: str, message: str, notification_type: str, data: dict = None) -> Notification:
+    """Create a new notification for a user"""
+    notification = Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        notification_type=notification_type,
+        data=json.dumps(data) if data else None
+    )
+    db.session.add(notification)
+    db.session.commit()
+    return notification
+
+
+def get_unread_notifications_count(user_id: int) -> int:
+    """Get count of unread notifications for a user"""
+    return Notification.query.filter_by(user_id=user_id, is_read=False).count()
+
+
+def get_user_notifications(user_id: int, limit: int = 20) -> List[Notification]:
+    """Get recent notifications for a user"""
+    return Notification.query.filter_by(user_id=user_id)\
+        .order_by(Notification.created_at.desc())\
+        .limit(limit).all()
+
+
+def mark_notification_as_read(notification_id: int, user_id: int) -> bool:
+    """Mark a notification as read"""
+    notification = Notification.query.filter_by(id=notification_id, user_id=user_id).first()
+    if notification:
+        notification.is_read = True
+        db.session.commit()
+        return True
+    return False
+
+
+def mark_all_notifications_as_read(user_id: int) -> int:
+    """Mark all notifications as read for a user"""
+    count = Notification.query.filter_by(user_id=user_id, is_read=False).update({'is_read': True})
+    db.session.commit()
+    return count
+
+
+def cleanup_old_notifications(days: int = 30) -> int:
+    """Clean up notifications older than specified days"""
+    cutoff_date = datetime.now(MOSCOW_TZ) - timedelta(days=days)
+    count = Notification.query.filter(Notification.created_at < cutoff_date).delete()
+    db.session.commit()
+    return count
+
+
+def check_fbs_new_orders_for_notifications():
+    """Check for new FBS orders and create notifications for all active users"""
+    with app.app_context():
+        try:
+            # Get all active users with WB tokens
+            users = User.query.filter_by(is_active=True).filter(User.wb_token.isnot(None)).all()
+            
+            for user in users:
+                try:
+                    # Get last check time from cache
+                    cache_path = os.path.join(CACHE_DIR, f"fbs_notifications_user_{user.id}.json")
+                    last_check = None
+                    if os.path.exists(cache_path):
+                        with open(cache_path, 'r', encoding='utf-8') as f:
+                            cache_data = json.load(f)
+                            last_check_str = cache_data.get('last_check')
+                            if last_check_str:
+                                last_check = datetime.fromisoformat(last_check_str.replace('Z', '+00:00'))
+                    
+                    # If no previous check, check last 5 minutes
+                    if not last_check:
+                        last_check = datetime.now(MOSCOW_TZ) - timedelta(minutes=5)
+                    
+                    # Fetch new orders
+                    new_orders, _ = fetch_fbs_latest_orders(user.wb_token, want_count=50)
+                    
+                    # Filter orders created after last check
+                    new_orders_since_check = []
+                    for order in new_orders:
+                        order_time = _parse_iso_datetime(str(order.get('createdAt', '')))
+                        if order_time and order_time > last_check:
+                            new_orders_since_check.append(order)
+                    
+                    # Create notifications for new orders
+                    if new_orders_since_check:
+                        for order in new_orders_since_check:
+                            order_id = order.get('id', 'Unknown')
+                            order_time = _parse_iso_datetime(str(order.get('createdAt', '')))
+                            time_str = order_time.strftime('%H:%M') if order_time else 'Unknown'
+                            
+                            create_notification(
+                                user_id=user.id,
+                                title="Новый заказ FBS",
+                                message=f"Поступил новый заказ #{order_id} в {time_str}",
+                                notification_type="fbs_new_order",
+                                data={
+                                    'order_id': order_id,
+                                    'order_data': order,
+                                    'created_at': order.get('createdAt')
+                                }
+                            )
+                    
+                    # Update last check time
+                    current_time = datetime.now(MOSCOW_TZ)
+                    with open(cache_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'last_check': current_time.isoformat(),
+                            'checked_orders_count': len(new_orders_since_check)
+                        }, f, ensure_ascii=False)
+                        
+                except Exception as e:
+                    print(f"Error checking FBS orders for user {user.id}: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Error in FBS notifications check: {e}")
+
+
+def check_version_updates():
+    """Check for version updates and create notifications"""
+    with app.app_context():
+        try:
+            version_file = "VERSION"
+            version_cache_file = os.path.join(CACHE_DIR, "version_cache.json")
+            
+            # Read current version
+            current_version = None
+            if os.path.exists(version_file):
+                try:
+                    with open(version_file, 'r', encoding='utf-8') as f:
+                        current_version = f.read().strip()
+                except Exception as e:
+                    return
+            
+            if not current_version:
+                return
+            
+            # Read cached version
+            cached_version = None
+            if os.path.exists(version_cache_file):
+                try:
+                    with open(version_cache_file, 'r', encoding='utf-8') as f:
+                        cache_data = json.load(f)
+                        cached_version = cache_data.get('version')
+                except Exception as e:
+                    pass
+            
+            print(f"Version check: current={current_version}, cached={cached_version}")
+        
+            # If version changed, create notifications for all active users
+            if cached_version and current_version != cached_version:
+                print(f"Version changed from {cached_version} to {current_version}")
+                active_users = User.query.filter_by(is_active=True).all()
+                print(f"Found {len(active_users)} active users")
+                
+                for user in active_users:
+                    # Check if user already has notification for this version
+                    existing_notification = Notification.query.filter_by(
+                        user_id=user.id,
+                        notification_type="version_update",
+                        data=json.dumps({"version": current_version})
+                    ).first()
+                    
+                    if not existing_notification:
+                        print(f"Creating version notification for user {user.id}")
+                        create_notification(
+                            user_id=user.id,
+                            title="Обновление сервиса",
+                            message=f"Вышло обновление {current_version}",
+                            notification_type="version_update",
+                            data={"version": current_version, "previous_version": cached_version}
+                        )
+                    else:
+                        print(f"User {user.id} already has notification for version {current_version}")
+            
+            # Update version cache
+            try:
+                cache_data = {"version": current_version, "last_check": datetime.now(MOSCOW_TZ).isoformat()}
+                with open(version_cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                pass
+                
+        except Exception as e:
+            pass
+
+
+# Global variable to track monitoring state
+_monitoring_started = False
+
+def start_notification_monitoring():
+    """Start background monitoring for notifications"""
+    global _monitoring_started
+    
+    if _monitoring_started:
+        return
+    
+    def monitor_loop():
+        while True:
+            try:
+                current_time = datetime.now()
+                print(f"Running notification checks at {current_time.strftime('%H:%M:%S')}")
+                
+                check_fbs_new_orders_for_notifications()
+                check_version_updates()
+                
+                # Clean up old notifications every hour
+                if current_time.minute == 0:
+                    cleanup_old_notifications()
+                    
+            except Exception as e:
+                print(f"Error in monitoring loop: {e}")
+            time.sleep(30)  # Check every 30 seconds for faster testing
+    
+    # Start monitoring in a separate thread
+    monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+    monitor_thread.start()
+    _monitoring_started = True
+    print("Notification monitoring started")
 
 
 def load_auto_update_settings() -> Dict[str, Any]:
@@ -5299,12 +5536,17 @@ def _init_db_once_per_process():
         if not User.query.filter_by(username="admin").first():
             db.session.add(User(username="admin", password="admin", is_admin=True, is_active=True))
             db.session.commit()
-    except Exception:
+        
+        # Start notification monitoring
+        start_notification_monitoring()
+        
+    except Exception as e:
         try:
             db.session.rollback()
         except Exception:
             pass
-    _DB_INIT_DONE = True
+    finally:
+        _DB_INIT_DONE = True
 
 
 # -------------------------
@@ -5423,6 +5665,105 @@ def tools_labels_download():
     out.seek(0)
     fname = f"labels_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
     return send_file(out, as_attachment=True, download_name=fname, mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+# Notification API endpoints
+@app.route("/api/notifications/count", methods=["GET"])
+@login_required
+def api_notifications_count():
+    """Get count of unread notifications"""
+    count = get_unread_notifications_count(current_user.id)
+    return jsonify({"count": count})
+
+
+@app.route("/api/notifications", methods=["GET"])
+@login_required
+def api_notifications():
+    """Get user notifications"""
+    limit = int(request.args.get('limit', 20))
+    notifications = get_user_notifications(current_user.id, limit)
+    
+    result = []
+    for notif in notifications:
+        data = None
+        if notif.data:
+            try:
+                data = json.loads(notif.data)
+            except:
+                pass
+                
+        result.append({
+            'id': notif.id,
+            'title': notif.title,
+            'message': notif.message,
+            'type': notif.notification_type,
+            'is_read': notif.is_read,
+            'created_at': notif.created_at.strftime('%d.%m.%Y %H:%M'),
+            'data': data
+        })
+    
+    return jsonify({"notifications": result})
+
+
+@app.route("/api/notifications/<int:notification_id>/read", methods=["POST"])
+@login_required
+def api_mark_notification_read(notification_id: int):
+    """Mark a notification as read"""
+    success = mark_notification_as_read(notification_id, current_user.id)
+    if success:
+        return jsonify({"success": True})
+    else:
+        return jsonify({"error": "Notification not found"}), 404
+
+
+@app.route("/api/notifications/read-all", methods=["POST"])
+@login_required
+def api_mark_all_notifications_read():
+    """Mark all notifications as read"""
+    count = mark_all_notifications_as_read(current_user.id)
+    return jsonify({"success": True, "count": count})
+
+
+@app.route("/api/notifications/<int:notification_id>/delete", methods=["DELETE"])
+@login_required
+def api_delete_notification(notification_id: int):
+    """Delete a notification"""
+    notification = Notification.query.filter_by(id=notification_id, user_id=current_user.id).first()
+    if notification:
+        db.session.delete(notification)
+        db.session.commit()
+        return jsonify({"success": True})
+    else:
+        return jsonify({"error": "Notification not found"}), 404
+
+
+
+@app.route("/api/notifications/delete-all", methods=["DELETE"])
+@login_required
+def api_delete_all_notifications():
+    """Delete all notifications for current user"""
+    count = Notification.query.filter_by(user_id=current_user.id).delete()
+    db.session.commit()
+    return jsonify({"success": True, "count": count})
+
+
+@app.route("/api/notifications/test", methods=["POST"])
+@login_required
+def test_notification():
+    """Create a test notification for debugging"""
+    try:
+        create_notification(
+            user_id=current_user.id,
+            title="Тестовое уведомление",
+            message="Это тестовое уведомление для проверки системы",
+            notification_type="test"
+        )
+        return jsonify({"success": True, "message": "Test notification created"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
