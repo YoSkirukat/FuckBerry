@@ -2226,9 +2226,16 @@ def adjust_stock_quantities_for_reserved(file_data: Dict[str, int], user_id: int
     """Adjust stock quantities by subtracting reserved quantities from FBS tasks"""
     print(f"=== ADJUST_STOCK_QUANTITIES_FOR_RESERVED CALLED ===")
     print(f"Original file data: {file_data}")
+    print(f"User ID: {user_id}")
     
     # Get reserved quantities from FBS tasks
     reserved_quantities = get_reserved_quantities_from_fbs_tasks(user_id)
+    print(f"Reserved quantities returned: {reserved_quantities}")
+    
+    # Check if we have any reserved quantities
+    if not reserved_quantities:
+        print("WARNING: No reserved quantities found from FBS tasks!")
+        return file_data
     
     # Adjust quantities
     adjusted_data = {}
@@ -2238,6 +2245,8 @@ def adjust_stock_quantities_for_reserved(file_data: Dict[str, int], user_id: int
         
         if reserved > 0:
             print(f"Barcode {barcode}: original={quantity}, reserved={reserved}, adjusted={adjusted_quantity}")
+        else:
+            print(f"Barcode {barcode}: original={quantity}, no reservations")
         
         adjusted_data[barcode] = adjusted_quantity
     

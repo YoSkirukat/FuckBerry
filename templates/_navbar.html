@@ -127,17 +127,17 @@
               </span>
             </a>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="notificationsDropdown" style="min-width: 350px; max-height: 400px; overflow-y: auto;">
-             <li><h6 class="dropdown-header d-flex justify-content-between align-items-center">
-               <span>Уведомления</span>
-               <div class="d-flex gap-2">
-                 <button id="markAllReadBtn" class="btn btn-sm" style="display: none; background: #28a745; color: white; border: none;" onclick="markAllNotificationsAsRead()" title="Отметить все как прочитанные">
-                   ✓
-                 </button>
-                 <button id="deleteAllBtn" class="btn btn-sm" style="display: none; background: #dc3545; color: white; border: none;" onclick="deleteAllNotifications()" title="Удалить все уведомления">
-                   ×
-                 </button>
-               </div>
-             </h6></li>
+              <li><h6 class="dropdown-header d-flex justify-content-between align-items-center">
+                <span>Уведомления</span>
+                <div class="d-flex gap-3">
+                  <a href="#" id="markAllReadBtn" class="text-decoration-none" style="display: none; font-size: 12px; color: #28a745;" onclick="markAllNotificationsAsRead(); return false;" title="Отметить все как прочитанные">
+                    Прочитать все
+                  </a>
+                  <a href="#" id="deleteAllBtn" class="text-decoration-none" style="display: none; font-size: 12px; color: #dc3545;" onclick="deleteAllNotifications(); return false;" title="Удалить все уведомления">
+                    Удалить все
+                  </a>
+                </div>
+              </h6></li>
               <li><hr class="dropdown-divider"></li>
               <div id="notificationsList">
                 <li class="dropdown-item-text text-center text-muted">Загрузка...</li>
@@ -329,22 +329,23 @@ function loadNotifications() {
             }
             
             data.notifications.forEach((notif, index) => {
-                const item = document.createElement('li');
-                item.className = `dropdown-item notification-item ${notif.is_read ? '' : 'bg-light'}`;
-                item.style.cursor = 'pointer';
+                 const item = document.createElement('li');
+                 item.className = `dropdown-item notification-item ${notif.is_read ? '' : 'bg-primary bg-opacity-10'}`;
+                 item.style.cursor = 'pointer';
                 
                 // Add animation for new notifications (first few items)
                 if (index < 3 && !notif.is_read) {
                     item.classList.add('new-notification');
                 }
                 
-                const timeAgo = new Date(notif.created_at).toLocaleString('ru-RU', {
-                    day: '2-digit',
-                    month: '2-digit',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
+                 const timeAgo = new Date(notif.created_at).toLocaleString('ru-RU', {
+                     day: '2-digit',
+                     month: '2-digit',
+                     year: 'numeric',
+                     hour: '2-digit',
+                     minute: '2-digit',
+                     hour12: false
+                 });
                 
                 // Get icon based on notification type
                 let icon = '🔔';
@@ -359,13 +360,13 @@ function loadNotifications() {
                 item.innerHTML = `
                     <div class="d-flex align-items-center" style="position: relative;" onmouseover="this.querySelector('.delete-btn').style.opacity='1';" onmouseout="this.querySelector('.delete-btn').style.opacity='0.3';">
                         <div class="flex-grow-1" style="cursor: pointer; padding-right: 40px;">
-                            <div class="fw-bold d-flex align-items-center gap-2">
-                                ${!notif.is_read ? '<span class="badge bg-primary rounded-pill" style="font-size: 10px; padding: 2px 6px;">Новое</span>' : ''}
-                                <span>${icon}</span>
-                                <span>${notif.title}</span>
-                            </div>
-                            <div class="small text-muted" style="word-wrap: break-word;">${notif.message.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g, '$2')}</div>
-                            ${notif.type === 'version_update' ? '<div class="mt-1"><a href="/changelog" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
+                             <div class="fw-bold d-flex align-items-center gap-2">
+                                 <span>${icon}</span>
+                                 <span>${notif.title}</span>
+                             </div>
+                             <div class="small text-muted" style="word-wrap: break-word;">${notif.message.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g, '$2')}</div>
+                             ${notif.type === 'version_update' ? '<div class="mt-1"><a href="/changelog" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
+                             ${notif.type === 'fbs_new_order' ? '<div class="mt-1"><a href="/fbs" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
                             <div class="small text-muted" style="font-size: 11px; color: gray !important; margin-top: 5px;">${timeAgo}</div>
                         </div>
                         <div class="d-flex align-items-center gap-2" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);">
@@ -409,22 +410,33 @@ function loadNotifications() {
         });
 }
 
-function markNotificationAsRead(notificationId) {
-    fetch(`/api/notifications/${notificationId}/read`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            updateNotificationBadge();
-            loadNotifications();
-        }
-    })
-    .catch(error => console.error('Error marking notification as read:', error));
-}
+ function markNotificationAsRead(notificationId) {
+     fetch(`/api/notifications/${notificationId}/read`, {
+         method: 'POST',
+         headers: {
+             'Content-Type': 'application/json',
+         }
+     })
+     .then(response => response.json())
+     .then(data => {
+         if (data.success) {
+             // Find the notification item and update its background
+             const notificationItems = document.querySelectorAll('.notification-item');
+             notificationItems.forEach(item => {
+                 const deleteBtn = item.querySelector(`[onclick*="${notificationId}"]`);
+                 if (deleteBtn) {
+                     // Remove the blue background and make it standard
+                     item.classList.remove('bg-primary', 'bg-opacity-10');
+                     item.classList.add('bg-light');
+                 }
+             });
+             
+             updateNotificationBadge();
+             loadNotifications();
+         }
+     })
+     .catch(error => console.error('Error marking notification as read:', error));
+ }
 
 
 function deleteNotification(notificationId, event) {

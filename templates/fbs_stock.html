@@ -709,8 +709,13 @@
     });
 
     document.getElementById('manualUpdateBtn')?.addEventListener('click', async () => {
+      console.log('Manual update button clicked!');
+      
       const url = document.getElementById('remoteFileUrl').value.trim();
+      console.log('Remote file URL:', url);
+      
       if (!url) {
+        console.log('No URL provided, showing error');
         showModalNotice('Введите URL файла для обновления', 'danger');
         return;
       }
@@ -719,6 +724,8 @@
       const originalText = btn.textContent;
       btn.disabled = true;
       btn.textContent = 'Обновляем...';
+      
+      console.log('Making request to /api/fbs-stock/auto-update/manual-update');
 
       try {
         const response = await fetch('/api/fbs-stock/auto-update/manual-update', {
@@ -727,7 +734,10 @@
           body: JSON.stringify({ url })
         });
 
+        console.log('Response status:', response.status);
         const data = await response.json();
+        console.log('Response data:', data);
+        
         if (response.ok) {
           showModalNotice(`Обновление завершено! Обработано ${data.processed} товаров, обновлено ${data.updated} остатков`, 'success');
           loadAutoUpdateSettings(); // Refresh settings to show updated history
@@ -735,6 +745,7 @@
           showModalNotice('Ошибка обновления: ' + (data.error || 'Неизвестная ошибка'), 'danger');
         }
       } catch (error) {
+        console.error('Error during manual update:', error);
         showModalNotice('Ошибка обновления: ' + error.message, 'danger');
       } finally {
         btn.disabled = false;

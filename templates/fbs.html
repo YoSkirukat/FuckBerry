@@ -237,9 +237,9 @@
         }
       });
       
-      // Начальная загрузка данных
-      loadSupplies({refresh: false});
-      loadTasks({refresh: false});
+      // Начальная загрузка данных с обновлением
+      loadSupplies({refresh: true});
+      loadTasks({refresh: true});
     });
 
     function setSuppliesLoading(isLoading){
