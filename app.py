@@ -743,6 +743,23 @@ def load_fbs_tasks_cache() -> Dict[str, Any] | None:
         return None
 
 
+def load_fbs_tasks_cache_by_user_id(user_id: int) -> Dict[str, Any] | None:
+    """Load FBS tasks cache by user ID (for background threads)"""
+    path = os.path.join(CACHE_DIR, f"fbs_tasks_user_{user_id}.json")
+    print(f"Loading FBS tasks cache from: {path}")
+    if not os.path.isfile(path):
+        print(f"FBS tasks cache file not found: {path}")
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            print(f"FBS tasks cache loaded successfully, {len(data.get('rows', []))} tasks found")
+            return data
+    except Exception as e:
+        print(f"Error loading FBS tasks cache: {e}")
+        return None
+
+
 def save_fbs_tasks_cache(payload: Dict[str, Any]) -> None:
     path = _fbs_tasks_cache_path_for_user()
     try:
@@ -2172,8 +2189,8 @@ def get_reserved_quantities_from_fbs_tasks(user_id: int) -> Dict[str, int]:
     print(f"User ID: {user_id}")
     
     try:
-        # Load FBS tasks cache
-        cached_tasks = load_fbs_tasks_cache() or {}
+        # Load FBS tasks cache using user_id instead of current_user
+        cached_tasks = load_fbs_tasks_cache_by_user_id(user_id) or {}
         tasks_rows = cached_tasks.get("rows") or []
         
         print(f"Found {len(tasks_rows)} FBS tasks")
@@ -2416,7 +2433,9 @@ def auto_update_worker():
                         continue
                     
                     # File changed, process it
+                    print(f"=== AUTO UPDATE: File changed for user {user_id} ===")
                     result = download_and_process_remote_file(global_settings['url'], user_id)
+                    print(f"Auto update file processing result: {result}")
                     
                     if result['success']:
                         # Get enabled warehouses
@@ -2425,8 +2444,13 @@ def auto_update_worker():
                             if warehouse_settings.get('enabled'):
                                 enabled_warehouse_ids.append(int(warehouse_id))
                         
+                        print(f"Auto update enabled warehouses: {enabled_warehouse_ids}")
+                        print(f"Auto update file data: {result['data']}")
+                        
                         # Update stocks in the interface (this will automatically adjust for FBS tasks)
+                        print("Auto update calling update_stocks_from_remote_data...")
                         updated_count = update_stocks_from_remote_data(result['data'], user_id, enabled_warehouse_ids)
+                        print(f"Auto update completed, updated {updated_count} stocks")
                         history_entry = {
                             "timestamp": datetime.now().isoformat(),
                             "success": True,
