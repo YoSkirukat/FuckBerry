@@ -23,3 +23,7 @@ app.db
 # IDE
 .vscode/
 .idea/ 
+
+#Developer Guide and Development Log
+DEVELOPER_GUIDE.md
+DEVELOPMENT_LOG.md
