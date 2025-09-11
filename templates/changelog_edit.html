@@ -17,14 +17,16 @@
         <label class="form-label">Текущая версия</label>
         <input type="text" class="form-control" name="version" value="{{ app_version }}" />
       </div>
+      <div class="col-12 col-md-9 d-flex justify-content-end align-items-end">
+        <div class="d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Сохранить</button>
+          <a href="/changelog" class="btn btn-outline-secondary">Отмена</a>
+        </div>
+      </div>
       <div class="col-12">
         <label class="form-label">Содержимое (Markdown)</label>
         <textarea name="md_content" id="mdContent" class="form-control" rows="18" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">{{ md_content }}</textarea>
         <div class="form-text">Поддерживаются заголовки, списки, ссылки, жирный/курсив, кодовые блоки.</div>
-      </div>
-      <div class="col-12 d-flex gap-2">
-        <button class="btn btn-primary" type="submit">Сохранить</button>
-        <a href="/changelog" class="btn btn-outline-secondary">Отмена</a>
       </div>
     </form>
   </div>
