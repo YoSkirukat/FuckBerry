@@ -13,6 +13,142 @@
     .thumb { width: 31px; height: 42px; object-fit: cover; cursor: zoom-in; display: inline-block; }
     #imgPreview { display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none; }
     #imgPreview img { max-width:420px; max-height:560px; display:block; }
+    
+    /* Стили для выпадающего календаря */
+    .calendar-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: white;
+      border: 1px solid #dee2e6;
+      border-radius: 0.375rem;
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+      z-index: 1050;
+      margin-top: 0.25rem;
+      width: 320px;
+      max-width: 90vw;
+    }
+    
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    
+    .calendar-nav {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      transition: background-color 0.15s ease-in-out;
+    }
+    
+    .calendar-nav:hover {
+      background-color: #e9ecef;
+    }
+    
+    .calendar-grid {
+      padding: 1rem;
+    }
+    
+    .calendar-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .calendar-weekday {
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: #6c757d;
+      padding: 0.5rem 0;
+    }
+    
+    .calendar-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+    }
+    
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+      transition: all 0.15s ease-in-out;
+      position: relative;
+    }
+    
+    .calendar-day:hover {
+      background-color: #e9ecef;
+    }
+    
+    .calendar-day.other-month {
+      color: #adb5bd;
+    }
+    
+    .calendar-day.today {
+      background-color: #fff3cd;
+      color: #856404;
+      font-weight: 600;
+    }
+    
+    .calendar-day.selected-start {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .calendar-day.selected-end {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .calendar-day.in-range {
+      background-color: #e7f1ff;
+      color: #0d6efd;
+    }
+    
+    .calendar-day.in-range:not(.selected-start):not(.selected-end) {
+      border-radius: 0;
+    }
+    
+    .calendar-day.selected-start.in-range {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    
+    .calendar-day.selected-end.in-range {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }
+    
+    .calendar-footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 1rem;
+      border-top: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    
+    .calendar-day.weekend {
+      color: #dc3545;
+    }
+    
+    .calendar-day.other-month.weekend {
+      color: #f5c6cb;
+    }
   </style>
 </head>
 <body>
@@ -25,18 +161,27 @@
 
     
     <form class="row g-3 mb-3" method="get" action="/report/sales">
-      <div class="col-sm-6 col-md-3">
-        <label class="form-label">Дата с</label>
-        <div class="input-group" id="rDateFromWrap">
-          <input type="date" class="form-control" name="date_from" id="rDateFrom" value="{{ date_from_val or '' }}" required />
-          <span class="input-group-text" style="cursor:pointer;">📅</span>
-        </div>
-      </div>
-      <div class="col-sm-6 col-md-3">
-        <label class="form-label">Дата по</label>
-        <div class="input-group" id="rDateToWrap">
-          <input type="date" class="form-control" name="date_to" id="rDateTo" value="{{ date_to_val or '' }}" required />
-          <span class="input-group-text" style="cursor:pointer;">📅</span>
+      <div class="col-sm-6 col-md-4">
+        <label class="form-label">Период отчета</label>
+        <div class="position-relative" style="position: relative !important;">
+          <input type="text" class="form-control" id="salesDateRangeInput" placeholder="Выберите период" readonly style="cursor: pointer;" />
+          <input type="hidden" name="date_from" id="salesDateFrom" value="{{ date_from_val or '' }}" />
+          <input type="hidden" name="date_to" id="salesDateTo" value="{{ date_to_val or '' }}" />
+          <span class="position-absolute top-50 end-0 translate-middle-y me-3" style="cursor: pointer;" id="salesDateRangeBtn">📅</span>
+          <div id="salesDateRangeCalendar" class="calendar-dropdown" style="display: none;">
+            <div class="calendar-header">
+              <button type="button" class="calendar-nav" id="salesPrevMonth">‹</button>
+              <span id="salesCurrentMonthYear">Сентябрь 2025</span>
+              <button type="button" class="calendar-nav" id="salesNextMonth">›</button>
+            </div>
+            <div class="calendar-grid" id="salesCalendarGrid">
+              <!-- Календарь будет генерироваться JavaScript -->
+            </div>
+            <div class="calendar-footer">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="salesResetDates">Сбросить</button>
+              <button type="button" class="btn btn-sm btn-primary" id="salesApplyDates">Применить</button>
+            </div>
+          </div>
         </div>
       </div>
       <div class="col-sm-6 col-md-4">
@@ -109,6 +254,324 @@
   </div>
   <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
   <script>
+    // Календарь с выбором диапазона дат для страницы sales
+    class SalesDateRangeCalendar {
+      constructor() {
+        this.currentDate = new Date();
+        this.selectedStart = null;
+        this.selectedEnd = null;
+        this.isSelecting = false;
+        this.calendar = document.getElementById('salesDateRangeCalendar');
+        this.input = document.getElementById('salesDateRangeInput');
+        this.startInput = document.getElementById('salesDateFrom');
+        this.endInput = document.getElementById('salesDateTo');
+        this.btn = document.getElementById('salesDateRangeBtn');
+        this.grid = document.getElementById('salesCalendarGrid');
+        this.monthYear = document.getElementById('salesCurrentMonthYear');
+        this.prevBtn = document.getElementById('salesPrevMonth');
+        this.nextBtn = document.getElementById('salesNextMonth');
+        this.resetBtn = document.getElementById('salesResetDates');
+        this.applyBtn = document.getElementById('salesApplyDates');
+        
+        this.months = [
+          'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+          'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+        ];
+        
+        this.weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+        
+        this.init();
+      }
+      
+      init() {
+        if (!this.calendar || !this.input || !this.btn) {
+          console.error('Не все элементы календаря sales найдены!');
+          return;
+        }
+        
+        // Загружаем сохраненные даты
+        this.loadSavedDates();
+        
+        // Обработчики событий
+        this.btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleCalendar();
+        });
+        this.input.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleCalendar();
+        });
+        this.prevBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.prevMonth();
+        });
+        this.nextBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.nextMonth();
+        });
+        this.resetBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.resetSelection();
+        });
+        this.applyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.applySelection();
+        });
+        
+        // Закрытие календаря при клике вне его
+        document.addEventListener('click', (e) => {
+          if (!this.calendar.contains(e.target) && 
+              !this.input.contains(e.target) && 
+              !this.btn.contains(e.target)) {
+            this.hideCalendar();
+          }
+        });
+        
+        // Перепозиционирование при изменении размера окна
+        window.addEventListener('resize', () => {
+          if (this.calendar.style.display === 'block') {
+            this.adjustPosition();
+          }
+        });
+        
+        this.renderCalendar();
+        
+        // Предотвращаем закрытие календаря при клике внутри него
+        this.calendar.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+      
+      loadSavedDates() {
+        const startVal = this.startInput.value;
+        const endVal = this.endInput.value;
+        
+        if (startVal) {
+          // Создаем дату в локальном часовом поясе
+          const [year, month, day] = startVal.split('-').map(Number);
+          this.selectedStart = new Date(year, month - 1, day);
+        }
+        if (endVal) {
+          // Создаем дату в локальном часовом поясе
+          const [year, month, day] = endVal.split('-').map(Number);
+          this.selectedEnd = new Date(year, month - 1, day);
+        }
+        
+        this.updateInputDisplay();
+      }
+      
+      toggleCalendar() {
+        if (this.calendar.style.display === 'none' || !this.calendar.style.display) {
+          this.showCalendar();
+        } else {
+          this.hideCalendar();
+        }
+      }
+      
+      showCalendar() {
+        this.calendar.style.display = 'block';
+        this.renderCalendar();
+        this.adjustPosition();
+      }
+      
+      adjustPosition() {
+        const rect = this.input.getBoundingClientRect();
+        const calendar = this.calendar;
+        const viewportHeight = window.innerHeight;
+        const calendarHeight = 400; // Примерная высота календаря
+        
+        // Если календарь не помещается снизу, показываем сверху
+        if (rect.bottom + calendarHeight > viewportHeight) {
+          calendar.style.top = 'auto';
+          calendar.style.bottom = '100%';
+          calendar.style.marginTop = '0';
+          calendar.style.marginBottom = '0.25rem';
+        } else {
+          calendar.style.top = '100%';
+          calendar.style.bottom = 'auto';
+          calendar.style.marginTop = '0.25rem';
+          calendar.style.marginBottom = '0';
+        }
+      }
+      
+      hideCalendar() {
+        this.calendar.style.display = 'none';
+      }
+      
+      prevMonth() {
+        this.currentDate.setMonth(this.currentDate.getMonth() - 1);
+        this.renderCalendar();
+      }
+      
+      nextMonth() {
+        this.currentDate.setMonth(this.currentDate.getMonth() + 1);
+        this.renderCalendar();
+      }
+      
+      renderCalendar() {
+        const year = this.currentDate.getFullYear();
+        const month = this.currentDate.getMonth();
+        
+        this.monthYear.textContent = `${this.months[month]} ${year}`;
+        
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - (firstDay.getDay() + 6) % 7);
+        
+        let html = '<div class="calendar-weekdays">';
+        this.weekdays.forEach(day => {
+          html += `<div class="calendar-weekday">${day}</div>`;
+        });
+        html += '</div><div class="calendar-days">';
+        
+        const today = new Date();
+        const currentDate = new Date(startDate);
+        const currentMonth = month; // Сохраняем значение месяца
+        
+        for (let i = 0; i < 42; i++) {
+          const isCurrentMonth = currentDate.getMonth() === currentMonth;
+          const isToday = currentDate.toDateString() === today.toDateString();
+          const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+          const isSelectedStart = this.selectedStart && currentDate.toDateString() === this.selectedStart.toDateString();
+          const isSelectedEnd = this.selectedEnd && currentDate.toDateString() === this.selectedEnd.toDateString();
+          const isInRange = this.isDateInRange(currentDate);
+          
+          let classes = 'calendar-day';
+          if (!isCurrentMonth) classes += ' other-month';
+          if (isToday) classes += ' today';
+          if (isWeekend) classes += ' weekend';
+          if (isSelectedStart) classes += ' selected-start';
+          if (isSelectedEnd) classes += ' selected-end';
+          if (isInRange) classes += ' in-range';
+          
+          // Создаем дату в локальном формате без UTC конвертации
+          const year = currentDate.getFullYear();
+          const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+          const day = String(currentDate.getDate()).padStart(2, '0');
+          const localDateStr = `${year}-${month}-${day}`;
+          html += `<div class="${classes}" data-date="${localDateStr}">${currentDate.getDate()}</div>`;
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        
+        html += '</div>';
+        this.grid.innerHTML = html;
+        
+        // Добавляем обработчики для дней
+        this.grid.querySelectorAll('.calendar-day').forEach(day => {
+          day.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.selectDate(day);
+          });
+        });
+      }
+      
+      selectDate(dayElement) {
+        const dateStr = dayElement.dataset.date;
+        
+        // Создаем дату в локальном часовом поясе
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const date = new Date(year, month - 1, day);
+        
+        if (!this.selectedStart || (this.selectedStart && this.selectedEnd)) {
+          // Начинаем новый выбор
+          this.selectedStart = date;
+          this.selectedEnd = null;
+          this.isSelecting = true;
+        } else if (this.selectedStart && !this.selectedEnd) {
+          // Завершаем выбор
+          if (date < this.selectedStart) {
+            this.selectedEnd = this.selectedStart;
+            this.selectedStart = date;
+          } else {
+            this.selectedEnd = date;
+          }
+          this.isSelecting = false;
+        }
+        
+        this.updateInputDisplay();
+        this.renderCalendar();
+      }
+      
+      isDateInRange(date) {
+        if (!this.selectedStart || !this.selectedEnd) return false;
+        return date >= this.selectedStart && date <= this.selectedEnd;
+      }
+      
+      updateInputDisplay() {
+        if (this.selectedStart && this.selectedEnd) {
+          const startStr = this.formatDate(this.selectedStart);
+          const endStr = this.formatDate(this.selectedEnd);
+          this.input.value = `${startStr} - ${endStr}`;
+        } else if (this.selectedStart) {
+          const startStr = this.formatDate(this.selectedStart);
+          this.input.value = `${startStr} - ...`;
+        } else {
+          this.input.value = '';
+        }
+      }
+      
+      formatDate(date) {
+        // Используем локальную дату, чтобы избежать проблем с часовыми поясами
+        const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const day = String(localDate.getDate()).padStart(2, '0');
+        const month = String(localDate.getMonth() + 1).padStart(2, '0');
+        const year = localDate.getFullYear();
+        return `${day}.${month}.${year}`;
+      }
+      
+      resetSelection() {
+        this.selectedStart = null;
+        this.selectedEnd = null;
+        this.isSelecting = false;
+        this.startInput.value = '';
+        this.endInput.value = '';
+        this.updateInputDisplay();
+        this.renderCalendar();
+      }
+      
+      applySelection() {
+        if (this.selectedStart) {
+          // Форматируем дату в ISO формате для скрытых полей
+          const year = this.selectedStart.getFullYear();
+          const month = String(this.selectedStart.getMonth() + 1).padStart(2, '0');
+          const day = String(this.selectedStart.getDate()).padStart(2, '0');
+          this.startInput.value = `${year}-${month}-${day}`;
+        }
+        if (this.selectedEnd) {
+          // Форматируем дату в ISO формате для скрытых полей
+          const year = this.selectedEnd.getFullYear();
+          const month = String(this.selectedEnd.getMonth() + 1).padStart(2, '0');
+          const day = String(this.selectedEnd.getDate()).padStart(2, '0');
+          this.endInput.value = `${year}-${month}-${day}`;
+        }
+        this.hideCalendar();
+        this.validateDates();
+      }
+      
+      validateDates() {
+        const df = this.startInput?.value || '';
+        const dt = this.endInput?.value || '';
+        
+        let ok = true; 
+        let msg = '';
+        
+        if (df && dt && df > dt) {
+          ok = false; 
+          msg = 'Дата окончания не может быть раньше даты начала.';
+        }
+        if (!df || !dt) {
+          ok = false; 
+          msg = 'Выберите период отчета.';
+        }
+        
+        return ok;
+      }
+    }
+    
+    // Инициализация календаря sales
+    let salesDateRangeCalendar;
+    
     // Hover preview like on /products
     const preview = document.getElementById('imgPreview');
     const previewImg = document.getElementById('imgPreviewImg');
@@ -120,21 +583,10 @@
     }
     // bind for server-rendered rows
     bindPreview();
-    function bindDateOpener(wrapId, inputId){
-      const wrap = document.getElementById(wrapId);
-      const input = document.getElementById(inputId);
-      if (!wrap || !input) return;
-      const openPicker = () => { input.showPicker ? input.showPicker() : input.focus(); };
-      wrap.addEventListener('click', (e) => {
-        if (e.target === input) return;
-        openPicker();
-      });
-      input.addEventListener('click', () => openPicker());
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); }});
-    }
-    bindDateOpener('rDateFromWrap','rDateFrom');
-    bindDateOpener('rDateToWrap','rDateTo');
+    
+    // Старые календари заменены на новый единый календарь
 
+    // eslint-disable-next-line
     let reportMatrix = {{ (matrix or []) | tojson | safe }}; // cached matrix for client-side filtering (server-side if уже есть)
     async function reloadReport(){
       const form = document.querySelector('form[action="/report/sales"]');
@@ -253,10 +705,15 @@
         const sumVal2 = document.getElementById('repSumVal'); if (sumVal2) sumVal2.textContent = (Number(totalSum2)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
       });
     }
+    // Инициализация календаря sales при загрузке страницы
+    document.addEventListener('DOMContentLoaded', function() {
+      salesDateRangeCalendar = new SalesDateRangeCalendar();
+    });
+    
     // Автозагрузка данных при наличии дат: только если матрица не пришла с сервера
     (function autoRun(){
-      const df = document.getElementById('rDateFrom')?.value;
-      const dt = document.getElementById('rDateTo')?.value;
+      const df = document.getElementById('salesDateFrom')?.value;
+      const dt = document.getElementById('salesDateTo')?.value;
       if (df && dt && !reportMatrix){ reloadReport(); }
     })();
   </script>
