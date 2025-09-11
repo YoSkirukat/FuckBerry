@@ -163,10 +163,19 @@
                     <tr>
                       <td class="text-center">{% if it.photo %}<img class="thumb" src="{{ it.photo }}" data-src="{{ it.photo }}"/>{% else %}-{% endif %}</td>
                       <td>
-                        {% if it.nm_id %}
-                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
-                        {% else %}
-                          {{ it.product }}
+                        <div>
+                          {% if it.nm_id %}
+                            <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                          {% else %}
+                            {{ it.product }}
+                          {% endif %}
+                        </div>
+                        {% if it.nm_id or it.barcode %}
+                          <div class="small text-muted mt-1">
+                            {% if it.nm_id %}Артикул WB: {{ it.nm_id }}{% endif %}
+                            {% if it.nm_id and it.barcode %} | {% endif %}
+                            {% if it.barcode %}Баркод: {{ it.barcode }}{% endif %}
+                          </div>
                         {% endif %}
                       </td>
                       <td class="text-end">{{ it.qty | num_space }}</td>
@@ -315,6 +324,16 @@
         const tdProd = document.createElement('td');
         if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; tdProd.appendChild(a); }
         else { tdProd.textContent = it.product; }
+        if (it.nm_id || it.barcode) {
+          const infoDiv = document.createElement('div');
+          infoDiv.className = 'small text-muted mt-1';
+          let infoText = '';
+          if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+          if (it.nm_id && it.barcode) infoText += ' | ';
+          if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+          infoDiv.textContent = infoText;
+          tdProd.appendChild(infoDiv);
+        }
         // qty
         const tdQty = document.createElement('td'); tdQty.className='text-end'; tdQty.textContent = (it.qty||0).toLocaleString('ru-RU');
         // sum
@@ -578,6 +597,16 @@
               td1.appendChild(a);
             } else {
               td1.textContent = it.product;
+            }
+            if (it.nm_id || it.barcode) {
+              const infoDiv = document.createElement('div');
+              infoDiv.className = 'small text-muted mt-1';
+              let infoText = '';
+              if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+              if (it.nm_id && it.barcode) infoText += ' | ';
+              if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+              infoDiv.textContent = infoText;
+              td1.appendChild(infoDiv);
             }
             td2.textContent = (it.qty || 0).toLocaleString('ru-RU');
             td2.className = 'text-end';

@@ -79,10 +79,19 @@
                     <td>{{ loop.index }}</td>
                     <td class="text-center">{% if it.photo %}<img class="thumb" src="{{ it.photo }}" data-src="{{ it.photo }}"/>{% else %}-{% endif %}</td>
                     <td>
-                      {% if it.nm_id %}
-                        <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
-                      {% else %}
-                        {{ it.product }}
+                      <div>
+                        {% if it.nm_id %}
+                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                        {% else %}
+                          {{ it.product }}
+                        {% endif %}
+                      </div>
+                      {% if it.nm_id or it.barcode %}
+                        <div class="small text-muted mt-1">
+                          {% if it.nm_id %}Артикул WB: {{ it.nm_id }}{% endif %}
+                          {% if it.nm_id and it.barcode %} | {% endif %}
+                          {% if it.barcode %}Баркод: {{ it.barcode }}{% endif %}
+                        </div>
                       {% endif %}
                     </td>
                     <td class="text-end">{{ it.qty | num_space }}</td>
@@ -153,6 +162,16 @@
           if (it.nm_id){
             const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a);
           } else { cell.textContent = it.product; }
+          if (it.nm_id || it.barcode) {
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'small text-muted mt-1';
+            let infoText = '';
+            if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+            if (it.nm_id && it.barcode) infoText += ' | ';
+            if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+            infoDiv.textContent = infoText;
+            cell.appendChild(infoDiv);
+          }
           tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
           tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
           tbody.appendChild(tr);
@@ -201,7 +220,7 @@
           const qty = target ? (bywh[target] || 0) : (row.total || 0);
           const bywhSum = row.by_wh_sum || {};
           const sum = target ? (bywhSum[target] || 0) : (row.total_sum || 0);
-          return { product: row.product, nm_id: row.nm_id, qty, sum, photo: row.photo };
+          return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo };
         }).filter(it => (it.qty || 0) > 0).sort((a,b)=> (b.qty||0)-(a.qty||0));
         items.forEach((it, idx) => {
           const tr = document.createElement('tr');
@@ -211,6 +230,16 @@
           const cell = tr.children[2];
           if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a); }
           else { cell.textContent = it.product; }
+          if (it.nm_id || it.barcode) {
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'small text-muted mt-1';
+            let infoText = '';
+            if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+            if (it.nm_id && it.barcode) infoText += ' | ';
+            if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+            infoDiv.textContent = infoText;
+            cell.appendChild(infoDiv);
+          }
           tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
           tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
           tbody.appendChild(tr);

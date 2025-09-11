@@ -1260,6 +1260,8 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
     counts: Dict[str, int] = defaultdict(int)
     revenue_by_product: Dict[str, float] = defaultdict(float)
     nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
     for r in rows:
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
         product = str(product)
@@ -1272,6 +1274,12 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
         nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
         if product not in nm_by_product and nm:
             nm_by_product[product] = nm
+        barcode = r.get("Баркод")
+        if product not in barcode_by_product and barcode:
+            barcode_by_product[product] = barcode
+        supplier_article = r.get("Артикул продавца")
+        if product not in supplier_article_by_product and supplier_article:
+            supplier_article_by_product[product] = supplier_article
     # photo map
     nm_to_photo: Dict[Any, Any] = {}
     try:
@@ -1288,6 +1296,8 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
         "product": p,
         "qty": c,
         "nm_id": nm_by_product.get(p),
+        "barcode": barcode_by_product.get(p),
+        "supplier_article": supplier_article_by_product.get(p),
         "sum": round(revenue_by_product.get(p, 0.0), 2),
         "photo": nm_to_photo.get(nm_by_product.get(p))
     } for p, c in counts.items()]
@@ -1309,6 +1319,8 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     counts: Dict[str, int] = defaultdict(int)
     revenue_by_product: Dict[str, float] = defaultdict(float)
     nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
     for r in rows:
         if warehouse and (r.get("Склад отгрузки") or "Не указан") != warehouse:
             continue
@@ -1323,6 +1335,12 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
         if product not in nm_by_product and nm:
             nm_by_product[product] = nm
+        barcode = r.get("Баркод")
+        if product not in barcode_by_product and barcode:
+            barcode_by_product[product] = barcode
+        supplier_article = r.get("Артикул продавца")
+        if product not in supplier_article_by_product and supplier_article:
+            supplier_article_by_product[product] = supplier_article
     # Enrich with product photos from cache
     nm_to_photo: Dict[Any, Any] = {}
     try:
@@ -1339,6 +1357,8 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         "product": p,
         "qty": c,
         "nm_id": nm_by_product.get(p),
+        "barcode": barcode_by_product.get(p),
+        "supplier_article": supplier_article_by_product.get(p),
         "sum": round(revenue_by_product.get(p, 0.0), 2),
         "photo": nm_to_photo.get(nm_by_product.get(p))
     } for p, c in counts.items()]
@@ -3522,6 +3542,8 @@ def report_sales_page():
     revenue_total: Dict[str, float] = defaultdict(float)
     by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
     for r in (orders or []):
         prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
         wh = str(r.get("Склад отгрузки") or "Не указан")
@@ -3536,6 +3558,12 @@ def report_sales_page():
         nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
         if prod not in nm_by_product and nmv:
             nm_by_product[prod] = nmv
+        barcode = r.get("Баркод")
+        if prod not in barcode_by_product and barcode:
+            barcode_by_product[prod] = barcode
+        supplier_article = r.get("Артикул продавца")
+        if prod not in supplier_article_by_product and supplier_article:
+            supplier_article_by_product[prod] = supplier_article
     # build photo map from products cache
     nm_to_photo: Dict[Any, Any] = {}
     try:
@@ -3558,6 +3586,8 @@ def report_sales_page():
                     "product": prod,
                     "qty": qty,
                     "nm_id": nm_by_product.get(prod),
+                    "barcode": barcode_by_product.get(prod),
+                    "supplier_article": supplier_article_by_product.get(prod),
                     "sum": round(float(s or 0.0), 2),
                     "photo": nm_to_photo.get(nm_by_product.get(prod))
                 })
@@ -3567,6 +3597,8 @@ def report_sales_page():
     matrix = [{
         "product": p,
         "nm_id": nm_by_product.get(p),
+        "barcode": barcode_by_product.get(p),
+        "supplier_article": supplier_article_by_product.get(p),
         "total": counts_total[p],
         "by_wh": by_wh[p],
         "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
@@ -3622,6 +3654,8 @@ def api_report_sales():
         revenue_total: Dict[str, float] = defaultdict(float)
         by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
         nm_by_product: Dict[str, Any] = {}
+        barcode_by_product: Dict[str, Any] = {}
+        supplier_article_by_product: Dict[str, Any] = {}
         warehouses = set()
         for r in orders:
             prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
@@ -3638,6 +3672,12 @@ def api_report_sales():
             nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
             if prod not in nm_by_product and nmv:
                 nm_by_product[prod] = nmv
+            barcode = r.get("Баркод")
+            if prod not in barcode_by_product and barcode:
+                barcode_by_product[prod] = barcode
+            supplier_article = r.get("Артикул продавца")
+            if prod not in supplier_article_by_product and supplier_article:
+                supplier_article_by_product[prod] = supplier_article
         # build photo map
         nm_to_photo: Dict[Any, Any] = {}
         try:
@@ -3660,6 +3700,8 @@ def api_report_sales():
                         "product": prod,
                         "qty": qty,
                         "nm_id": nm_by_product.get(prod),
+                        "barcode": barcode_by_product.get(prod),
+                        "supplier_article": supplier_article_by_product.get(prod),
                         "sum": round(float(s or 0.0), 2),
                         "photo": nm_to_photo.get(nm_by_product.get(prod))
                     })
@@ -3670,6 +3712,8 @@ def api_report_sales():
         matrix = [{
             "product": p,
             "nm_id": nm_by_product.get(p),
+            "barcode": barcode_by_product.get(p),
+            "supplier_article": supplier_article_by_product.get(p),
             "total": counts_total[p],
             "by_wh": by_wh[p],
             "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
