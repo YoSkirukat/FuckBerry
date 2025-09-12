@@ -5372,8 +5372,11 @@ def admin_required():
 @app.route("/admin/users", methods=["GET"]) 
 @login_required
 def admin_users():
-    if not admin_required():
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        flash("У вас нет прав для доступа к этой странице", "error")
         return redirect(url_for("index"))
+    
     users = User.query.order_by(User.id.asc()).all()
     return render_template("admin_users.html", users=users, message=None)
 
@@ -5381,8 +5384,9 @@ def admin_users():
 @app.route("/admin/users/create", methods=["POST"]) 
 @login_required
 def admin_users_create():
-    if not admin_required():
-        return redirect(url_for("index"))
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
     is_admin = bool(request.form.get("is_admin"))
@@ -5425,8 +5429,9 @@ def admin_users_create():
 @app.route("/admin/users/<int:user_id>/block", methods=["POST"]) 
 @login_required
 def admin_users_block(user_id: int):
-    if not admin_required():
-        return redirect(url_for("index"))
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     u = db.session.get(User, user_id)
     if u:
         try:
@@ -5442,8 +5447,9 @@ def admin_users_block(user_id: int):
 @app.route("/admin/users/<int:user_id>/unblock", methods=["POST"]) 
 @login_required
 def admin_users_unblock(user_id: int):
-    if not admin_required():
-        return redirect(url_for("index"))
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     u = db.session.get(User, user_id)
     if u:
         try:
@@ -5459,8 +5465,9 @@ def admin_users_unblock(user_id: int):
 @app.route("/admin/users/<int:user_id>/reset", methods=["POST"]) 
 @login_required
 def admin_users_reset(user_id: int):
-    if not admin_required():
-        return redirect(url_for("index"))
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     new_pass = request.form.get("password", "")
     if not new_pass:
         flash("Укажите новый пароль")
@@ -5480,8 +5487,9 @@ def admin_users_reset(user_id: int):
 @app.route("/admin/users/<int:user_id>/delete", methods=["POST"]) 
 @login_required
 def admin_users_delete(user_id: int):
-    if not admin_required():
-        return redirect(url_for("index"))
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     u = db.session.get(User, user_id)
     if u:
         try:
@@ -5504,8 +5512,9 @@ def admin_users_delete(user_id: int):
 @app.route("/admin/users/<int:user_id>/validity", methods=["POST"]) 
 @login_required
 def admin_users_validity(user_id: int):
-    if not admin_required():
-        return redirect(url_for("index"))
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     vf = request.form.get("valid_from") or None
     vt = request.form.get("valid_to") or None
     u = db.session.get(User, user_id)

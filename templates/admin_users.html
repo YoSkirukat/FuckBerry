@@ -10,6 +10,13 @@
 <body>
   {% include '_navbar.html' %}
   <div class="container mt-3">
+    {% if not current_user.is_authenticated or not current_user.is_admin %}
+      <div class="alert alert-danger">
+        <h4>Доступ запрещен</h4>
+        <p>У вас нет прав для доступа к этой странице.</p>
+        <a href="{{ url_for('index') }}" class="btn btn-primary">Вернуться на главную</a>
+      </div>
+    {% else %}
     <h1 class="mb-3" style="font-size:1.6rem;">Пользователи</h1>
     {% if message %}
       <div class="alert alert-info">{{ message }}</div>
@@ -90,6 +97,7 @@
         </tbody>
       </table>
     </div>
+    {% endif %}
   </div>
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
