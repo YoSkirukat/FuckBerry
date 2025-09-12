@@ -153,6 +153,26 @@
     .calendar-day.other-month.weekend {
       color: #f5c6cb;
     }
+    
+    /* Мобильное позиционирование календаря */
+    @media (max-width: 768px) {
+      .calendar-dropdown.mobile-centered {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        width: 90vw !important;
+        max-width: 400px !important;
+        z-index: 1060 !important;
+        margin: 0 !important;
+        box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.3) !important;
+      }
+      
+      .calendar-dropdown.mobile-centered .calendar-grid {
+        max-height: 60vh;
+        overflow-y: auto;
+      }
+    }
   </style>
 </head>
 <body>
@@ -181,10 +201,10 @@
                     <button type="button" class="calendar-nav" id="ordersPrevMonth">‹</button>
                     <span id="ordersCurrentMonthYear">Сентябрь 2025</span>
                     <button type="button" class="calendar-nav" id="ordersNextMonth">›</button>
-                  </div>
+              </div>
                   <div class="calendar-grid" id="ordersCalendarGrid">
                     <!-- Календарь будет генерироваться JavaScript -->
-                  </div>
+            </div>
                   <div class="calendar-footer">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="ordersResetDates">Сбросить</button>
                     <button type="button" class="btn btn-sm btn-primary" id="ordersApplyDates">Применить</button>
@@ -309,10 +329,10 @@
                       <td class="text-center">{% if it.photo %}<img class="thumb" src="{{ it.photo }}" data-src="{{ it.photo }}"/>{% else %}-{% endif %}</td>
                       <td>
                         <div>
-                          {% if it.nm_id %}
-                            <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
-                          {% else %}
-                            {{ it.product }}
+                        {% if it.nm_id %}
+                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                        {% else %}
+                          {{ it.product }}
                           {% endif %}
                         </div>
                         {% if it.nm_id or it.barcode %}
@@ -470,19 +490,44 @@
         const rect = this.input.getBoundingClientRect();
         const calendar = this.calendar;
         const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
         const calendarHeight = 400; // Примерная высота календаря
         
-        // Если календарь не помещается снизу, показываем сверху
-        if (rect.bottom + calendarHeight > viewportHeight) {
-          calendar.style.top = 'auto';
-          calendar.style.bottom = '100%';
-          calendar.style.marginTop = '0';
-          calendar.style.marginBottom = '0.25rem';
+        // Проверяем, является ли устройство мобильным
+        const isMobile = viewportWidth <= 768;
+        
+        if (isMobile) {
+          // На мобильных устройствах центрируем календарь
+          calendar.classList.add('mobile-centered');
+          calendar.style.position = 'fixed';
+          calendar.style.top = '50%';
+          calendar.style.left = '50%';
+          calendar.style.transform = 'translate(-50%, -50%)';
+          calendar.style.width = '90vw';
+          calendar.style.maxWidth = '400px';
+          calendar.style.zIndex = '1060';
+          calendar.style.margin = '0';
+          calendar.style.boxShadow = '0 0.5rem 2rem rgba(0, 0, 0, 0.3)';
         } else {
-          calendar.style.top = '100%';
-          calendar.style.bottom = 'auto';
-          calendar.style.marginTop = '0.25rem';
-          calendar.style.marginBottom = '0';
+          // На десктопе используем обычное позиционирование
+          calendar.classList.remove('mobile-centered');
+          calendar.style.position = 'absolute';
+          calendar.style.transform = 'none';
+          calendar.style.zIndex = '1050';
+          calendar.style.boxShadow = '0 0.5rem 1rem rgba(0, 0, 0, 0.15)';
+          
+          // Если календарь не помещается снизу, показываем сверху
+          if (rect.bottom + calendarHeight > viewportHeight) {
+            calendar.style.top = 'auto';
+            calendar.style.bottom = '100%';
+            calendar.style.marginTop = '0';
+            calendar.style.marginBottom = '0.25rem';
+          } else {
+            calendar.style.top = '100%';
+            calendar.style.bottom = 'auto';
+            calendar.style.marginTop = '0.25rem';
+            calendar.style.marginBottom = '0';
+          }
         }
       }
       
