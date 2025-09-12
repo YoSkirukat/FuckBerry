@@ -338,14 +338,8 @@ function loadNotifications() {
                     item.classList.add('new-notification');
                 }
                 
-                 const timeAgo = new Date(notif.created_at).toLocaleString('ru-RU', {
-                     day: '2-digit',
-                     month: '2-digit',
-                     year: 'numeric',
-                     hour: '2-digit',
-                     minute: '2-digit',
-                     hour12: false
-                 });
+                 // Используем уже отформатированную дату из API
+                 const timeAgo = notif.created_at;
                 
                 // Get icon based on notification type
                 let icon = '🔔';

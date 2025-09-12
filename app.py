@@ -1850,14 +1850,18 @@ def _auto_update_settings_path_for_user() -> str:
 
 
 # Notification system functions
-def create_notification(user_id: int, title: str, message: str, notification_type: str, data: dict = None) -> Notification:
+def create_notification(user_id: int, title: str, message: str, notification_type: str, data: dict = None, created_at: datetime = None) -> Notification:
     """Create a new notification for a user"""
+    # Используем переданное время или текущее московское время
+    notification_time = created_at if created_at else datetime.now(MOSCOW_TZ)
+    
     notification = Notification(
         user_id=user_id,
         title=title,
         message=message,
         notification_type=notification_type,
-        data=json.dumps(data) if data else None
+        data=json.dumps(data) if data else None,
+        created_at=notification_time
     )
     db.session.add(notification)
     db.session.commit()
@@ -1939,18 +1943,21 @@ def check_fbs_new_orders_for_notifications():
                         for order in new_orders_since_check:
                             order_id = order.get('id', 'Unknown')
                             order_time = _parse_iso_datetime(str(order.get('createdAt', '')))
-                            time_str = order_time.strftime('%H:%M') if order_time else 'Unknown'
+                            # Конвертируем время в московское время для корректного отображения
+                            moscow_time = to_moscow(order_time) if order_time else None
+                            time_str = moscow_time.strftime('%H:%M') if moscow_time else 'Unknown'
                             
                             create_notification(
                                 user_id=user.id,
                                 title="Новый заказ FBS",
-                                message=f"Поступил новый заказ #{order_id} в {time_str}",
+                                message=f"Поступил новый заказ #{order_id}",
                                 notification_type="fbs_new_order",
                                 data={
                                     'order_id': order_id,
                                     'order_data': order,
                                     'created_at': order.get('createdAt')
-                                }
+                                },
+                                created_at=datetime.now(MOSCOW_TZ)
                             )
                     
                     # Update last check time
@@ -2016,12 +2023,14 @@ def check_version_updates():
                     
                     if not existing_notification:
                         print(f"Creating version notification for user {user.id}")
+                        # Создаем уведомление с точным временем обнаружения изменения версии
                         create_notification(
                             user_id=user.id,
                             title="Обновление сервиса",
                             message=f"Вышло обновление {current_version}",
                             notification_type="version_update",
-                            data={"version": current_version, "previous_version": cached_version}
+                            data={"version": current_version, "previous_version": cached_version},
+                            created_at=datetime.now(MOSCOW_TZ)
                         )
                     else:
                         print(f"User {user.id} already has notification for version {current_version}")
@@ -5769,13 +5778,26 @@ def api_notifications():
             except:
                 pass
                 
+        # Форматируем время создания уведомления в московском времени
+        # Время уже создается в московском времени, но может быть naive
+        if notif.created_at.tzinfo is None:
+            # Если время naive, считаем его московским
+            moscow_time = notif.created_at.replace(tzinfo=MOSCOW_TZ)
+        else:
+            # Если время уже с timezone, конвертируем в московское
+            moscow_time = notif.created_at.astimezone(MOSCOW_TZ)
+        
+        formatted_time = moscow_time.strftime('%d.%m.%Y %H:%M')
+        
+        
+        
         result.append({
             'id': notif.id,
             'title': notif.title,
             'message': notif.message,
             'type': notif.notification_type,
             'is_read': notif.is_read,
-            'created_at': notif.created_at.strftime('%d.%m.%Y %H:%M'),
+            'created_at': formatted_time,
             'data': data
         })
     
@@ -5833,7 +5855,8 @@ def test_notification():
             user_id=current_user.id,
             title="Тестовое уведомление",
             message="Это тестовое уведомление для проверки системы",
-            notification_type="test"
+            notification_type="test",
+            created_at=datetime.now(MOSCOW_TZ)
         )
         return jsonify({"success": True, "message": "Test notification created"})
     except Exception as e:
