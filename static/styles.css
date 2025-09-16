@@ -16,4 +16,9 @@ a {
   top: 66px;
   border-top: none;
 }
+@media (max-width: 991.98px) {
+  .d-lg-none .dropdown-menu {
+      max-width: 100% !important;
+  }
+}
 /* Дополнительные глобальные стили можно добавить здесь */
