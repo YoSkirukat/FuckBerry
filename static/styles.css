@@ -4,5 +4,16 @@
 a {
   text-decoration: none !important;
 }
-
+@media (min-width: 1400px) {
+  .container, .container-lg, .container-md, .container-sm, .container-xl, .container-xxl {
+      max-width: 100% !important;
+  }
+}
+.planning-table th {
+  background-color: #3949ab !important;
+}
+.planning-table .totals-row th {
+  top: 66px;
+  border-top: none;
+}
 /* Дополнительные глобальные стили можно добавить здесь */

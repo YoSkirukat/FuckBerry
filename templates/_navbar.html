@@ -89,6 +89,7 @@
           <a class="nav-link dropdown-toggle {% if request.path.startswith('/fbw') or request.path.startswith('/coefficients') %}active{% endif %}" href="#" id="fbwDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">Поставки FBW</a>
           <ul class="dropdown-menu" aria-labelledby="fbwDropdown">
             <li><a class="dropdown-item {% if request.path == '/fbw' %}active{% endif %}" href="/fbw">Список поставок FBW</a></li>
+            <li><a class="dropdown-item {% if request.path.startswith('/fbw/planning') %}active{% endif %}" href="/fbw/planning">Планирование поставки</a></li>
             <li><a class="dropdown-item {% if request.path.startswith('/coefficients') %}active{% endif %}" href="/coefficients">Коэфициенты приёмки</a></li>
           </ul>
         </li>
