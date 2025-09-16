@@ -16,6 +16,8 @@ from typing import List, Dict, Any, Tuple
 
 import requests
 from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory
+import xlwt
+from io import BytesIO
 from openpyxl import Workbook
 from docx import Document
 from docx.shared import Pt, Cm
@@ -2928,14 +2930,52 @@ def api_fbw_planning_stocks():
         return jsonify({"error": "no_warehouse", "message": "Не указан ID склада"}), 400
     
     try:
-        # При планировании поставки всегда обновляем остатки для актуальности
-        print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Принудительное обновление остатков ===")
-        print(f"Пользователь: {current_user.id}, Склад: {warehouse_id}")
-        raw_stocks = fetch_stocks_resilient(token)
-        stocks = normalize_stocks(raw_stocks)
-        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        save_stocks_cache({"items": stocks, "_user_id": current_user.id, "updated_at": now_str})
-        print(f"Остатки обновлены для планирования поставки: {len(stocks)} товаров в {now_str}")
+        from datetime import datetime
+        # Проверяем кэш остатков перед принудительным обновлением
+        cached = load_stocks_cache()
+        should_refresh = True
+        
+        if cached and cached.get("_user_id") == current_user.id:
+            # Проверяем, когда последний раз обновлялись остатки
+            updated_at = cached.get("updated_at")
+            if updated_at:
+                try:
+                    # Парсим время обновления из кэша
+                    cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
+                    # Если остатки обновлялись менее 5 минут назад, используем кэш
+                    if (datetime.now() - cache_time).total_seconds() < 300:  # 5 минут
+                        should_refresh = False
+                        print(f"=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Используем кэшированные остатки ===")
+                        print(f"Кэш обновлен: {updated_at}")
+                except Exception as e:
+                    print(f"Ошибка парсинга времени кэша: {e}")
+        
+        if should_refresh:
+            print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Принудительное обновление остатков ===")
+            print(f"Пользователь: {current_user.id}, Склад: {warehouse_id}")
+            try:
+                raw_stocks = fetch_stocks_resilient(token)
+                stocks = normalize_stocks(raw_stocks)
+                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                save_stocks_cache({"items": stocks, "_user_id": current_user.id, "updated_at": now_str})
+                print(f"Остатки обновлены для планирования поставки: {len(stocks)} товаров в {now_str}")
+            except requests.HTTPError as e:
+                if e.response and e.response.status_code == 429:
+                    print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Ошибка 429, используем кэш ===")
+                    if cached and cached.get("_user_id") == current_user.id:
+                        stocks = cached.get("items", [])
+                        print(f"Используем кэшированные остатки: {len(stocks)} товаров")
+                    else:
+                        return jsonify({"error": "rate_limit", "message": "Превышен лимит запросов к API. Попробуйте позже."}), 429
+                else:
+                    raise
+        else:
+            stocks = cached.get("items", []) if cached else []
+            print(f"Используем кэшированные остатки: {len(stocks)} товаров")
+            
+        # Проверяем, что у нас есть остатки
+        if not stocks:
+            return jsonify({"error": "no_stocks", "message": "Нет данных об остатках. Попробуйте позже."}), 500
         
         # Получаем название склада из API складов
         warehouse_name = None
@@ -2996,6 +3036,9 @@ def api_fbw_planning_stocks():
                         else:
                             warehouse_stocks[barcode] = int(stock.get("qty", 0) or 0)
         
+        # Получаем время обновления из кэша или используем текущее время
+        now_str = cached.get("updated_at") if cached else datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        
         if warehouse_id == "all":
             print(f"Найдено остатков по всем складам: {len(warehouse_stocks)}")
             return jsonify({
@@ -3016,8 +3059,16 @@ def api_fbw_planning_stocks():
             })
         
     except requests.HTTPError as http_err:
+        print(f"=== ОШИБКА API в api_fbw_planning_stocks ===")
+        print(f"HTTP Error: {http_err.response.status_code}")
+        print(f"Response: {http_err.response.text}")
         return jsonify({"error": "api_error", "message": f"Ошибка API: {http_err.response.status_code}"}), 502
     except Exception as exc:
+        print(f"=== ОШИБКА в api_fbw_planning_stocks ===")
+        print(f"Exception: {str(exc)}")
+        print(f"Exception type: {type(exc)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
 
 @app.route("/api/fbw/planning/orders", methods=["GET"])
@@ -3189,6 +3240,84 @@ def api_fbw_planning_orders():
         print(f"Ошибка получения заказов: {e}")
         return jsonify({"error": "server_error", "message": str(e)}), 500
 
+
+@app.route("/api/fbw/planning/export-excel", methods=["POST"])
+@login_required
+def api_fbw_planning_export_excel():
+    """Экспорт результатов планирования в Excel формат XLS"""
+    try:
+        data = request.get_json()
+        if not data or 'products' not in data:
+            return jsonify({"error": "Нет данных для экспорта"}), 400
+        
+        products = data['products']
+        warehouse_name = data.get('warehouse_name', 'Неизвестный_склад')
+        
+        # Фильтруем товары - экспортируем только те, у которых количество для поставки больше 0
+        products_to_export = [p for p in products if p.get('toSupply', 0) > 0]
+        
+        if not products_to_export:
+            return jsonify({"error": "Нет товаров для поставки"}), 400
+        
+        # Создаем Excel файл в формате XLS (Excel 97-2003)
+        workbook = xlwt.Workbook(encoding='utf-8')
+        worksheet = workbook.add_sheet('Планирование поставки')
+        
+        # Стили
+        header_style = xlwt.easyxf('font: bold on; align: horiz center;')
+        number_style = xlwt.easyxf('align: horiz right;')
+        
+        # Заголовки
+        headers = [
+            '№', 'Штрихкод', 'Наименование', 'Текущий остаток', 
+            'Остаток по всем складам', 'В пути на склад', 'Заказано за период',
+            'Продаж в день', 'Необходимый остаток', 'Оборачиваемость', 'Поставить на склад'
+        ]
+        
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, header_style)
+        
+        # Данные
+        for row, product in enumerate(products_to_export, 1):
+            worksheet.write(row, 0, row)  # №
+            worksheet.write(row, 1, str(product.get('barcode', '')))  # Штрихкод
+            worksheet.write(row, 2, str(product.get('name', '')))  # Наименование
+            worksheet.write(row, 3, product.get('currentStock', 0), number_style)  # Текущий остаток
+            worksheet.write(row, 4, product.get('allStocks', 0), number_style)  # Остаток по всем складам
+            worksheet.write(row, 5, product.get('inTransit', 0), number_style)  # В пути на склад
+            worksheet.write(row, 6, product.get('orderedInPeriod', 0), number_style)  # Заказано за период
+            worksheet.write(row, 7, round(product.get('salesPerDay', 0), 2), number_style)  # Продаж в день
+            worksheet.write(row, 8, round(product.get('requiredStock', 0)), number_style)  # Необходимый остаток
+            worksheet.write(row, 9, round(product.get('turnover', 0), 1), number_style)  # Оборачиваемость
+            worksheet.write(row, 10, round(product.get('toSupply', 0)), number_style)  # Поставить на склад
+        
+        # Автоподбор ширины колонок
+        for col in range(len(headers)):
+            worksheet.col(col).width = 3000  # Примерная ширина
+        
+        # Создаем файл в памяти
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        
+        # Генерируем имя файла
+        now = datetime.now()
+        day = now.strftime("%d.%m.%Y")
+        time = now.strftime("%H:%M")
+        filename = f"{warehouse_name}_{day}_{time}.xls"
+        
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.ms-excel'
+        )
+        
+    except Exception as e:
+        print(f"Ошибка экспорта в Excel: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Ошибка экспорта: {str(e)}"}), 500
 
 @app.route("/api/fbw/planning/supplies", methods=["GET"])
 @login_required

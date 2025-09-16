@@ -1397,15 +1397,46 @@
       
       console.log(`Конвертированные даты: ${dateFromFormatted} - ${dateToFormatted}`);
       
+      // Загружаем данные параллельно
       Promise.all([
         fetch('/api/fbw/planning/products'),
         fetch(`/api/fbw/planning/stocks?warehouse_id=${warehouseId}`),
         fetch('/api/fbw/planning/stocks?warehouse_id=all'), // Остатки по всем складам
         fetch(`/api/fbw/planning/orders?warehouse_id=${warehouseId}&date_from=${dateFromFormatted}&date_to=${dateToFormatted}`)
       ])
-      .then(responses => Promise.all(responses.map(r => r.json())))
+      .then(responses => {
+        // Проверяем статус ответов перед парсингом JSON
+        const errorResponses = responses.filter(r => !r.ok);
+        if (errorResponses.length > 0) {
+          const errorResponse = errorResponses[0];
+          if (errorResponse.status === 429) {
+            throw new Error('Превышен лимит запросов к API Wildberries. Попробуйте через несколько минут.');
+          } else if (errorResponse.status === 502) {
+            throw new Error('Временная недоступность API Wildberries. Попробуйте позже.');
+          } else {
+            throw new Error(`Ошибка API: ${errorResponse.status}`);
+          }
+        }
+        return Promise.all(responses.map(r => r.json()));
+      })
       .then(([productsData, stocksData, allStocksData, ordersData]) => {
         console.log('Результаты загрузки:', {productsData, stocksData, allStocksData, ordersData});
+        
+        // Проверяем наличие ошибок в данных
+        if (productsData.error === 'rate_limit') {
+          showError('Превышен лимит запросов к API Wildberries. Попробуйте через несколько минут.');
+          return;
+        }
+        
+        if (stocksData.error === 'no_stocks') {
+          showError('Нет данных об остатках. Попробуйте позже или обновите страницу.');
+          return;
+        }
+        
+        if (stocksData.error === 'server_error') {
+          showError('Ошибка сервера при загрузке остатков. Попробуйте позже.');
+          return;
+        }
         
         if (productsData.success && stocksData.success) {
           // Если остатки по всем складам не загрузились, используем пустые данные
@@ -2108,66 +2139,69 @@
       // Обновляем данные из таблицы перед экспортом
       updateCurrentProductsFromTable();
       
+      // Фильтруем товары для экспорта
+      const productsToExport = currentProducts.filter(item => Math.round(item.toSupply) > 0);
+      
+      if (productsToExport.length === 0) {
+        alert('Нет товаров для поставки. Все товары имеют нулевое количество в колонке "Поставить на склад".');
+        return;
+      }
+      
       // Отладка: проверяем обновленные данные
-      console.log('Данные для экспорта (первые 3 товара):', currentProducts.slice(0, 3).map(p => ({
+      console.log(`Экспортируем ${productsToExport.length} товаров из ${currentProducts.length} общих`);
+      console.log('Данные для экспорта (первые 3 товара):', productsToExport.slice(0, 3).map(p => ({
         barcode: p.barcode,
         name: p.name,
         toSupply: p.toSupply
       })));
       
-      // Создаем CSV данные
-      let csvContent = '\uFEFF'; // BOM для правильной кодировки
+      // Отправляем запрос на сервер для создания настоящего Excel файла
+      const warehouseName = window.lastFormData ? window.lastFormData.warehouse_name : 'Неизвестный_склад';
       
-      // Заголовки
-      const headers = [
-        '№',
-        'Баркод',
-        'Наименование',
-        'Текущий остаток',
-        'Остаток по всем складам',
-        'В пути на склад',
-        'Заказано за период',
-        'Продаж в день',
-        'Необходимый остаток',
-        'Оборачиваемость',
-        'Поставить на склад'
-      ];
-      
-      csvContent += headers.join(';') + '\n';
-      
-      // Данные
-      currentProducts.forEach((item, index) => {
-        const row = [
-          index + 1,
-          item.barcode,
-          `"${item.name}"`, // Обрамляем в кавычки для корректного отображения
-          item.currentStock,
-          item.allStocks,
-          item.inTransit,
-          item.orderedInPeriod,
-          item.salesPerDay.toFixed(2),
-          Math.round(item.requiredStock),
-          item.turnover.toFixed(1),
-          Math.round(item.toSupply)
-        ];
-        csvContent += row.join(';') + '\n';
+      fetch('/api/fbw/planning/export-excel', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          products: currentProducts,
+          warehouse_name: warehouseName
+        })
+      })
+      .then(response => {
+        if (!response.ok) {
+          return response.json().then(err => Promise.reject(err));
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        // Создаем ссылку для скачивания
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        
+        // Генерируем имя файла
+        const now = new Date();
+        const day = String(now.getDate()).padStart(2, '0');
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const year = now.getFullYear();
+        const dateStr = `${day}.${month}.${year}`;
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const timeStr = `${hours}:${minutes}`;
+        const fileName = `${warehouseName}_${dateStr}_${timeStr}.xls`;
+        
+        link.download = fileName;
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      })
+      .catch(error => {
+        console.error('Ошибка экспорта:', error);
+        alert('Ошибка при экспорте в Excel: ' + (error.message || error.error || 'Неизвестная ошибка'));
       });
-      
-      // Создаем и скачиваем файл
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const link = document.createElement('a');
-      const url = URL.createObjectURL(blob);
-      link.setAttribute('href', url);
-      
-      // Генерируем имя файла с датой
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
-      link.setAttribute('download', `planning_${dateStr}.csv`);
-      
-      link.style.visibility = 'hidden';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
     }
     
     // Функция проверки непринятых поставок
