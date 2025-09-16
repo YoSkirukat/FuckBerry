@@ -2928,15 +2928,14 @@ def api_fbw_planning_stocks():
         return jsonify({"error": "no_warehouse", "message": "Не указан ID склада"}), 400
     
     try:
-        # Загружаем остатки из кэша или обновляем
-        cached = load_stocks_cache()
-        if cached and cached.get("_user_id") == current_user.id:
-            stocks = cached.get("items", [])
-        else:
-            # Загружаем свежие остатки
-            raw_stocks = fetch_stocks_resilient(token)
-            stocks = normalize_stocks(raw_stocks)
-            save_stocks_cache({"items": stocks, "_user_id": current_user.id})
+        # При планировании поставки всегда обновляем остатки для актуальности
+        print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Принудительное обновление остатков ===")
+        print(f"Пользователь: {current_user.id}, Склад: {warehouse_id}")
+        raw_stocks = fetch_stocks_resilient(token)
+        stocks = normalize_stocks(raw_stocks)
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        save_stocks_cache({"items": stocks, "_user_id": current_user.id, "updated_at": now_str})
+        print(f"Остатки обновлены для планирования поставки: {len(stocks)} товаров в {now_str}")
         
         # Получаем название склада из API складов
         warehouse_name = None
@@ -3003,7 +3002,8 @@ def api_fbw_planning_stocks():
                 "success": True,
                 "stocks": warehouse_stocks,
                 "warehouse_id": "all",
-                "warehouse_name": "Все склады"
+                "warehouse_name": "Все склады",
+                "updated_at": now_str
             })
         else:
             print(f"Найдено остатков для склада '{warehouse_name}': {len(warehouse_stocks)}")
@@ -3011,7 +3011,8 @@ def api_fbw_planning_stocks():
                 "success": True,
                 "stocks": warehouse_stocks,
                 "warehouse_id": warehouse_id,
-                "warehouse_name": warehouse_name
+                "warehouse_name": warehouse_name,
+                "updated_at": now_str
             })
         
     except requests.HTTPError as http_err:

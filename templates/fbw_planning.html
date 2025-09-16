@@ -1440,6 +1440,13 @@
           console.log('Остатки по всем складам:', allStocksData.stocks);
           console.log('Заказы:', ordersData.orders);
           
+          // Показываем информацию об обновлении остатков
+          if (stocksData.updated_at) {
+            console.log(`Остатки обновлены: ${stocksData.updated_at}`);
+            // Сохраняем время обновления для отображения пользователю
+            window.stocksUpdatedAt = stocksData.updated_at;
+          }
+          
           // Отладка фото
           const productsWithPhotos = productsData.products.filter(p => p.photo);
           console.log(`Товаров с фото: ${productsWithPhotos.length}`);
@@ -1571,6 +1578,7 @@
       const warehouseName = formData.warehouse_name || `Склад ${formData.warehouse}`;
       
       const totalOrders = window.totalOrdersCount || 0;
+      const stocksUpdateTime = window.stocksUpdatedAt || '';
       productsCountDiv.innerHTML = `
         <div class="mb-2">
           <strong>Склад:</strong> ${warehouseName} | 
@@ -1579,6 +1587,7 @@
           <strong>Общий остаток:</strong> ${totalStock} шт. | 
           <strong>Заказано за период:</strong> ${totalOrders} шт.
         </div>
+        ${stocksUpdateTime ? `<div class="mb-2 text-success small"><i class="bi bi-arrow-clockwise"></i> Остатки обновлены: ${stocksUpdateTime}</div>` : ''}
       `;
       
       // Рассчитываем формулы для всех товаров
