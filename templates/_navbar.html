@@ -64,11 +64,66 @@
 .notification-item:hover {
   background-color: #f8f9fa;
 }
+
+/* Mobile notification icon styles */
+@media (max-width: 991.98px) {
+  .d-lg-none .nav-link {
+    padding: 0.5rem;
+    color: #6c757d;
+    text-decoration: none;
+  }
+  
+  .d-lg-none .nav-link:hover {
+    color: #495057;
+  }
+  
+  .d-lg-none .nav-link:focus {
+    color: #495057;
+    box-shadow: none;
+  }
+  
+  .d-lg-none .dropdown-menu {
+    margin-top: 0.5rem;
+    border: 1px solid rgba(0,0,0,.15);
+    box-shadow: 0 0.5rem 1rem rgba(0,0,0,.175);
+  }
+  
+}
 </style>
 
 <nav class="navbar navbar-expand-lg navbar-light bg-light">
   <div class="container">
     <a class="navbar-brand d-flex align-items-center gap-2" href="/orders" style="font-weight: bold;"><img src="/logo.png" alt="logo" width="40" height="40"/> FuckBerry</a>
+    
+    <!-- Mobile notification icon - visible only on mobile -->
+    {% if current_user.is_authenticated %}
+    <div class="d-lg-none d-flex align-items-center">
+      <a class="nav-link position-relative" href="#" id="mobileNotificationsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+        🔔
+        <span id="mobileNotificationBadge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="display: none; top: 5px !important;">
+          0
+        </span>
+      </a>
+      <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="mobileNotificationsDropdown" style="min-width: 350px; max-height: 400px; overflow-y: auto;">
+        <li><h6 class="dropdown-header d-flex justify-content-between align-items-center">
+          <span>Уведомления</span>
+          <div class="d-flex gap-3">
+            <a href="#" id="mobileMarkAllReadBtn" class="text-decoration-none" style="display: none; font-size: 12px; color: #28a745;" onclick="markAllNotificationsAsRead(); return false;" title="Отметить все как прочитанные">
+              Прочитать все
+            </a>
+            <a href="#" id="mobileDeleteAllBtn" class="text-decoration-none" style="display: none; font-size: 12px; color: #dc3545;" onclick="deleteAllNotifications(); return false;" title="Удалить все уведомления">
+              Удалить все
+            </a>
+          </div>
+        </h6></li>
+        <li><hr class="dropdown-divider"></li>
+        <div id="mobileNotificationsList">
+          <li class="dropdown-item-text text-center text-muted">Загрузка...</li>
+        </div>
+      </ul>
+    </div>
+    {% endif %}
+    
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
       <span class="navbar-toggler-icon"></span>
     </button>
@@ -120,7 +175,7 @@
           {% endif %}
           
           <!-- Notifications Bell -->
-          <li class="nav-item dropdown">
+          <li class="nav-item dropdown d-none d-lg-block">
             <a class="nav-link position-relative" href="#" id="notificationsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               🔔
               <span id="notificationBadge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="display: none; top: 5px !important;">
@@ -219,7 +274,10 @@ function checkForNewNotifications() {
             
             // Update the UI if dropdown is open
             const dropdown = document.getElementById('notificationsDropdown');
-            if (dropdown.classList.contains('show')) {
+            const mobileDropdown = document.getElementById('mobileNotificationsDropdown');
+            
+            if ((dropdown && dropdown.classList.contains('show')) || 
+                (mobileDropdown && mobileDropdown.classList.contains('show'))) {
                 loadNotifications();
             }
         })
@@ -259,7 +317,11 @@ function updateNotificationBadge() {
         .then(response => response.json())
         .then(data => {
             const badge = document.getElementById('notificationBadge');
+            const mobileBadge = document.getElementById('mobileNotificationBadge');
             const deleteAllBtn = document.getElementById('deleteAllBtn');
+            const mobileDeleteAllBtn = document.getElementById('mobileDeleteAllBtn');
+            const markAllReadBtn = document.getElementById('markAllReadBtn');
+            const mobileMarkAllReadBtn = document.getElementById('mobileMarkAllReadBtn');
             
             // Check if count increased (new notifications)
             if (data.count > lastNotificationCount && lastNotificationCount >= 0) {
@@ -278,25 +340,51 @@ function updateNotificationBadge() {
                         });
                     }
                     
-                    // Add pulse and shake animation to badge
-                    badge.classList.add('notification-badge-pulse', 'notification-badge-shake');
-                    setTimeout(() => {
-                        badge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
-                    }, 500);
+                    // Add pulse and shake animation to both badges
+                    if (badge) {
+                        badge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            badge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                    if (mobileBadge) {
+                        mobileBadge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            mobileBadge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
                 } else {
                     console.log('First load - not showing notification alerts');
                 }
             }
             
             if (data.count > 0) {
-                badge.textContent = data.count;
-                badge.style.display = 'inline-block';
-                deleteAllBtn.style.display = 'inline-block';
-                markAllReadBtn.style.display = 'inline-block';
+                // Update desktop badge (only if visible)
+                if (badge && badge.closest('.d-none') === null) {
+                    badge.textContent = data.count;
+                    badge.style.display = 'inline-block';
+                }
+                // Update mobile badge (only if visible)
+                if (mobileBadge && mobileBadge.closest('.d-lg-none') !== null) {
+                    mobileBadge.textContent = data.count;
+                    mobileBadge.style.display = 'inline-block';
+                }
+                
+                // Show buttons
+                if (deleteAllBtn && deleteAllBtn.closest('.d-none') === null) deleteAllBtn.style.display = 'inline-block';
+                if (mobileDeleteAllBtn && mobileDeleteAllBtn.closest('.d-lg-none') !== null) mobileDeleteAllBtn.style.display = 'inline-block';
+                if (markAllReadBtn && markAllReadBtn.closest('.d-none') === null) markAllReadBtn.style.display = 'inline-block';
+                if (mobileMarkAllReadBtn && mobileMarkAllReadBtn.closest('.d-lg-none') !== null) mobileMarkAllReadBtn.style.display = 'inline-block';
             } else {
-                badge.style.display = 'none';
-                deleteAllBtn.style.display = 'inline-block'; // Always show delete button
-                markAllReadBtn.style.display = 'none';
+                // Hide badges
+                if (badge) badge.style.display = 'none';
+                if (mobileBadge) mobileBadge.style.display = 'none';
+                
+                // Show delete buttons but hide read buttons
+                if (deleteAllBtn && deleteAllBtn.closest('.d-none') === null) deleteAllBtn.style.display = 'inline-block';
+                if (mobileDeleteAllBtn && mobileDeleteAllBtn.closest('.d-lg-none') !== null) mobileDeleteAllBtn.style.display = 'inline-block';
+                if (markAllReadBtn && markAllReadBtn.closest('.d-none') === null) markAllReadBtn.style.display = 'none';
+                if (mobileMarkAllReadBtn && mobileMarkAllReadBtn.closest('.d-lg-none') !== null) mobileMarkAllReadBtn.style.display = 'none';
             }
             
             lastNotificationCount = data.count;
@@ -312,7 +400,7 @@ function loadNotifications() {
         .then(response => response.json())
         .then(data => {
             const container = document.getElementById('notificationsList');
-            container.innerHTML = '';
+            const mobileContainer = document.getElementById('mobileNotificationsList');
             
             // Initialize lastNotifications and shownNotificationIds if empty
             if (lastNotifications.length === 0) {
@@ -324,84 +412,107 @@ function loadNotifications() {
                 console.log('Initial notifications loaded:', lastNotifications.length, lastNotifications.map(n => n.id));
             }
             
+            // Function to create notification item HTML
+            function createNotificationItem(notif, index) {
+                const item = document.createElement('li');
+                item.className = `dropdown-item notification-item ${notif.is_read ? '' : 'bg-primary bg-opacity-10'}`;
+                item.style.cursor = 'pointer';
+               
+               // Add animation for new notifications (first few items)
+               if (index < 3 && !notif.is_read) {
+                   item.classList.add('new-notification');
+               }
+               
+                // Используем уже отформатированную дату из API
+                const timeAgo = notif.created_at;
+               
+               // Get icon based on notification type
+               let icon = '🔔';
+               if (notif.type === 'fbs_new_order') {
+                   icon = '📦';
+               } else if (notif.type === 'version_update') {
+                   icon = '🔄';
+               } else if (notif.type === 'system') {
+                   icon = 'ℹ️';
+               }
+               
+               item.innerHTML = `
+                   <div class="d-flex align-items-center" style="position: relative;" onmouseover="this.querySelector('.delete-btn').style.opacity='1';" onmouseout="this.querySelector('.delete-btn').style.opacity='0.3';">
+                       <div class="flex-grow-1" style="cursor: pointer; padding-right: 40px;">
+                            <div class="fw-bold d-flex align-items-center gap-2">
+                                <span>${icon}</span>
+                                <span>${notif.title}</span>
+                            </div>
+                            <div class="small text-muted" style="word-wrap: break-word;">${notif.message.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g, '$2')}</div>
+                            ${notif.type === 'version_update' ? '<div class="mt-1"><a href="/changelog" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
+                            ${notif.type === 'fbs_new_order' ? '<div class="mt-1"><a href="/fbs" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
+                           <div class="small text-muted" style="font-size: 11px; color: gray !important; margin-top: 5px;">${timeAgo}</div>
+                       </div>
+                       <div class="d-flex align-items-center gap-2" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);">
+                           <button class="delete-btn btn btn-sm btn-outline-danger p-1" onclick="deleteNotification(${notif.id}, event)" title="Удалить уведомление" style="width: 20px; height: 20px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid #dc3545; background: #fff; transition: all 0.2s ease; opacity: 0.3;" onmouseover="this.style.opacity='1'; this.style.background='#dc3545'; this.style.color='#fff';" onmouseout="this.style.opacity='0.3'; this.style.background='#fff'; this.style.color='#dc3545';">
+                               ✕
+                           </button>
+                       </div>
+                   </div>
+               `;
+               
+               // Add click handler to the content area (not the delete button)
+               const contentArea = item.querySelector('.flex-grow-1');
+               contentArea.addEventListener('click', (e) => {
+                   // Don't handle click if it's on the "Подробнее" button
+                   if (e.target.tagName === 'A' || e.target.closest('a')) {
+                       return;
+                   }
+                   
+                   // Prevent dropdown from closing
+                   e.stopPropagation();
+                   
+                   if (!notif.is_read) {
+                       markNotificationAsRead(notif.id);
+                   }
+               });
+               
+               // Set message with innerHTML to support HTML links
+               const messageDiv = item.querySelector('.small.text-muted');
+               if (messageDiv && notif.message) {
+                   messageDiv.innerHTML = notif.message;
+               }
+               
+               return item;
+            }
+            
+            // Clear containers (only if they are visible)
+            if (container && container.closest('.d-none') === null) container.innerHTML = '';
+            if (mobileContainer && mobileContainer.closest('.d-lg-none') !== null) mobileContainer.innerHTML = '';
+            
             if (data.notifications.length === 0) {
-                container.innerHTML = '<li class="dropdown-item-text text-center text-muted">Нет уведомлений</li>';
+                const emptyMessage = '<li class="dropdown-item-text text-center text-muted">Нет уведомлений</li>';
+                if (container && container.closest('.d-none') === null) container.innerHTML = emptyMessage;
+                if (mobileContainer && mobileContainer.closest('.d-lg-none') !== null) mobileContainer.innerHTML = emptyMessage;
                 return;
             }
             
+            // Populate visible containers only
             data.notifications.forEach((notif, index) => {
-                 const item = document.createElement('li');
-                 item.className = `dropdown-item notification-item ${notif.is_read ? '' : 'bg-primary bg-opacity-10'}`;
-                 item.style.cursor = 'pointer';
-                
-                // Add animation for new notifications (first few items)
-                if (index < 3 && !notif.is_read) {
-                    item.classList.add('new-notification');
+                const item = createNotificationItem(notif, index);
+                if (container && container.closest('.d-none') === null) {
+                    container.appendChild(item.cloneNode(true));
                 }
-                
-                 // Используем уже отформатированную дату из API
-                 const timeAgo = notif.created_at;
-                
-                // Get icon based on notification type
-                let icon = '🔔';
-                if (notif.type === 'fbs_new_order') {
-                    icon = '📦';
-                } else if (notif.type === 'version_update') {
-                    icon = '🔄';
-                } else if (notif.type === 'system') {
-                    icon = 'ℹ️';
+                if (mobileContainer && mobileContainer.closest('.d-lg-none') !== null) {
+                    mobileContainer.appendChild(item);
                 }
-                
-                item.innerHTML = `
-                    <div class="d-flex align-items-center" style="position: relative;" onmouseover="this.querySelector('.delete-btn').style.opacity='1';" onmouseout="this.querySelector('.delete-btn').style.opacity='0.3';">
-                        <div class="flex-grow-1" style="cursor: pointer; padding-right: 40px;">
-                             <div class="fw-bold d-flex align-items-center gap-2">
-                                 <span>${icon}</span>
-                                 <span>${notif.title}</span>
-                             </div>
-                             <div class="small text-muted" style="word-wrap: break-word;">${notif.message.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g, '$2')}</div>
-                             ${notif.type === 'version_update' ? '<div class="mt-1"><a href="/changelog" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
-                             ${notif.type === 'fbs_new_order' ? '<div class="mt-1"><a href="/fbs" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
-                            <div class="small text-muted" style="font-size: 11px; color: gray !important; margin-top: 5px;">${timeAgo}</div>
-                        </div>
-                        <div class="d-flex align-items-center gap-2" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);">
-                            <button class="delete-btn btn btn-sm btn-outline-danger p-1" onclick="deleteNotification(${notif.id}, event)" title="Удалить уведомление" style="width: 20px; height: 20px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid #dc3545; background: #fff; transition: all 0.2s ease; opacity: 0.3;" onmouseover="this.style.opacity='1'; this.style.background='#dc3545'; this.style.color='#fff';" onmouseout="this.style.opacity='0.3'; this.style.background='#fff'; this.style.color='#dc3545';">
-                                ✕
-                            </button>
-                        </div>
-                    </div>
-                `;
-                
-                // Add click handler to the content area (not the delete button)
-                const contentArea = item.querySelector('.flex-grow-1');
-                contentArea.addEventListener('click', (e) => {
-                    // Don't handle click if it's on the "Подробнее" button
-                    if (e.target.tagName === 'A' || e.target.closest('a')) {
-                        return;
-                    }
-                    
-                    // Prevent dropdown from closing
-                    e.stopPropagation();
-                    
-                    if (!notif.is_read) {
-                        markNotificationAsRead(notif.id);
-                    }
-                });
-                
-                // Set message with innerHTML to support HTML links
-                const messageDiv = item.querySelector('.small.text-muted');
-                if (messageDiv && notif.message) {
-                    messageDiv.innerHTML = notif.message;
-                }
-                
-                container.appendChild(item);
             });
         })
         .catch(error => {
             console.error('Error loading notifications:', error);
             console.error('Error details:', error.message, error.stack);
-            document.getElementById('notificationsList').innerHTML = 
-                '<li class="dropdown-item-text text-center text-danger">Ошибка загрузки</li>';
+            const errorMessage = '<li class="dropdown-item-text text-center text-danger">Ошибка загрузки</li>';
+            if (document.getElementById('notificationsList')) {
+                document.getElementById('notificationsList').innerHTML = errorMessage;
+            }
+            if (document.getElementById('mobileNotificationsList')) {
+                document.getElementById('mobileNotificationsList').innerHTML = errorMessage;
+            }
         });
 }
 
@@ -415,7 +526,7 @@ function loadNotifications() {
      .then(response => response.json())
      .then(data => {
          if (data.success) {
-             // Find the notification item and update its background
+             // Find the notification item and update its background in both lists
              const notificationItems = document.querySelectorAll('.notification-item');
              notificationItems.forEach(item => {
                  const deleteBtn = item.querySelector(`[onclick*="${notificationId}"]`);
@@ -536,9 +647,19 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Set up dropdown event listeners
     const dropdown = document.getElementById('notificationsDropdown');
-    dropdown.addEventListener('show.bs.dropdown', function() {
-        loadNotifications();
-    });
+    const mobileDropdown = document.getElementById('mobileNotificationsDropdown');
+    
+    if (dropdown && dropdown.closest('.d-none') === null) {
+        dropdown.addEventListener('show.bs.dropdown', function() {
+            loadNotifications();
+        });
+    }
+    
+    if (mobileDropdown && mobileDropdown.closest('.d-lg-none') !== null) {
+        mobileDropdown.addEventListener('show.bs.dropdown', function() {
+            loadNotifications();
+        });
+    }
     
     // Check for new notifications every 1 minute
     notificationCheckInterval = setInterval(function() {
