@@ -249,69 +249,69 @@ let shownNotificationIds = new Set(); // Track which notifications have been sho
 
 // Function to check for new notifications and update UI
 function checkForNewNotifications() {
-    fetch('/api/notifications?limit=10')
+    // First get the count to check for new notifications
+    fetch('/api/notifications/count')
         .then(response => response.json())
         .then(data => {
-            const currentNotifications = data.notifications || [];
+            const currentCount = data.count || 0;
             
-            console.log('Checking notifications:', {
-                current: currentNotifications.length,
-                last: lastNotifications.length,
-                currentIds: currentNotifications.map(n => n.id),
-                lastIds: lastNotifications.map(n => n.id)
+            console.log('Checking notifications count:', {
+                current: currentCount,
+                last: lastNotificationCount
             });
             
-            // Check if there are new notifications that haven't been shown yet
-            if (currentNotifications.length > 0) {
-                // Find notifications that haven't been shown yet
-                const newNotifications = currentNotifications.filter(notif => 
-                    !shownNotificationIds.has(notif.id)
-                );
+            // Check if count increased (new notifications)
+            if (currentCount > lastNotificationCount && lastNotificationCount >= 0) {
+                console.log('New notifications detected! Count increased from', lastNotificationCount, 'to', currentCount);
                 
-                console.log('New notifications found:', newNotifications.length, newNotifications);
-                
-                if (newNotifications.length > 0) {
-                    console.log('Triggering notification alerts!');
-                    
-                    // Mark these notifications as shown
-                    newNotifications.forEach(notification => {
-                        shownNotificationIds.add(notification.id);
-                    });
-                    
+                // Only show alerts if this is not the first load
+                if (lastNotificationCount > 0) {
                     // Play notification sound
                     playNotificationSound();
                     
                     // Show browser notification
                     if (Notification.permission === 'granted') {
                         new Notification('Новое уведомление', {
-                            body: `У вас ${newNotifications.length} новое уведомление`,
+                            body: `У вас ${currentCount - lastNotificationCount} новое уведомление`,
                             icon: '/logo.png'
                         });
                     }
                     
                     // Add pulse and shake animation to badge
                     const badge = document.getElementById('notificationBadge');
-                    badge.classList.add('notification-badge-pulse', 'notification-badge-shake');
-                    setTimeout(() => {
-                        badge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
-                    }, 500);
+                    const mobileBadge = document.getElementById('mobileNotificationBadge');
+                    
+                    if (badge) {
+                        badge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            badge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                    if (mobileBadge) {
+                        mobileBadge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            mobileBadge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                } else {
+                    console.log('First load - not showing notification alerts');
                 }
             }
             
-            // Update last notifications
-            lastNotifications = currentNotifications;
+            // Update last notification count
+            lastNotificationCount = currentCount;
             
             // Update the UI if dropdown is open
             const dropdown = document.getElementById('notificationsDropdown');
             const mobileDropdown = document.getElementById('mobileNotificationsDropdown');
             
-            if ((dropdown && dropdown.closest('.d-none') === null && dropdown.classList.contains('show')) || 
-                (mobileDropdown && mobileDropdown.closest('.d-lg-none') !== null && mobileDropdown.classList.contains('show'))) {
+            if ((dropdown && dropdown.classList.contains('show')) || 
+                (mobileDropdown && mobileDropdown.classList.contains('show'))) {
                 loadNotifications();
             }
         })
         .catch(error => {
-            console.error('Error checking notifications:', error);
+            console.error('Error checking notifications count:', error);
             console.error('Error details:', error.message, error.stack);
         });
 }
@@ -388,32 +388,32 @@ function updateNotificationBadge() {
             }
             
             if (data.count > 0) {
-                // Update desktop badge (only if visible)
-                if (badge && badge.closest('.d-none') === null) {
+                // Update desktop badge
+                if (badge) {
                     badge.textContent = data.count;
                     badge.style.display = 'inline-block';
                 }
-                // Update mobile badge (only if visible)
-                if (mobileBadge && mobileBadge.closest('.d-lg-none') !== null) {
+                // Update mobile badge
+                if (mobileBadge) {
                     mobileBadge.textContent = data.count;
                     mobileBadge.style.display = 'inline-block';
                 }
                 
                 // Show buttons
-                if (deleteAllBtn && deleteAllBtn.closest('.d-none') === null) deleteAllBtn.style.display = 'inline-block';
-                if (mobileDeleteAllBtn && mobileDeleteAllBtn.closest('.d-lg-none') !== null) mobileDeleteAllBtn.style.display = 'inline-block';
-                if (markAllReadBtn && markAllReadBtn.closest('.d-none') === null) markAllReadBtn.style.display = 'inline-block';
-                if (mobileMarkAllReadBtn && mobileMarkAllReadBtn.closest('.d-lg-none') !== null) mobileMarkAllReadBtn.style.display = 'inline-block';
+                if (deleteAllBtn) deleteAllBtn.style.display = 'inline-block';
+                if (mobileDeleteAllBtn) mobileDeleteAllBtn.style.display = 'inline-block';
+                if (markAllReadBtn) markAllReadBtn.style.display = 'inline-block';
+                if (mobileMarkAllReadBtn) mobileMarkAllReadBtn.style.display = 'inline-block';
             } else {
                 // Hide badges
                 if (badge) badge.style.display = 'none';
                 if (mobileBadge) mobileBadge.style.display = 'none';
                 
                 // Show delete buttons but hide read buttons
-                if (deleteAllBtn && deleteAllBtn.closest('.d-none') === null) deleteAllBtn.style.display = 'inline-block';
-                if (mobileDeleteAllBtn && mobileDeleteAllBtn.closest('.d-lg-none') !== null) mobileDeleteAllBtn.style.display = 'inline-block';
-                if (markAllReadBtn && markAllReadBtn.closest('.d-none') === null) markAllReadBtn.style.display = 'none';
-                if (mobileMarkAllReadBtn && mobileMarkAllReadBtn.closest('.d-lg-none') !== null) mobileMarkAllReadBtn.style.display = 'none';
+                if (deleteAllBtn) deleteAllBtn.style.display = 'inline-block';
+                if (mobileDeleteAllBtn) mobileDeleteAllBtn.style.display = 'inline-block';
+                if (markAllReadBtn) markAllReadBtn.style.display = 'none';
+                if (mobileMarkAllReadBtn) mobileMarkAllReadBtn.style.display = 'none';
             }
             
             lastNotificationCount = data.count;
@@ -435,9 +435,11 @@ function loadNotifications() {
             if (lastNotifications.length === 0) {
                 lastNotifications = data.notifications || [];
                 // Mark all existing notifications as shown to prevent alerts on first load
-                data.notifications.forEach(notification => {
-                    shownNotificationIds.add(notification.id);
-                });
+                if (data.notifications && data.notifications.length > 0) {
+                    data.notifications.forEach(notification => {
+                        shownNotificationIds.add(notification.id);
+                    });
+                }
                 console.log('Initial notifications loaded:', lastNotifications.length, lastNotifications.map(n => n.id));
             }
             
@@ -510,24 +512,24 @@ function loadNotifications() {
                return item;
             }
             
-            // Clear containers (only if they are visible)
-            if (container && container.closest('.d-none') === null) container.innerHTML = '';
-            if (mobileContainer && mobileContainer.closest('.d-lg-none') !== null) mobileContainer.innerHTML = '';
+            // Clear containers
+            if (container) container.innerHTML = '';
+            if (mobileContainer) mobileContainer.innerHTML = '';
             
-            if (data.notifications.length === 0) {
+            if (!data.notifications || data.notifications.length === 0) {
                 const emptyMessage = '<li class="dropdown-item-text text-center text-muted">Нет уведомлений</li>';
-                if (container && container.closest('.d-none') === null) container.innerHTML = emptyMessage;
-                if (mobileContainer && mobileContainer.closest('.d-lg-none') !== null) mobileContainer.innerHTML = emptyMessage;
+                if (container) container.innerHTML = emptyMessage;
+                if (mobileContainer) mobileContainer.innerHTML = emptyMessage;
                 return;
             }
             
-            // Populate visible containers only
+            // Populate containers
             data.notifications.forEach((notif, index) => {
                 const item = createNotificationItem(notif, index);
-                if (container && container.closest('.d-none') === null) {
+                if (container) {
                     container.appendChild(item.cloneNode(true));
                 }
-                if (mobileContainer && mobileContainer.closest('.d-lg-none') !== null) {
+                if (mobileContainer) {
                     mobileContainer.appendChild(item);
                 }
             });
@@ -678,13 +680,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const dropdown = document.getElementById('notificationsDropdown');
     const mobileDropdown = document.getElementById('mobileNotificationsDropdown');
     
-    if (dropdown && dropdown.closest('.d-none') === null) {
+    if (dropdown) {
         dropdown.addEventListener('show.bs.dropdown', function() {
             loadNotifications();
         });
     }
     
-    if (mobileDropdown && mobileDropdown.closest('.d-lg-none') !== null) {
+    if (mobileDropdown) {
         mobileDropdown.addEventListener('show.bs.dropdown', function() {
             loadNotifications();
         });

@@ -2121,10 +2121,10 @@ def check_version_updates():
                 with open(version_cache_file, 'w', encoding='utf-8') as f:
                     json.dump(cache_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
-                pass
+                print(f"Error updating version cache: {e}")
                 
         except Exception as e:
-            pass
+            print(f"Error in check_version_updates: {e}")
 
 
 # Global variable to track monitoring state
