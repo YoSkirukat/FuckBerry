@@ -6,6 +6,7 @@
   <title>Отчёт по заказам со складов</title>
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" />
   <link rel="stylesheet" href="/static/styles.css" />
   <style>
     /* скрываем чёрные встроенные иконки календаря */
@@ -218,6 +219,20 @@
       </div>
       <div class="col-sm-6 col-md-2 d-flex align-items-end">
         <button id="exportExcelBtn" class="btn btn-success w-100" type="button" {% if not items or not items|length %}disabled{% endif %}>📊 Excel</button>
+      </div>
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="showAllProducts" name="show_all_products" disabled>
+          <label class="form-check-label" for="showAllProducts">
+            Показать весь товар
+            <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Отобразить весь товар на выбранном складе, в том числе который не продавался" style="margin-left: 5px; color: #6c757d;"></i>
+          </label>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-2 offset-md-6 d-flex align-items-end justify-content-end">
+        <small class="text-muted" id="stocksUpdateInfo" style="display: none;">
+          Остатки обновлены: <span id="stocksUpdatedAt">-</span>
+        </small>
       </div>
     </form>
 
@@ -651,8 +666,10 @@
         // При загрузке отчёта всегда запрашиваем агрегат по всем складам,
         // а затем фильтруем локально при смене склада
         params.set('warehouse', '');
+        console.log('DEBUG: reloadReport params:', params.toString());
         const res = await fetch(`/api/report/sales?${params.toString()}`);
         const data = await res.json();
+        console.log('DEBUG: reloadReport response:', data);
         reportMatrix = data.matrix || reportMatrix || null;
         const tbody = document.getElementById('reportBody');
         tbody.innerHTML = '';
@@ -708,6 +725,12 @@
         if (exportBtn) {
           exportBtn.disabled = false;
         }
+        
+        // Активируем галочку "Показать весь товар" после загрузки данных
+        const showAllCheckbox = document.getElementById('showAllProducts');
+        if (showAllCheckbox) {
+          showAllCheckbox.disabled = false;
+        }
       } catch(err){
         console.error(err);
         btn.disabled = false;
@@ -719,6 +742,18 @@
     if (form && btn){
       form.addEventListener('submit', (e) => { e.preventDefault(); reloadReport(); });
     }
+    
+    // Обработчик для чекбокса "Показать весь товар"
+    const showAllCheckbox = document.getElementById('showAllProducts');
+    if (showAllCheckbox) {
+      showAllCheckbox.addEventListener('change', () => {
+        console.log('DEBUG: showAllProducts checkbox changed:', showAllCheckbox.checked);
+        if (reportMatrix) {
+          // Если данные уже загружены, перезагружаем с новым параметром
+          reloadReport();
+        }
+      });
+    }
     const whSel = document.getElementById('rWarehouse');
     if (whSel){
       whSel.addEventListener('change', () => {
@@ -727,6 +762,7 @@
         const tbody = document.getElementById('reportBody');
         tbody.innerHTML = '';
         const target = whSel.value || '';
+        const showAll = document.getElementById('showAllProducts')?.checked || false;
         const items = reportMatrix.map(row => {
           const bywh = row.by_wh || {};
           const qty = target ? (bywh[target] || 0) : (row.total || 0);
@@ -751,7 +787,16 @@
           }
           
           return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo, stock_qty };
-        }).filter(it => (it.qty || 0) > 0).sort((a,b)=> (b.qty||0)-(a.qty||0));
+        }).filter(it => {
+          // Show items with sales OR (if show_all) items with stocks
+          return (it.qty || 0) > 0 || (showAll && (it.stock_qty || 0) > 0);
+        }).sort((a,b) => {
+          // Sort by quantity first, then by stock quantity
+          const qtyA = a.qty || 0;
+          const qtyB = b.qty || 0;
+          if (qtyA !== qtyB) return qtyB - qtyA;
+          return (b.stock_qty || 0) - (a.stock_qty || 0);
+        });
         items.forEach((it, idx) => {
           const tr = document.createElement('tr');
           tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>`;
@@ -866,6 +911,38 @@
     if (exportBtn) {
       exportBtn.addEventListener('click', exportToExcel);
     }
+
+    // Функция для загрузки времени обновления остатков
+    async function loadStocksUpdateTime() {
+      try {
+        const res = await fetch('/api/stocks/update-time');
+        if (res.ok) {
+          const data = await res.json();
+          const updateInfo = document.getElementById('stocksUpdateInfo');
+          const updateTime = document.getElementById('stocksUpdatedAt');
+          if (updateInfo && updateTime && data.updated_at) {
+            updateTime.textContent = data.updated_at;
+            updateInfo.style.display = 'block';
+          }
+        }
+      } catch (err) {
+        console.log('Не удалось загрузить время обновления остатков:', err);
+      }
+    }
+
+    // Инициализация тултипов Bootstrap
+    function initTooltips() {
+      const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+      tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+      });
+    }
+
+    // Загружаем время обновления остатков при загрузке страницы
+    loadStocksUpdateTime();
+    
+    // Инициализируем тултипы при загрузке страницы
+    initTooltips();
   </script>
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>

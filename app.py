@@ -4289,6 +4289,11 @@ def api_top_products_orders():
 def report_sales_page():
     cached = load_last_results()
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    
+    # Обновляем остатки если нужно (если кэш устарел)
+    if token and current_user.is_authenticated:
+        update_stocks_if_needed(current_user.id, token, force_update=False)
+    
     # Страница по умолчанию открывается пустой: без данных, пока пользователь не задаст период и не нажмёт Загрузить
     if not request.args.get("date_from") and not request.args.get("date_to"):
         return render_template(
@@ -4385,27 +4390,76 @@ def report_sales_page():
 
     # Load stocks data for current user - сохраняем остатки по складам
     stocks_by_warehouse = {}
+    stocks_metadata = {}  # Дополнительная информация о товарах из остатков
     try:
         stocks_cached = load_stocks_cache()
+        # print(f"DEBUG: stocks_cached loaded: {stocks_cached is not None}")
         if stocks_cached and stocks_cached.get("_user_id"):
-            for stock_item in stocks_cached.get("items", []):
+            # print(f"DEBUG: stocks_cached user_id: {stocks_cached.get('_user_id')}, current_user.id: {current_user.id if current_user.is_authenticated else 'not authenticated'}")
+            items = stocks_cached.get("items", [])
+            # print(f"DEBUG: stocks items count: {len(items)}")
+            for stock_item in items:
                 barcode = stock_item.get("barcode")
                 stock_warehouse = stock_item.get("warehouse", "")
                 qty = int(stock_item.get("qty", 0) or 0)
+                vendor_code = stock_item.get("vendor_code", "")
+                nm_id = stock_item.get("nm_id")
                 
-                if barcode and stock_warehouse:
+                if barcode:
                     if barcode not in stocks_by_warehouse:
                         stocks_by_warehouse[barcode] = {}
-                    stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
-    except Exception:
+                    if barcode not in stocks_metadata:
+                        stocks_metadata[barcode] = {
+                            "vendor_code": vendor_code,
+                            "nm_id": nm_id,
+                            "barcode": barcode
+                        }
+                    
+                    if stock_warehouse:
+                        stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
+            # print(f"DEBUG: stocks_by_warehouse loaded: {len(stocks_by_warehouse)} barcodes")
+        # else:
+            # print("DEBUG: No stocks cache or wrong user")
+    except Exception as e:
+        # print(f"DEBUG: Error loading stocks: {e}")
         stocks_by_warehouse = {}
+        stocks_metadata = {}
 
-    def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
+    def _build_items(target_wh: str | None, show_all: bool = False) -> List[Dict[str, Any]]:
         items_local: List[Dict[str, Any]] = []
-        for prod, total in counts_total.items():
-            qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
-            if qty > 0:
-                s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+        
+        # Get all products that have sales or stocks
+        all_products = set(counts_total.keys())
+        if show_all:
+            # Add ALL products from stocks metadata (including those with zero stock)
+            for barcode, metadata in stocks_metadata.items():
+                # Find product by barcode
+                found_in_sales = False
+                for prod, prod_barcode in barcode_by_product.items():
+                    if prod_barcode == barcode:
+                        all_products.add(prod)
+                        found_in_sales = True
+                        break
+                
+                # If barcode not found in sales, create a virtual product entry
+                if not found_in_sales:
+                    # Use vendor_code from stocks metadata
+                    virtual_prod = metadata["vendor_code"] or f"Товар с баркодом {barcode}"
+                    # Add to mappings
+                    barcode_by_product[virtual_prod] = barcode
+                    if metadata["nm_id"]:
+                        nm_by_product[virtual_prod] = metadata["nm_id"]
+                    if metadata["vendor_code"]:
+                        supplier_article_by_product[virtual_prod] = metadata["vendor_code"]
+                    all_products.add(virtual_prod)
+            # print(f"DEBUG: show_all=True, total products with sales: {len(counts_total)}, total products with stocks: {len(stocks_by_warehouse)}, all_products: {len(all_products)}")
+        
+        for prod in all_products:
+            qty = (by_wh.get(prod, {}).get(target_wh, 0) if target_wh else counts_total.get(prod, 0))
+            
+            # Include items with sales OR (if show_all) items with stocks
+            if qty > 0 or (show_all and prod in barcode_by_product):
+                s = (by_wh_sum.get(prod, {}).get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
                 # Calculate stock quantity for the target warehouse
                 barcode = barcode_by_product.get(prod)
                 stock_qty = 0
@@ -4421,19 +4475,25 @@ def report_sales_page():
                         # If no warehouse selected, sum all warehouses
                         stock_qty = sum(stocks_by_warehouse[barcode].values())
                 
-                items_local.append({
-                    "product": prod,
-                    "qty": qty,
-                    "nm_id": nm_by_product.get(prod),
-                    "barcode": barcode,
-                    "supplier_article": supplier_article_by_product.get(prod),
-                    "sum": round(float(s or 0.0), 2),
-                    "photo": nm_to_photo.get(nm_by_product.get(prod)),
-                    "stock_qty": stock_qty
-                })
-        items_local.sort(key=lambda x: x["qty"], reverse=True)
+                # Only include if has sales or (if show_all) has any stock data
+                if qty > 0 or (show_all and prod in barcode_by_product):
+                    items_local.append({
+                        "product": prod,
+                        "qty": qty,
+                        "nm_id": nm_by_product.get(prod),
+                        "barcode": barcode,
+                        "supplier_article": supplier_article_by_product.get(prod),
+                        "sum": round(float(s or 0.0), 2),
+                        "photo": nm_to_photo.get(nm_by_product.get(prod)),
+                        "stock_qty": stock_qty
+                    })
+        
+        # Sort by quantity (descending), then by stock quantity (descending)
+        items_local.sort(key=lambda x: (x["qty"], x["stock_qty"]), reverse=True)
+        # print(f"DEBUG: _build_items returning {len(items_local)} items, show_all={show_all}")
         return items_local
-    items = _build_items(warehouse) if orders else []
+    show_all = request.args.get("show_all_products") == "on"
+    items = _build_items(warehouse, show_all) if orders else []
     matrix = [{
         "product": p,
         "nm_id": nm_by_product.get(p),
@@ -4465,6 +4525,11 @@ def report_sales_page():
 def api_report_sales():
     cached = load_last_results()
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    
+    # Обновляем остатки если нужно (если кэш устарел)
+    if token and current_user.is_authenticated:
+        update_stocks_if_needed(current_user.id, token, force_update=False)
+    
     req_from = (request.args.get("date_from") or "").strip()
     req_to = (request.args.get("date_to") or "").strip()
     warehouse = (request.args.get("warehouse") or "").strip() or None
@@ -4533,6 +4598,7 @@ def api_report_sales():
 
         # Load stocks data for current user - сохраняем остатки по складам
         stocks_by_warehouse = {}
+        stocks_metadata = {}  # Дополнительная информация о товарах из остатков
         try:
             stocks_cached = load_stocks_cache()
             if stocks_cached and stocks_cached.get("_user_id"):
@@ -4540,20 +4606,59 @@ def api_report_sales():
                     barcode = stock_item.get("barcode")
                     stock_warehouse = stock_item.get("warehouse", "")
                     qty = int(stock_item.get("qty", 0) or 0)
+                    vendor_code = stock_item.get("vendor_code", "")
+                    nm_id = stock_item.get("nm_id")
                     
-                    if barcode and stock_warehouse:
+                    if barcode:
                         if barcode not in stocks_by_warehouse:
                             stocks_by_warehouse[barcode] = {}
-                        stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
+                        if barcode not in stocks_metadata:
+                            stocks_metadata[barcode] = {
+                                "vendor_code": vendor_code,
+                                "nm_id": nm_id,
+                                "barcode": barcode
+                            }
+                        
+                        if stock_warehouse:
+                            stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
         except Exception:
             stocks_by_warehouse = {}
+            stocks_metadata = {}
 
-        def build_items_for_wh(target_wh: str | None) -> List[Dict[str, Any]]:
+        def build_items_for_wh(target_wh: str | None, show_all: bool = False) -> List[Dict[str, Any]]:
             items_local: List[Dict[str, Any]] = []
-            for prod, total in counts_total.items():
-                qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
-                if qty > 0:
-                    s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+            
+            # Get all products that have sales or stocks
+            all_products = set(counts_total.keys())
+            if show_all:
+                # Add ALL products from stocks metadata (including those with zero stock)
+                for barcode, metadata in stocks_metadata.items():
+                    # Find product by barcode
+                    found_in_sales = False
+                    for prod, prod_barcode in barcode_by_product.items():
+                        if prod_barcode == barcode:
+                            all_products.add(prod)
+                            found_in_sales = True
+                            break
+                    
+                    # If barcode not found in sales, create a virtual product entry
+                    if not found_in_sales:
+                        # Use vendor_code from stocks metadata
+                        virtual_prod = metadata["vendor_code"] or f"Товар с баркодом {barcode}"
+                        # Add to mappings
+                        barcode_by_product[virtual_prod] = barcode
+                        if metadata["nm_id"]:
+                            nm_by_product[virtual_prod] = metadata["nm_id"]
+                        if metadata["vendor_code"]:
+                            supplier_article_by_product[virtual_prod] = metadata["vendor_code"]
+                        all_products.add(virtual_prod)
+            
+            for prod in all_products:
+                qty = (by_wh.get(prod, {}).get(target_wh, 0) if target_wh else counts_total.get(prod, 0))
+                
+                # Include items with sales OR (if show_all) items with stocks
+                if qty > 0 or (show_all and prod in barcode_by_product):
+                    s = (by_wh_sum.get(prod, {}).get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
                     # Calculate stock quantity for the target warehouse
                     barcode = barcode_by_product.get(prod)
                     stock_qty = 0
@@ -4569,19 +4674,24 @@ def api_report_sales():
                             # If no warehouse selected, sum all warehouses
                             stock_qty = sum(stocks_by_warehouse[barcode].values())
                     
-                    items_local.append({
-                        "product": prod,
-                        "qty": qty,
-                        "nm_id": nm_by_product.get(prod),
-                        "barcode": barcode,
-                        "supplier_article": supplier_article_by_product.get(prod),
-                        "sum": round(float(s or 0.0), 2),
-                        "photo": nm_to_photo.get(nm_by_product.get(prod)),
-                        "stock_qty": stock_qty
-                    })
-            items_local.sort(key=lambda x: x["qty"], reverse=True)
+                    # Only include if has sales or (if show_all) has any stock data
+                    if qty > 0 or (show_all and prod in barcode_by_product):
+                        items_local.append({
+                            "product": prod,
+                            "qty": qty,
+                            "nm_id": nm_by_product.get(prod),
+                            "barcode": barcode,
+                            "supplier_article": supplier_article_by_product.get(prod),
+                            "sum": round(float(s or 0.0), 2),
+                            "photo": nm_to_photo.get(nm_by_product.get(prod)),
+                            "stock_qty": stock_qty
+                        })
+            
+            # Sort by quantity (descending), then by stock quantity (descending)
+            items_local.sort(key=lambda x: (x["qty"], x["stock_qty"]), reverse=True)
             return items_local
-        items = build_items_for_wh(warehouse)
+        show_all = request.args.get("show_all_products") == "on"
+        items = build_items_for_wh(warehouse, show_all)
         total_qty = sum(int(it.get("qty") or 0) for it in items)
         matrix = [{
             "product": p,
@@ -4682,7 +4792,7 @@ def api_report_sales_export():
             for prod, total in counts_total.items():
                 qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
                 if qty > 0:
-                    s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                    s = (by_wh_sum.get(prod, {}).get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
                     items_local.append({
                         "product": prod,
                         "qty": qty,
@@ -6122,6 +6232,86 @@ def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "warehouse": r.get("warehouseName") or r.get("warehouse") or r.get("warehouse_name"),
         })
     return items
+
+
+def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False) -> bool:
+    """
+    Обновляет остатки если нужно (если кэш устарел или принудительно)
+    Возвращает True если остатки были обновлены, False если использовался кэш
+    """
+    try:
+        cached = load_stocks_cache()
+        should_refresh = force_update
+        
+        if not should_refresh and cached and cached.get("_user_id") == user_id:
+            # Проверяем, когда последний раз обновлялись остатки
+            updated_at = cached.get("updated_at")
+            if updated_at:
+                try:
+                    from datetime import datetime
+                    # Парсим время обновления из кэша
+                    cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
+                    # Если остатки обновлялись менее 10 минут назад, используем кэш
+                    if (datetime.now() - cache_time).total_seconds() < 600:  # 10 минут
+                        should_refresh = False
+                        print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Используем кэшированные остатки ===")
+                        print(f"Кэш обновлен: {updated_at}")
+                    else:
+                        should_refresh = True
+                        print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Кэш устарел, обновляем остатки ===")
+                except Exception as e:
+                    print(f"Ошибка парсинга времени кэша: {e}")
+                    should_refresh = True
+        else:
+            should_refresh = True
+            print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Нет кэша или принудительное обновление ===")
+        
+        if should_refresh:
+            print(f"Обновляем остатки для пользователя {user_id}")
+            try:
+                raw_stocks = fetch_stocks_resilient(token)
+                stocks = normalize_stocks(raw_stocks)
+                from datetime import datetime
+                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                save_stocks_cache({"items": stocks, "_user_id": user_id, "updated_at": now_str})
+                print(f"Остатки обновлены для отчета по заказам: {len(stocks)} товаров в {now_str}")
+                return True
+            except requests.HTTPError as e:
+                if e.response and e.response.status_code == 429:
+                    print("=== ОТЧЕТ ПО ЗАКАЗАМ: Ошибка 429, используем кэш ===")
+                    if cached and cached.get("_user_id") == user_id:
+                        print(f"Используем кэшированные остатки: {len(cached.get('items', []))} товаров")
+                        return False
+                    else:
+                        print("Нет кэша и ошибка 429 - не можем получить остатки")
+                        return False
+                else:
+                    print(f"Ошибка при обновлении остатков: {e}")
+                    return False
+        else:
+            return False
+            
+    except Exception as e:
+        print(f"Ошибка в update_stocks_if_needed: {e}")
+        return False
+
+
+@app.route("/api/stocks/update-time", methods=["GET"])
+@login_required
+def api_stocks_update_time():
+    """API для получения времени последнего обновления остатков"""
+    try:
+        cached = load_stocks_cache()
+        if cached and cached.get("_user_id") == current_user.id:
+            return jsonify({
+                "updated_at": cached.get("updated_at", "Неизвестно")
+            })
+        else:
+            return jsonify({
+                "updated_at": "Остатки не загружены"
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/stocks", methods=["GET"]) 
