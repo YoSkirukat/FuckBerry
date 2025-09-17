@@ -1721,6 +1721,9 @@
       
       // Добавляем обработчик сортировки
       setupSorting();
+      
+      // Применяем настройки видимости колонок
+      applyTableColumnSettings();
     }
     
     function setupSorting() {
@@ -1829,6 +1832,9 @@
       
       // Перерисовываем таблицу
       renderTableFromData(sortedProducts);
+      
+      // Применяем настройки видимости колонок после перерисовки
+      applyTableColumnSettings();
     }
     
     function renderTableFromData(data) {
@@ -2180,7 +2186,7 @@
         const link = document.createElement('a');
         link.href = url;
         
-        // Генерируем имя файла
+        // Генерируем имя файла с общим количеством товаров
         const now = new Date();
         const day = String(now.getDate()).padStart(2, '0');
         const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -2188,8 +2194,9 @@
         const dateStr = `${day}.${month}.${year}`;
         const hours = String(now.getHours()).padStart(2, '0');
         const minutes = String(now.getMinutes()).padStart(2, '0');
-        const timeStr = `${hours}:${minutes}`;
-        const fileName = `${warehouseName}_${dateStr}_${timeStr}.xls`;
+        const timeStr = `${hours}_${minutes}`;
+        const totalQuantity = productsToExport.reduce((sum, item) => sum + Math.round(item.toSupply), 0);
+        const fileName = `${warehouseName}_${dateStr}_${timeStr}_(${totalQuantity}).xls`;
         
         link.download = fileName;
         link.style.visibility = 'hidden';

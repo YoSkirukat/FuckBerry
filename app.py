@@ -3362,11 +3362,12 @@ def api_fbw_planning_export_excel():
         workbook.save(output)
         output.seek(0)
         
-        # Генерируем имя файла
+        # Генерируем имя файла с общим количеством товаров
         now = datetime.now()
         day = now.strftime("%d.%m.%Y")
-        time = now.strftime("%H:%M")
-        filename = f"{warehouse_name}_{day}_{time}.xls"
+        time = now.strftime("%H_%M")
+        total_quantity = sum(round(p.get('toSupply', 0)) for p in products_to_export)
+        filename = f"{warehouse_name}_{day}_{time}_({total_quantity}).xls"
         
         return send_file(
             output,
