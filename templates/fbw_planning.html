@@ -906,8 +906,9 @@
         const endValue = this.endInput?.value || '';
         
         if (startValue && endValue) {
-          this.selectedStart = new Date(startValue);
-          this.selectedEnd = new Date(endValue);
+          // Используем локальный парсинг, чтобы избежать смещения на -1 день
+          this.selectedStart = this.parseLocalDate(startValue) || new Date(startValue);
+          this.selectedEnd = this.parseLocalDate(endValue) || new Date(endValue);
           this.updateInputDisplay();
         } else {
           // Устанавливаем даты по умолчанию
@@ -1117,6 +1118,11 @@
         this.updateInputDisplay();
         this.updateHiddenInputs();
         this.renderCalendar();
+        
+        // Сохраняем параметры планирования при выборе дат
+        if (typeof savePlanningParameters === 'function') {
+          savePlanningParameters();
+        }
       }
       
       updateInputDisplay() {
@@ -1146,8 +1152,20 @@
         return date.toLocaleDateString('ru-RU');
       }
       
+      // Возвращаем YYYY-MM-DD в ЛОКАЛЬНОЙ зоне, без смещения UTC
       formatDateForInput(date) {
-        return date.toISOString().split('T')[0];
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      }
+
+      // Парсим YYYY-MM-DD как локальную дату (без смещения по часовому поясу)
+      parseLocalDate(ymd) {
+        if (!ymd) return null;
+        const [y, m, d] = ymd.split('-').map(Number);
+        if (!y || !m || !d) return null;
+        return new Date(y, m - 1, d);
       }
       
       resetSelection() {
@@ -1162,6 +1180,11 @@
       applySelection() {
         this.hideCalendar();
         this.validateDates();
+        
+        // Сохраняем параметры планирования после выбора периода
+        if (typeof savePlanningParameters === 'function') {
+          savePlanningParameters();
+        }
       }
       
       validateDates() {
@@ -1223,7 +1246,15 @@
       loadWarehouses();
       
       // Инициализируем календарь периода продаж
-      new SalesPeriodCalendar();
+      window.salesPeriodCalendar = new SalesPeriodCalendar();
+      
+      // Загружаем сохраненные параметры планирования
+      loadPlanningParameters();
+      
+      // Добавляем обработчики для сохранения параметров при изменении
+      document.getElementById('warehouseSearch').addEventListener('input', savePlanningParameters);
+      document.getElementById('planningDays').addEventListener('change', savePlanningParameters);
+      document.getElementById('supplyDate').addEventListener('change', savePlanningParameters);
       
       // Инициализируем модальное окно
       pendingSuppliesModal = new bootstrap.Modal(document.getElementById('pendingSuppliesModal'));
@@ -1282,11 +1313,14 @@
         this.blur();
       });
       
-      // Дата поставки по умолчанию - через 7 дней
+      // Дата поставки по умолчанию - через 7 дней (только если не восстановлена из сохраненных настроек)
       const today = new Date();
       const supplyDate = new Date(today);
       supplyDate.setDate(today.getDate() + 7);
-      document.getElementById('supplyDate').value = supplyDate.toISOString().split('T')[0];
+      const supplyDateInputEl = document.getElementById('supplyDate');
+      if (supplyDateInputEl && !supplyDateInputEl.value) {
+        supplyDateInputEl.value = supplyDate.toISOString().split('T')[0];
+      }
       
       // Обработчик формы
       document.getElementById('planningForm').addEventListener('submit', function(e) {
@@ -1350,6 +1384,9 @@
           alert('Дата начала периода должна быть раньше даты окончания');
           return;
         }
+        
+        // Сохраняем параметры планирования
+        savePlanningParameters();
         
         // Показываем результат и загружаем данные
         showResults();
@@ -2082,6 +2119,11 @@
           
           console.log(`Выбран склад: ${warehouseName} (ID: ${warehouseId})`);
           console.log(`Скрытый select value: ${hiddenSelect.value}`);
+          
+          // Сохраняем параметры планирования после выбора склада
+          if (typeof savePlanningParameters === 'function') {
+            savePlanningParameters();
+          }
           console.log(`Поле поиска value: ${searchInput.value}`);
         }
       });
@@ -2133,6 +2175,70 @@
           }
         }
       });
+    }
+    
+    // Функции для сохранения и загрузки параметров планирования
+    function savePlanningParameters() {
+      const parameters = {
+        warehouse: document.getElementById('warehouse').value,
+        warehouseSearch: document.getElementById('warehouseSearch').value,
+        salesPeriodFrom: document.getElementById('salesPeriodFrom').value,
+        salesPeriodTo: document.getElementById('salesPeriodTo').value,
+        salesPeriodRange: document.getElementById('salesPeriodRange').value,
+        planningDays: document.getElementById('planningDays').value,
+        supplyDate: document.getElementById('supplyDate').value
+      };
+      
+      localStorage.setItem('fbw_planning_parameters', JSON.stringify(parameters));
+      console.log('Параметры планирования сохранены:', parameters);
+    }
+    
+    function loadPlanningParameters() {
+      const saved = localStorage.getItem('fbw_planning_parameters');
+      if (!saved) return;
+      
+      try {
+        const parameters = JSON.parse(saved);
+        console.log('Загружаем сохраненные параметры:', parameters);
+        
+        // Восстанавливаем параметры
+        if (parameters.warehouse) {
+          document.getElementById('warehouse').value = parameters.warehouse;
+        }
+        if (parameters.warehouseSearch) {
+          document.getElementById('warehouseSearch').value = parameters.warehouseSearch;
+        }
+        if (parameters.salesPeriodFrom) {
+          document.getElementById('salesPeriodFrom').value = parameters.salesPeriodFrom;
+        }
+        if (parameters.salesPeriodTo) {
+          document.getElementById('salesPeriodTo').value = parameters.salesPeriodTo;
+        }
+        if (parameters.salesPeriodRange) {
+          document.getElementById('salesPeriodRange').value = parameters.salesPeriodRange;
+        }
+        if (parameters.planningDays) {
+          document.getElementById('planningDays').value = parameters.planningDays;
+        }
+        if (parameters.supplyDate) {
+          document.getElementById('supplyDate').value = parameters.supplyDate;
+        }
+        
+        console.log('Параметры планирования восстановлены');
+        
+        // Обновляем календарь периода продаж после загрузки параметров
+        if (window.salesPeriodCalendar && parameters.salesPeriodFrom && parameters.salesPeriodTo) {
+          // Применяем локальный парсинг, чтобы не было смещения дат
+          const start = window.salesPeriodCalendar.parseLocalDate(parameters.salesPeriodFrom) || new Date(parameters.salesPeriodFrom);
+          const end = window.salesPeriodCalendar.parseLocalDate(parameters.salesPeriodTo) || new Date(parameters.salesPeriodTo);
+          window.salesPeriodCalendar.selectedStart = start;
+          window.salesPeriodCalendar.selectedEnd = end;
+          window.salesPeriodCalendar.updateInputDisplay();
+          window.salesPeriodCalendar.updateHiddenInputs();
+        }
+      } catch (error) {
+        console.error('Ошибка при загрузке параметров:', error);
+      }
     }
     
     // Функция экспорта в Excel
