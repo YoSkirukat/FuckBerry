@@ -4515,6 +4515,152 @@ def api_report_sales():
         return jsonify({"items": [], "error": str(exc)}), 200
 
 
+@app.route("/api/report/sales/export", methods=["GET"])
+@login_required
+def api_report_sales_export():
+    """Экспорт отчета по продажам в Excel формат"""
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+    
+    cached = load_last_results()
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    warehouse = (request.args.get("warehouse") or "").strip() or None
+    
+    try:
+        if req_from and req_to and token:
+            if (
+                cached
+                and current_user.is_authenticated
+                and cached.get("_user_id") == current_user.id
+                and cached.get("date_from") == req_from
+                and cached.get("date_to") == req_to
+            ):
+                orders = cached.get("orders", [])
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            else:
+                raw_orders = fetch_orders_range(token, req_from, req_to)
+                orders = to_rows(raw_orders, req_from, req_to)
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+        else:
+            orders = (cached or {}).get("orders", [])
+            date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
+            date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
+        
+        # Build matrix for filtering
+        counts_total: Dict[str, int] = defaultdict(int)
+        by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        revenue_total: Dict[str, float] = defaultdict(float)
+        by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        nm_by_product: Dict[str, Any] = {}
+        barcode_by_product: Dict[str, Any] = {}
+        supplier_article_by_product: Dict[str, Any] = {}
+        warehouses = set()
+        
+        for r in orders:
+            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
+            wh = str(r.get("Склад отгрузки") or "Не указан")
+            warehouses.add(wh)
+            counts_total[prod] += 1
+            by_wh[prod][wh] += 1
+            try:
+                price = float(r.get("Цена с учетом всех скидок") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            revenue_total[prod] += price
+            by_wh_sum[prod][wh] += price
+            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+            if prod not in nm_by_product and nmv:
+                nm_by_product[prod] = nmv
+            barcode = r.get("Баркод") or r.get("barcode")
+            if prod not in barcode_by_product and barcode:
+                barcode_by_product[prod] = barcode
+            supplier_article = r.get("Артикул продавца") or r.get("supplier_article")
+            if prod not in supplier_article_by_product and supplier_article:
+                supplier_article_by_product[prod] = supplier_article
+        
+        # Build items for export
+        def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
+            items_local: List[Dict[str, Any]] = []
+            for prod, total in counts_total.items():
+                qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
+                if qty > 0:
+                    s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                    items_local.append({
+                        "product": prod,
+                        "qty": qty,
+                        "nm_id": nm_by_product.get(prod),
+                        "barcode": barcode_by_product.get(prod),
+                        "supplier_article": supplier_article_by_product.get(prod),
+                        "sum": round(float(s or 0.0), 2),
+                    })
+            items_local.sort(key=lambda x: x["qty"], reverse=True)
+            return items_local
+        
+        items = _build_items(warehouse) if orders else []
+        
+        # Create Excel workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Отчет по заказам"
+        
+        # Headers
+        headers = ["Артикул WB", "Баркод", "Товар", "Кол-во", "Сумма"]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal='center')
+            cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+        
+        # Data rows
+        for row, item in enumerate(items, 2):
+            ws.cell(row=row, column=1, value=item["nm_id"] or "")
+            ws.cell(row=row, column=2, value=item["barcode"] or "")
+            ws.cell(row=row, column=3, value=item["product"])
+            ws.cell(row=row, column=4, value=item["qty"])
+            ws.cell(row=row, column=5, value=item["sum"])
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Generate filename
+        now = datetime.now()
+        warehouse_name = warehouse if warehouse else "Все"
+        filename = f"Отчёт по заказам со складов ({warehouse_name})_{now.strftime('%d.%m.%Y_%H_%M')}.xlsx"
+        
+        # Save to BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        # Encode filename for HTTP headers
+        import urllib.parse
+        encoded_filename = urllib.parse.quote(filename.encode('utf-8'))
+        
+        return output.getvalue(), 200, {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': f'attachment; filename*=UTF-8\'\'{encoded_filename}'
+        }
+        
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/report/finance", methods=["GET"]) 
 @login_required
 def report_finance_page():

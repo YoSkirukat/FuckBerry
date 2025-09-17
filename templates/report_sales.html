@@ -216,6 +216,9 @@
       <div class="col-sm-6 col-md-2 d-flex align-items-end">
         <button id="reportLoadBtn" class="btn btn-primary w-100" type="submit">Загрузить</button>
       </div>
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <button id="exportExcelBtn" class="btn btn-success w-100" type="button" {% if not items or not items|length %}disabled{% endif %}>📊 Excel</button>
+      </div>
     </form>
 
     <div class="card">
@@ -693,6 +696,12 @@
           if (whSel.selectedIndex < 0) whSel.selectedIndex = 0;
         }
         btn.textContent = prev; btn.disabled = false;
+        
+        // Активируем кнопку экспорта после загрузки данных
+        const exportBtn = document.getElementById('exportExcelBtn');
+        if (exportBtn) {
+          exportBtn.disabled = false;
+        }
       } catch(err){
         console.error(err);
         btn.disabled = false;
@@ -761,6 +770,77 @@
       const dt = document.getElementById('salesDateTo')?.value;
       if (df && dt && !reportMatrix){ reloadReport(); }
     })();
+
+    // Функция экспорта в Excel
+    async function exportToExcel() {
+      const form = document.querySelector('form[action="/report/sales"]');
+      const btn = document.getElementById('exportExcelBtn');
+      if (!form || !btn) return;
+      
+      try {
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Экспорт...';
+        
+        const params = new URLSearchParams(new FormData(form));
+        console.log('Экспорт: отправляем запрос с параметрами:', params.toString());
+        
+        const res = await fetch(`/api/report/sales/export?${params.toString()}`);
+        console.log('Экспорт: получен ответ', res.status, res.statusText);
+        
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('Экспорт: ошибка сервера', errorData);
+          throw new Error(errorData.error || `Ошибка сервера: ${res.status}`);
+        }
+        
+        // Получаем имя файла из заголовка Content-Disposition
+        const contentDisposition = res.headers.get('Content-Disposition');
+        console.log('Экспорт: Content-Disposition:', contentDisposition);
+        
+        let filename = 'report.xlsx';
+        if (contentDisposition) {
+          // Поддержка как старого формата, так и нового UTF-8 формата
+          const filenameMatch = contentDisposition.match(/filename\*?=([^;]+)/);
+          if (filenameMatch) {
+            filename = decodeURIComponent(filenameMatch[1].replace(/^UTF-8''/, ''));
+          }
+        }
+        console.log('Экспорт: имя файла:', filename);
+        
+        // Создаем blob и скачиваем файл
+        const blob = await res.blob();
+        console.log('Экспорт: размер файла:', blob.size, 'байт');
+        
+        if (blob.size === 0) {
+          throw new Error('Получен пустой файл');
+        }
+        
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        console.log('Экспорт: файл успешно скачан');
+        btn.textContent = prev;
+        btn.disabled = false;
+      } catch (err) {
+        console.error('Ошибка экспорта:', err);
+        alert('Ошибка при экспорте данных: ' + err.message);
+        btn.textContent = prev;
+        btn.disabled = false;
+      }
+    }
+
+    // Обработчик кнопки экспорта
+    const exportBtn = document.getElementById('exportExcelBtn');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', exportToExcel);
+    }
   </script>
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
