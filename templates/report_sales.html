@@ -732,7 +732,25 @@
           const qty = target ? (bywh[target] || 0) : (row.total || 0);
           const bywhSum = row.by_wh_sum || {};
           const sum = target ? (bywhSum[target] || 0) : (row.total_sum || 0);
-          return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo, stock_qty: row.stock_qty || 0 };
+          
+          // Calculate stock quantity for the target warehouse
+          let stock_qty = 0;
+          const bywhStock = row.by_wh_stock || {};
+          if (target) {
+            // If specific warehouse selected, sum only for that warehouse
+            for (const [wh_name, wh_qty] of Object.entries(bywhStock)) {
+              if (wh_name === target || 
+                  wh_name.includes(target) || 
+                  target.includes(wh_name)) {
+                stock_qty += wh_qty;
+              }
+            }
+          } else {
+            // If no warehouse selected, sum all warehouses
+            stock_qty = Object.values(bywhStock).reduce((a, b) => a + b, 0);
+          }
+          
+          return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo, stock_qty };
         }).filter(it => (it.qty || 0) > 0).sort((a,b)=> (b.qty||0)-(a.qty||0));
         items.forEach((it, idx) => {
           const tr = document.createElement('tr');

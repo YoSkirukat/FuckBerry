@@ -4383,8 +4383,8 @@ def report_sales_page():
     except Exception:
         nm_to_photo = {}
 
-    # Load stocks data for current user
-    stocks_data = {}
+    # Load stocks data for current user - сохраняем остатки по складам
+    stocks_by_warehouse = {}
     try:
         stocks_cached = load_stocks_cache()
         if stocks_cached and stocks_cached.get("_user_id"):
@@ -4393,18 +4393,12 @@ def report_sales_page():
                 stock_warehouse = stock_item.get("warehouse", "")
                 qty = int(stock_item.get("qty", 0) or 0)
                 
-                if barcode:
-                    if warehouse:
-                        # Если выбран конкретный склад, суммируем только по этому складу
-                        if (stock_warehouse == warehouse or 
-                            (warehouse in stock_warehouse) or 
-                            (stock_warehouse in warehouse)):
-                            stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
-                    else:
-                        # Если не выбран склад, суммируем по всем складам
-                        stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+                if barcode and stock_warehouse:
+                    if barcode not in stocks_by_warehouse:
+                        stocks_by_warehouse[barcode] = {}
+                    stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
     except Exception:
-        stocks_data = {}
+        stocks_by_warehouse = {}
 
     def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
         items_local: List[Dict[str, Any]] = []
@@ -4412,15 +4406,30 @@ def report_sales_page():
             qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
             if qty > 0:
                 s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                # Calculate stock quantity for the target warehouse
+                barcode = barcode_by_product.get(prod)
+                stock_qty = 0
+                if barcode and barcode in stocks_by_warehouse:
+                    if target_wh:
+                        # If specific warehouse selected, sum only for that warehouse
+                        for wh_name, wh_qty in stocks_by_warehouse[barcode].items():
+                            if (wh_name == target_wh or 
+                                (target_wh in wh_name) or 
+                                (wh_name in target_wh)):
+                                stock_qty += wh_qty
+                    else:
+                        # If no warehouse selected, sum all warehouses
+                        stock_qty = sum(stocks_by_warehouse[barcode].values())
+                
                 items_local.append({
                     "product": prod,
                     "qty": qty,
                     "nm_id": nm_by_product.get(prod),
-                    "barcode": barcode_by_product.get(prod),
+                    "barcode": barcode,
                     "supplier_article": supplier_article_by_product.get(prod),
                     "sum": round(float(s or 0.0), 2),
                     "photo": nm_to_photo.get(nm_by_product.get(prod)),
-                    "stock_qty": stocks_data.get(barcode_by_product.get(prod), 0)
+                    "stock_qty": stock_qty
                 })
         items_local.sort(key=lambda x: x["qty"], reverse=True)
         return items_local
@@ -4435,7 +4444,7 @@ def report_sales_page():
         "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
         "by_wh_sum": by_wh_sum[p],
         "photo": nm_to_photo.get(nm_by_product.get(p)),
-        "stock_qty": stocks_data.get(barcode_by_product.get(p), 0)
+        "by_wh_stock": stocks_by_warehouse.get(barcode_by_product.get(p), {})
     } for p in counts_total.keys()] if orders else []
     return render_template(
         "report_sales.html",
@@ -4522,8 +4531,8 @@ def api_report_sales():
         except Exception:
             nm_to_photo = {}
 
-        # Load stocks data for current user
-        stocks_data = {}
+        # Load stocks data for current user - сохраняем остатки по складам
+        stocks_by_warehouse = {}
         try:
             stocks_cached = load_stocks_cache()
             if stocks_cached and stocks_cached.get("_user_id"):
@@ -4532,18 +4541,12 @@ def api_report_sales():
                     stock_warehouse = stock_item.get("warehouse", "")
                     qty = int(stock_item.get("qty", 0) or 0)
                     
-                    if barcode:
-                        if warehouse:
-                            # Если выбран конкретный склад, суммируем только по этому складу
-                            if (stock_warehouse == warehouse or 
-                                (warehouse in stock_warehouse) or 
-                                (stock_warehouse in warehouse)):
-                                stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
-                        else:
-                            # Если не выбран склад, суммируем по всем складам
-                            stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+                    if barcode and stock_warehouse:
+                        if barcode not in stocks_by_warehouse:
+                            stocks_by_warehouse[barcode] = {}
+                        stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
         except Exception:
-            stocks_data = {}
+            stocks_by_warehouse = {}
 
         def build_items_for_wh(target_wh: str | None) -> List[Dict[str, Any]]:
             items_local: List[Dict[str, Any]] = []
@@ -4551,15 +4554,30 @@ def api_report_sales():
                 qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
                 if qty > 0:
                     s = (by_wh_sum[prod].get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                    # Calculate stock quantity for the target warehouse
+                    barcode = barcode_by_product.get(prod)
+                    stock_qty = 0
+                    if barcode and barcode in stocks_by_warehouse:
+                        if target_wh:
+                            # If specific warehouse selected, sum only for that warehouse
+                            for wh_name, wh_qty in stocks_by_warehouse[barcode].items():
+                                if (wh_name == target_wh or 
+                                    (target_wh in wh_name) or 
+                                    (wh_name in target_wh)):
+                                    stock_qty += wh_qty
+                        else:
+                            # If no warehouse selected, sum all warehouses
+                            stock_qty = sum(stocks_by_warehouse[barcode].values())
+                    
                     items_local.append({
                         "product": prod,
                         "qty": qty,
                         "nm_id": nm_by_product.get(prod),
-                        "barcode": barcode_by_product.get(prod),
+                        "barcode": barcode,
                         "supplier_article": supplier_article_by_product.get(prod),
                         "sum": round(float(s or 0.0), 2),
                         "photo": nm_to_photo.get(nm_by_product.get(prod)),
-                        "stock_qty": stocks_data.get(barcode_by_product.get(prod), 0)
+                        "stock_qty": stock_qty
                     })
             items_local.sort(key=lambda x: x["qty"], reverse=True)
             return items_local
@@ -4575,7 +4593,7 @@ def api_report_sales():
             "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
             "by_wh_sum": by_wh_sum[p],
             "photo": nm_to_photo.get(nm_by_product.get(p)),
-            "stock_qty": stocks_data.get(barcode_by_product.get(p), 0)
+            "by_wh_stock": stocks_by_warehouse.get(barcode_by_product.get(p), {})
         } for p in counts_total.keys()]
         return jsonify({
             "items": items,
