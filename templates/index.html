@@ -320,6 +320,10 @@
                     <div>Сумма итого:</div>
                     <div><span id="colSumVal">{{ total_revenue | money_ru }}</span> руб.</div>
                   </th>
+                  <th class="text-end">
+                    <div>Текущий</div>
+                    <div>Остаток:</div>
+                  </th>
                 </tr>
               </thead>
               <tbody id="ordersTopShortBody">
@@ -345,10 +349,11 @@
                       </td>
                       <td class="text-end">{{ it.qty | num_space }}</td>
                       <td class="text-end">{{ (it.sum or 0) | money_ru }} руб.</td>
+                      <td class="text-end">{{ (it.stock_qty or 0) | num_space }} шт.</td>
                     </tr>
                   {% endfor %}
                 {% else %}
-                  <tr><td colspan="4" class="text-muted">Нет данных</td></tr>
+                  <tr><td colspan="5" class="text-muted">Нет данных</td></tr>
                 {% endif %}
               </tbody>
             </table>
@@ -824,7 +829,7 @@
       const src = (data.items || []).slice(0, 15);
       if (!src.length){
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td colspan="4" class="text-muted">Нет данных</td>';
+        tr.innerHTML = '<td colspan="5" class="text-muted">Нет данных</td>';
         tbody.appendChild(tr);
         return;
       }
@@ -851,7 +856,9 @@
         const tdQty = document.createElement('td'); tdQty.className='text-end'; tdQty.textContent = (it.qty||0).toLocaleString('ru-RU');
         // sum
         const tdSum = document.createElement('td'); tdSum.className='text-end'; tdSum.textContent = ((it.sum||0).toLocaleString('ru-RU')) + ' руб.';
-        tr.appendChild(tdPhoto); tr.appendChild(tdProd); tr.appendChild(tdQty); tr.appendChild(tdSum); tbody.appendChild(tr);
+        // stock
+        const tdStock = document.createElement('td'); tdStock.className='text-end'; tdStock.textContent = ((it.stock_qty||0).toLocaleString('ru-RU')) + ' шт.';
+        tr.appendChild(tdPhoto); tr.appendChild(tdProd); tr.appendChild(tdQty); tr.appendChild(tdSum); tr.appendChild(tdStock); tbody.appendChild(tr);
       }
       bindPreview();
     }
@@ -1038,6 +1045,7 @@
               const nm = item.nm_id || '';
               const sum = item.sum || 0;
               const photo = item.photo || '';
+              const stockQty = item.stock_qty || 0;
               const tr = document.createElement('tr');
               const tdPhoto = document.createElement('td'); tdPhoto.className='text-center';
               if (photo) { tdPhoto.innerHTML = `<img class=\"thumb\" src=\"${photo}\" data-src=\"${photo}\"/>`; } else { tdPhoto.textContent='-'; }
@@ -1046,13 +1054,14 @@
               else { tdProd.textContent = product; }
               const tdQty = document.createElement('td'); tdQty.className='text-end'; tdQty.textContent = (qty||0).toLocaleString('ru-RU');
               const tdSum = document.createElement('td'); tdSum.className='text-end'; tdSum.textContent = (Number(sum)||0).toLocaleString('ru-RU') + ' руб.';
-              tr.appendChild(tdPhoto); tr.appendChild(tdProd); tr.appendChild(tdQty); tr.appendChild(tdSum);
+              const tdStock = document.createElement('td'); tdStock.className='text-end'; tdStock.textContent = (stockQty||0).toLocaleString('ru-RU') + ' шт.';
+              tr.appendChild(tdPhoto); tr.appendChild(tdProd); tr.appendChild(tdQty); tr.appendChild(tdSum); tr.appendChild(tdStock);
               topShortBody.appendChild(tr);
             }
             bindPreview();
           } else {
             const tr = document.createElement('tr');
-            const td = document.createElement('td'); td.colSpan=4; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
+            const td = document.createElement('td'); td.colSpan=5; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
             topShortBody.appendChild(tr);
           }
         }

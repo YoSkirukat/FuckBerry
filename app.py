@@ -1384,6 +1384,29 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     except Exception:
         nm_to_photo = {}
 
+    # Load stocks data for current user
+    stocks_data = {}
+    try:
+        stocks_cached = load_stocks_cache()
+        if stocks_cached and stocks_cached.get("_user_id"):
+            for stock_item in stocks_cached.get("items", []):
+                barcode = stock_item.get("barcode")
+                stock_warehouse = stock_item.get("warehouse", "")
+                qty = int(stock_item.get("qty", 0) or 0)
+                
+                if barcode:
+                    if warehouse:
+                        # Если выбран конкретный склад, суммируем только по этому складу
+                        if (stock_warehouse == warehouse or 
+                            (warehouse in stock_warehouse) or 
+                            (stock_warehouse in warehouse)):
+                            stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+                    else:
+                        # Если не выбран склад, суммируем по всем складам
+                        stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+    except Exception:
+        stocks_data = {}
+
     items = [{
         "product": p,
         "qty": c,
@@ -1391,7 +1414,8 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         "barcode": barcode_by_product.get(p),
         "supplier_article": supplier_article_by_product.get(p),
         "sum": round(revenue_by_product.get(p, 0.0), 2),
-        "photo": nm_to_photo.get(nm_by_product.get(p))
+        "photo": nm_to_photo.get(nm_by_product.get(p)),
+        "stock_qty": stocks_data.get(barcode_by_product.get(p), 0)
     } for p, c in counts.items()]
     items.sort(key=lambda x: x["qty"], reverse=True)
     return items[:limit]
@@ -4359,6 +4383,29 @@ def report_sales_page():
     except Exception:
         nm_to_photo = {}
 
+    # Load stocks data for current user
+    stocks_data = {}
+    try:
+        stocks_cached = load_stocks_cache()
+        if stocks_cached and stocks_cached.get("_user_id"):
+            for stock_item in stocks_cached.get("items", []):
+                barcode = stock_item.get("barcode")
+                stock_warehouse = stock_item.get("warehouse", "")
+                qty = int(stock_item.get("qty", 0) or 0)
+                
+                if barcode:
+                    if warehouse:
+                        # Если выбран конкретный склад, суммируем только по этому складу
+                        if (stock_warehouse == warehouse or 
+                            (warehouse in stock_warehouse) or 
+                            (stock_warehouse in warehouse)):
+                            stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+                    else:
+                        # Если не выбран склад, суммируем по всем складам
+                        stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+    except Exception:
+        stocks_data = {}
+
     def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
         items_local: List[Dict[str, Any]] = []
         for prod, total in counts_total.items():
@@ -4372,7 +4419,8 @@ def report_sales_page():
                     "barcode": barcode_by_product.get(prod),
                     "supplier_article": supplier_article_by_product.get(prod),
                     "sum": round(float(s or 0.0), 2),
-                    "photo": nm_to_photo.get(nm_by_product.get(prod))
+                    "photo": nm_to_photo.get(nm_by_product.get(prod)),
+                    "stock_qty": stocks_data.get(barcode_by_product.get(prod), 0)
                 })
         items_local.sort(key=lambda x: x["qty"], reverse=True)
         return items_local
@@ -4386,7 +4434,8 @@ def report_sales_page():
         "by_wh": by_wh[p],
         "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
         "by_wh_sum": by_wh_sum[p],
-        "photo": nm_to_photo.get(nm_by_product.get(p))
+        "photo": nm_to_photo.get(nm_by_product.get(p)),
+        "stock_qty": stocks_data.get(barcode_by_product.get(p), 0)
     } for p in counts_total.keys()] if orders else []
     return render_template(
         "report_sales.html",
@@ -4473,6 +4522,29 @@ def api_report_sales():
         except Exception:
             nm_to_photo = {}
 
+        # Load stocks data for current user
+        stocks_data = {}
+        try:
+            stocks_cached = load_stocks_cache()
+            if stocks_cached and stocks_cached.get("_user_id"):
+                for stock_item in stocks_cached.get("items", []):
+                    barcode = stock_item.get("barcode")
+                    stock_warehouse = stock_item.get("warehouse", "")
+                    qty = int(stock_item.get("qty", 0) or 0)
+                    
+                    if barcode:
+                        if warehouse:
+                            # Если выбран конкретный склад, суммируем только по этому складу
+                            if (stock_warehouse == warehouse or 
+                                (warehouse in stock_warehouse) or 
+                                (stock_warehouse in warehouse)):
+                                stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+                        else:
+                            # Если не выбран склад, суммируем по всем складам
+                            stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+        except Exception:
+            stocks_data = {}
+
         def build_items_for_wh(target_wh: str | None) -> List[Dict[str, Any]]:
             items_local: List[Dict[str, Any]] = []
             for prod, total in counts_total.items():
@@ -4486,7 +4558,8 @@ def api_report_sales():
                         "barcode": barcode_by_product.get(prod),
                         "supplier_article": supplier_article_by_product.get(prod),
                         "sum": round(float(s or 0.0), 2),
-                        "photo": nm_to_photo.get(nm_by_product.get(prod))
+                        "photo": nm_to_photo.get(nm_by_product.get(prod)),
+                        "stock_qty": stocks_data.get(barcode_by_product.get(prod), 0)
                     })
             items_local.sort(key=lambda x: x["qty"], reverse=True)
             return items_local
@@ -4501,7 +4574,8 @@ def api_report_sales():
             "by_wh": by_wh[p],
             "total_sum": round(float(revenue_total.get(p, 0.0)), 2),
             "by_wh_sum": by_wh_sum[p],
-            "photo": nm_to_photo.get(nm_by_product.get(p))
+            "photo": nm_to_photo.get(nm_by_product.get(p)),
+            "stock_qty": stocks_data.get(barcode_by_product.get(p), 0)
         } for p in counts_total.keys()]
         return jsonify({
             "items": items,
