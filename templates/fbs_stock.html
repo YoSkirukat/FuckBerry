@@ -122,12 +122,6 @@
         </div>
         <div class="modal-body">
           <div class="mb-3">
-            <label for="remoteFileUrl" class="form-label">URL файла с остатками</label>
-            <input type="url" class="form-control" id="remoteFileUrl" placeholder="https://example.com/path/to/stocks.xlsx">
-            <div class="form-text">Ссылка на Excel файл с колонками "Баркод" и "Кол-во"</div>
-          </div>
-          
-          <div class="mb-3">
             <label for="checkInterval" class="form-label">Интервал проверки (минуты)</label>
             <select class="form-select" id="checkInterval">
               <option value="5">5 минут</option>
@@ -151,8 +145,9 @@
           </div>
 
           <div class="mb-3" id="warehouseSettingsContainer" style="display:none;">
-            <label class="form-label">Настройки по складам</label>
-            <div id="warehouseSettings" class="border rounded p-3" style="max-height: 300px; overflow-y: auto;">
+            <label class="form-label">Настройки складов</label>
+            <div class="text-muted small mb-2">Для каждого склада можно настроить индивидуальный URL файла с остатками</div>
+            <div id="warehouseSettings" class="border rounded p-3" style="max-height: 400px; overflow-y: auto;">
               <div class="text-muted small">Загрузка складов...</div>
             </div>
           </div>
@@ -639,29 +634,51 @@
     }
 
     document.getElementById('saveAutoUpdateSettings')?.addEventListener('click', async () => {
-      const url = document.getElementById('remoteFileUrl').value.trim();
       const interval = parseInt(document.getElementById('checkInterval').value);
       const enabled = document.getElementById('autoUpdateEnabled').checked;
 
-      if (enabled && !url) {
-        showModalNotice('Введите URL файла для автоматического обновления', 'danger');
+      // Collect warehouse settings
+      const warehouseSettings = {};
+      let hasEnabledWarehouses = false;
+      let hasInvalidUrls = false;
+      
+      document.querySelectorAll('.warehouse-checkbox').forEach(checkbox => {
+        const warehouseId = checkbox.getAttribute('data-warehouse-id');
+        const isEnabled = checkbox.checked;
+        const urlInput = document.querySelector(`#warehouse_url_${warehouseId}`);
+        const url = urlInput ? urlInput.value.trim() : '';
+        
+        if (isEnabled) {
+          hasEnabledWarehouses = true;
+          if (!url) {
+            hasInvalidUrls = true;
+            urlInput.classList.add('is-invalid');
+          } else {
+            urlInput.classList.remove('is-invalid');
+          }
+        }
+        
+        warehouseSettings[warehouseId] = {
+          enabled: isEnabled,
+          url: url
+        };
+      });
+
+      if (enabled && !hasEnabledWarehouses) {
+        showModalNotice('Выберите хотя бы один склад для автоматического обновления', 'danger');
         return;
       }
 
-      // Collect warehouse settings
-      const warehouseSettings = {};
-      document.querySelectorAll('.warehouse-checkbox').forEach(checkbox => {
-        const warehouseId = checkbox.getAttribute('data-warehouse-id');
-        warehouseSettings[warehouseId] = {
-          enabled: checkbox.checked
-        };
-      });
+      if (enabled && hasInvalidUrls) {
+        showModalNotice('Для всех включенных складов необходимо указать URL файла с остатками', 'danger');
+        return;
+      }
 
       try {
         const response = await fetch('/api/fbs-stock/auto-update/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, interval, enabled, warehouses: warehouseSettings })
+          body: JSON.stringify({ interval, enabled, warehouses: warehouseSettings })
         });
 
         const data = await response.json();
@@ -677,9 +694,21 @@
     });
 
     document.getElementById('testConnectionBtn')?.addEventListener('click', async () => {
-      const url = document.getElementById('remoteFileUrl').value.trim();
-      if (!url) {
-        showModalNotice('Введите URL файла для тестирования', 'danger');
+      // Collect enabled warehouse URLs
+      const enabledWarehouses = [];
+      document.querySelectorAll('.warehouse-checkbox').forEach(checkbox => {
+        if (checkbox.checked) {
+          const warehouseId = checkbox.getAttribute('data-warehouse-id');
+          const urlInput = document.querySelector(`#warehouse_url_${warehouseId}`);
+          const url = urlInput ? urlInput.value.trim() : '';
+          if (url) {
+            enabledWarehouses.push({ warehouseId, url });
+          }
+        }
+      });
+
+      if (enabledWarehouses.length === 0) {
+        showModalNotice('Выберите хотя бы один склад с указанным URL для тестирования', 'danger');
         return;
       }
 
@@ -689,17 +718,35 @@
       btn.textContent = 'Тестируем...';
 
       try {
-        const response = await fetch('/api/fbs-stock/auto-update/test', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
-        });
+        let allSuccess = true;
+        let results = [];
+        
+        for (const warehouse of enabledWarehouses) {
+          try {
+            const response = await fetch('/api/fbs-stock/auto-update/test', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: warehouse.url })
+            });
 
-        const data = await response.json();
-        if (response.ok) {
-          showModalNotice(`Подключение успешно! Файл найден. Размер: ${data.size} байт, дата: ${data.lastModified}`, 'success');
+            const data = await response.json();
+            if (response.ok) {
+              results.push(`✓ Склад ${warehouse.warehouseId}: файл найден (${data.size} байт)`);
+            } else {
+              results.push(`✗ Склад ${warehouse.warehouseId}: ${data.error || 'Ошибка подключения'}`);
+              allSuccess = false;
+            }
+          } catch (error) {
+            results.push(`✗ Склад ${warehouse.warehouseId}: ${error.message}`);
+            allSuccess = false;
+          }
+        }
+
+        const message = results.join('\n');
+        if (allSuccess) {
+          showModalNotice(`Все подключения успешны!\n\n${message}`, 'success');
         } else {
-          showModalNotice('Ошибка подключения: ' + (data.error || 'Не удалось получить файл'), 'danger');
+          showModalNotice(`Есть ошибки подключения:\n\n${message}`, 'danger');
         }
       } catch (error) {
         showModalNotice('Ошибка тестирования: ' + error.message, 'danger');
@@ -712,12 +759,21 @@
     document.getElementById('manualUpdateBtn')?.addEventListener('click', async () => {
       console.log('Manual update button clicked!');
       
-      const url = document.getElementById('remoteFileUrl').value.trim();
-      console.log('Remote file URL:', url);
-      
-      if (!url) {
-        console.log('No URL provided, showing error');
-        showModalNotice('Введите URL файла для обновления', 'danger');
+      // Collect enabled warehouse URLs
+      const enabledWarehouses = [];
+      document.querySelectorAll('.warehouse-checkbox').forEach(checkbox => {
+        if (checkbox.checked) {
+          const warehouseId = checkbox.getAttribute('data-warehouse-id');
+          const urlInput = document.querySelector(`#warehouse_url_${warehouseId}`);
+          const url = urlInput ? urlInput.value.trim() : '';
+          if (url) {
+            enabledWarehouses.push({ warehouseId, url });
+          }
+        }
+      });
+
+      if (enabledWarehouses.length === 0) {
+        showModalNotice('Выберите хотя бы один склад с указанным URL для обновления', 'danger');
         return;
       }
 
@@ -732,7 +788,7 @@
         const response = await fetch('/api/fbs-stock/auto-update/manual-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
+          body: JSON.stringify({ warehouses: enabledWarehouses })
         });
 
         console.log('Response status:', response.status);
@@ -761,7 +817,6 @@
         
         if (response.ok) {
           const globalSettings = data.global || data; // Support old format
-          document.getElementById('remoteFileUrl').value = globalSettings.url || '';
           document.getElementById('checkInterval').value = globalSettings.interval || 60;
           document.getElementById('autoUpdateEnabled').checked = globalSettings.enabled || false;
           
@@ -796,23 +851,49 @@
         warehouseRows.forEach(row => {
           const warehouseId = row.getAttribute('data-wid');
           const warehouseName = row.getAttribute('data-wname');
-          const isEnabled = warehouseSettings[warehouseId]?.enabled || false;
+          const warehouseSettingsData = warehouseSettings[warehouseId] || {};
+          const isEnabled = warehouseSettingsData.enabled || false;
+          const fileUrl = warehouseSettingsData.url || '';
           
           html += `
-            <div class="form-check mb-2">
-              <input class="form-check-input warehouse-checkbox" type="checkbox" 
-                     id="warehouse_${warehouseId}" 
-                     data-warehouse-id="${warehouseId}"
-                     ${isEnabled ? 'checked' : ''}>
-              <label class="form-check-label" for="warehouse_${warehouseId}">
-                ${warehouseName}
-              </label>
+            <div class="warehouse-settings-item border rounded p-3 mb-3">
+              <div class="form-check mb-2">
+                <input class="form-check-input warehouse-checkbox" type="checkbox" 
+                       id="warehouse_${warehouseId}" 
+                       data-warehouse-id="${warehouseId}"
+                       ${isEnabled ? 'checked' : ''}>
+                <label class="form-check-label fw-bold" for="warehouse_${warehouseId}">
+                  ${warehouseName}
+                </label>
+              </div>
+              <div class="warehouse-url-container" style="${isEnabled ? '' : 'display: none;'}">
+                <label for="warehouse_url_${warehouseId}" class="form-label small">URL файла с остатками</label>
+                <input type="url" class="form-control form-control-sm warehouse-url-input" 
+                       id="warehouse_url_${warehouseId}" 
+                       data-warehouse-id="${warehouseId}"
+                       placeholder="https://example.com/path/to/stocks.xlsx"
+                       value="${fileUrl}">
+                <div class="form-text small">Excel файл с колонками "Баркод" и "Кол-во"</div>
+              </div>
             </div>
           `;
         });
         
         warehouseSettingsContainer.innerHTML = html;
         document.getElementById('warehouseSettingsContainer').style.display = 'block';
+        
+        // Add event listeners for checkboxes
+        document.querySelectorAll('.warehouse-checkbox').forEach(checkbox => {
+          checkbox.addEventListener('change', function() {
+            const warehouseId = this.getAttribute('data-warehouse-id');
+            const urlContainer = document.querySelector(`#warehouse_url_${warehouseId}`).closest('.warehouse-url-container');
+            if (this.checked) {
+              urlContainer.style.display = 'block';
+            } else {
+              urlContainer.style.display = 'none';
+            }
+          });
+        });
         
       } catch (error) {
         console.error('Error loading warehouses:', error);
