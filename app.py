@@ -3529,40 +3529,33 @@ def api_fbw_planning_supplies():
         return jsonify({"error": "no_token"}), 401
     
     try:
+        from datetime import datetime
         print(f"Запрос поставок для планирования: warehouse='{warehouse_name}', force_refresh={force_refresh}")
         
         # Проверяем кэш поставок
         cached = load_fbw_supplies_cache() or {}
         supplies_list = []
         
-        if not force_refresh and cached and cached.get("_user_id") == current_user.id:
-            # Используем кэшированный список поставок
-            cached_supplies = cached.get("raw_supplies_list", [])
-            if cached_supplies:
-                supplies_list = cached_supplies
-                print(f"Используем кэшированный список поставок: {len(supplies_list)} поставок")
-            else:
-                # Загружаем и кэшируем
-                supplies_list = fetch_fbw_supplies_list(token, days_back=30)
-                cached["raw_supplies_list"] = supplies_list
-                save_fbw_supplies_cache(cached)
-                print(f"Загружен и закэширован список поставок: {len(supplies_list)} поставок")
-        else:
-            # Загружаем и кэшируем
-            if force_refresh:
-                print("Принудительное обновление кэша поставок")
-            else:
-                print("Кэш не найден или устарел, загружаем поставки")
-            supplies_list = fetch_fbw_supplies_list(token, days_back=30)
-            save_fbw_supplies_cache({
-                "raw_supplies_list": supplies_list,
-                "_user_id": current_user.id
-            })
-            print(f"Загружен и закэширован список поставок: {len(supplies_list)} поставок")
+        # Для планирования используем отдельный кэш, чтобы не влиять на основной кэш страницы /fbw
+        planning_cache_key = f"planning_supplies_{current_user.id}"
+        cached_planning = cached.get(planning_cache_key, {})
         
-        # Сначала фильтруем только по статусу "Отгрузка разрешена" (быстро)
+        # Для планирования всегда загружаем свежие данные с API (как на странице FBS)
+        # Это обеспечивает учет новых поставок, созданных недавно
+        print("Планирование поставок: загружаем свежие данные с API для учета новых поставок")
+        supplies_list = fetch_fbw_supplies_list(token, days_back=30)
+        
+        # Сохраняем в отдельный ключ для планирования, не трогая основной кэш
+        cached[planning_cache_key] = {
+            "supplies_list": supplies_list,
+            "updated_at": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+        }
+        save_fbw_supplies_cache(cached)
+        print(f"Загружен свежий список поставок для планирования: {len(supplies_list)} поставок")
+        
+        # Фильтруем поставки по подходящим статусам для планирования
         supplies_with_status = []
-        print(f"Фильтруем поставки со статусом 'Отгрузка разрешена' из {len(supplies_list)} поставок")
+        print(f"Фильтруем подходящие поставки для планирования из {len(supplies_list)} поставок")
         
         # Собираем статистику по статусам для отладки
         status_counts = {}
@@ -3575,17 +3568,22 @@ def api_fbw_planning_supplies():
             status = supply.get("statusName", "").strip()
             status_counts[status] = status_counts.get(status, 0) + 1
             
-            if status == "Отгрузка разрешена":
+            # Логируем каждую поставку для отладки
+            print(f"Поставка {supply_id}: статус='{status}', склад='{supply.get('warehouseName', 'не указан')}'")
+            
+            # Включаем поставки с различными статусами, подходящими для планирования
+            if status in ["Отгрузка разрешена", "Запланировано", "Создано", "В работе"]:
                 supplies_with_status.append({
                     "supply_id": str(supply_id),
                     "create_date": supply.get("createDate"),
-                    "supply_date": supply.get("supplyDate")
+                    "supply_date": supply.get("supplyDate"),
+                    "status": status
                 })
         
-        print(f"Найдено поставок со статусом 'Отгрузка разрешена': {len(supplies_with_status)}")
+        print(f"Найдено подходящих поставок для планирования: {len(supplies_with_status)}")
         print(f"Статистика по статусам: {status_counts}")
         
-        # Если нет поставок со статусом "Отгрузка разрешена", возвращаем пустой результат
+        # Если нет подходящих поставок, возвращаем пустой результат
         if not supplies_with_status:
             return jsonify({
                 "success": True,

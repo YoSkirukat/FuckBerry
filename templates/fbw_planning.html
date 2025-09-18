@@ -2325,7 +2325,7 @@
         console.log('Примеры товаров в checkPendingSupplies:', products.slice(0, 3));
         const startTime = performance.now();
         
-        const response = await fetch(`/api/fbw/planning/supplies?warehouse_name=${encodeURIComponent(warehouseName)}&force_refresh=true`);
+        const response = await fetch(`/api/fbw/planning/supplies?warehouse_name=${encodeURIComponent(warehouseName)}&force_refresh=false`);
         const data = await response.json();
         
         const endTime = performance.now();
