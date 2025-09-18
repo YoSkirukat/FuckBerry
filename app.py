@@ -2577,8 +2577,12 @@ def auto_update_worker():
                         
                         current_size = file_info.get('size', 0)
                         current_modified = file_info.get('lastModified', '')
-                        last_size = warehouse_settings.get('lastFileSize', 0)
-                        last_modified = warehouse_settings.get('lastFileModified', '')
+                        last_size = settings.get('warehouses', {}).get(warehouse_id, {}).get('lastFileSize', 0)
+                        last_modified = settings.get('warehouses', {}).get(warehouse_id, {}).get('lastFileModified', '')
+                        
+                        print(f"File check for warehouse {warehouse_id}:")
+                        print(f"  Current: size={current_size}, modified={current_modified}")
+                        print(f"  Last: size={last_size}, modified={last_modified}")
                         
                         # Check if file has changed
                         if current_size == last_size and current_modified == last_modified:
@@ -2601,8 +2605,12 @@ def auto_update_worker():
                             total_updated += updated_count
                             
                             # Update warehouse-specific file info
-                            warehouse_settings['lastFileSize'] = current_size
-                            warehouse_settings['lastFileModified'] = current_modified
+                            if 'warehouses' not in settings:
+                                settings['warehouses'] = {}
+                            if warehouse_id not in settings['warehouses']:
+                                settings['warehouses'][warehouse_id] = {}
+                            settings['warehouses'][warehouse_id]['lastFileSize'] = current_size
+                            settings['warehouses'][warehouse_id]['lastFileModified'] = current_modified
                         else:
                             print(f"File processing failed for warehouse {warehouse_id}: {result['error']}")
                             all_success = False
