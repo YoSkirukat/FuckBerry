@@ -396,8 +396,29 @@ def fetch_fbw_supply_packages(token: str, supply_id: int | str) -> list[dict[str
 def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]:
     base_list = fetch_fbw_supplies_list(token)
     supplies: list[dict[str, Any]] = []
+    
+    # Загружаем кэшированные данные для оптимизации
+    cached = load_fbw_supplies_cache() or {}
+    cached_items = cached.get("items") or []
+    cached_map = {}
+    for item in cached_items:
+        sid = str(item.get("supply_id") or item.get("supplyID") or item.get("supplyId") or item.get("id") or "")
+        if sid:
+            cached_map[sid] = item
+    
     for it in base_list[: max(0, int(limit))]:
         supply_id = it.get("supplyID") or it.get("supplyId") or it.get("id")
+        supply_id_str = str(supply_id or "")
+        
+        # Проверяем кэш для оптимизации
+        cached_item = cached_map.get(supply_id_str)
+        
+        # Если поставка в кэше и статус "Принято", используем кэшированные данные
+        if cached_item and "Принято" in str(cached_item.get("status", "")):
+            supplies.append(cached_item)
+            continue
+            
+        # Для остальных поставок получаем актуальные данные
         details = fetch_fbw_supply_details(token, supply_id)
         # Normalize fields; prefer details when available, fallback to list fields
         create_date = (details or {}).get("createDate") or it.get("createDate")
@@ -410,21 +431,31 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
         accepted_qty = (details or {}).get("acceptedQuantity")
         acceptance_cost = (details or {}).get("acceptanceCost")
         paid_coef = (details or {}).get("paidAcceptanceCoefficient")
-        supplies.append(
-            {
-                "supply_id": str(supply_id or ""),
-                "type": str(box_type) if box_type is not None else "",
-                "created_at": _fmt_dt_moscow(create_date, with_time=False),
-                "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
-                "accepted_goods": int(accepted_qty) if isinstance(accepted_qty, (int, float)) and accepted_qty is not None else None,
-                "warehouse": warehouse_name or "",
-                "acceptance_coefficient": paid_coef,
-                "acceptance_cost": acceptance_cost,
-                "planned_date": _fmt_dt_moscow(supply_date, with_time=False),
-                "fact_date": _fmt_dt_moscow(fact_date, with_time=True),
-                "status": status_name or "",
-            }
-        )
+        
+        # Если есть кэшированное количество коробок, сохраняем его
+        package_count = None
+        if cached_item and "package_count" in cached_item:
+            package_count = cached_item["package_count"]
+        
+        supply_data = {
+            "supply_id": supply_id_str,
+            "type": str(box_type) if box_type is not None else "",
+            "created_at": _fmt_dt_moscow(create_date, with_time=False),
+            "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
+            "accepted_goods": int(accepted_qty) if isinstance(accepted_qty, (int, float)) and accepted_qty is not None else None,
+            "warehouse": warehouse_name or "",
+            "acceptance_coefficient": paid_coef,
+            "acceptance_cost": acceptance_cost,
+            "planned_date": _fmt_dt_moscow(supply_date, with_time=False),
+            "fact_date": _fmt_dt_moscow(fact_date, with_time=True),
+            "status": status_name or "",
+        }
+        
+        if package_count is not None:
+            supply_data["package_count"] = package_count
+            
+        supplies.append(supply_data)
+
     return supplies
 
 
@@ -435,8 +466,29 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
     end = offset + max(0, int(limit))
     slice_ids = base_list[offset:end]
     supplies: list[dict[str, Any]] = []
+    
+    # Загружаем кэшированные данные для оптимизации
+    cached = load_fbw_supplies_cache() or {}
+    cached_items = cached.get("items") or []
+    cached_map = {}
+    for item in cached_items:
+        sid = str(item.get("supply_id") or item.get("supplyID") or item.get("supplyId") or item.get("id") or "")
+        if sid:
+            cached_map[sid] = item
+    
     for it in slice_ids:
         supply_id = it.get("supplyID") or it.get("supplyId") or it.get("id")
+        supply_id_str = str(supply_id or "")
+        
+        # Проверяем кэш для оптимизации
+        cached_item = cached_map.get(supply_id_str)
+        
+        # Если поставка в кэше и статус "Принято", используем кэшированные данные
+        if cached_item and "Принято" in str(cached_item.get("status", "")):
+            supplies.append(cached_item)
+            continue
+            
+        # Для остальных поставок получаем актуальные данные
         details = fetch_fbw_supply_details(token, supply_id)
         create_date = (details or {}).get("createDate") or it.get("createDate")
         supply_date = (details or {}).get("supplyDate") or it.get("supplyDate")
@@ -448,21 +500,30 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
         accepted_qty = (details or {}).get("acceptedQuantity")
         acceptance_cost = (details or {}).get("acceptanceCost")
         paid_coef = (details or {}).get("paidAcceptanceCoefficient")
-        supplies.append(
-            {
-                "supply_id": str(supply_id or ""),
-                "type": str(box_type) if box_type is not None else "",
-                "created_at": _fmt_dt_moscow(create_date, with_time=False),
-                "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
-                "accepted_goods": int(accepted_qty) if isinstance(accepted_qty, (int, float)) and accepted_qty is not None else None,
-                "warehouse": warehouse_name or "",
-                "acceptance_coefficient": paid_coef,
-                "acceptance_cost": acceptance_cost,
-                "planned_date": _fmt_dt_moscow(supply_date, with_time=False),
-                "fact_date": _fmt_dt_moscow(fact_date, with_time=True),
-                "status": status_name or "",
-            }
-        )
+        
+        # Если есть кэшированное количество коробок, сохраняем его
+        package_count = None
+        if cached_item and "package_count" in cached_item:
+            package_count = cached_item["package_count"]
+        
+        supply_data = {
+            "supply_id": supply_id_str,
+            "type": str(box_type) if box_type is not None else "",
+            "created_at": _fmt_dt_moscow(create_date, with_time=False),
+            "total_goods": int(total_qty) if isinstance(total_qty, (int, float)) and total_qty is not None else None,
+            "accepted_goods": int(accepted_qty) if isinstance(accepted_qty, (int, float)) and accepted_qty is not None else None,
+            "warehouse": warehouse_name or "",
+            "acceptance_coefficient": paid_coef,
+            "acceptance_cost": acceptance_cost,
+            "planned_date": _fmt_dt_moscow(supply_date, with_time=False),
+            "fact_date": _fmt_dt_moscow(fact_date, with_time=True),
+            "status": status_name or "",
+        }
+        
+        if package_count is not None:
+            supply_data["package_count"] = package_count
+            
+        supplies.append(supply_data)
     return supplies
 
 
@@ -537,6 +598,48 @@ def _merge_package_counts(items: list[dict[str, Any]], cached_items: list[dict[s
         return merged
     except Exception:
         return items
+
+
+def _preload_package_counts(token: str, supplies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Предварительно загружает количество коробок для поставок, которые еще не имеют этой информации.
+    Это позволяет кэшировать данные о коробках при обновлении списка поставок.
+    """
+    if not token or not supplies:
+        return supplies
+    
+    # Находим поставки без информации о количестве коробок
+    supplies_to_update = []
+    for supply in supplies:
+        if not supply.get("package_count") or int(supply.get("package_count") or 0) == 0:
+            supplies_to_update.append(supply)
+    
+    if not supplies_to_update:
+        return supplies
+    
+    # Обновляем количество коробок для найденных поставок
+    updated_supplies = []
+    for supply in supplies:
+        if supply in supplies_to_update:
+            try:
+                supply_id = supply.get("supply_id") or supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
+                if supply_id:
+                    packages = fetch_fbw_supply_packages(token, supply_id)
+                    package_count = len(packages) if isinstance(packages, list) else 0
+                    
+                    # Создаем копию с обновленным количеством коробок
+                    updated_supply = dict(supply)
+                    updated_supply["package_count"] = package_count
+                    updated_supplies.append(updated_supply)
+                else:
+                    updated_supplies.append(supply)
+            except Exception:
+                # В случае ошибки оставляем поставку без изменений
+                updated_supplies.append(supply)
+        else:
+            updated_supplies.append(supply)
+    
+    return updated_supplies
 
 
 def time_ago_ru(dt_val: Any) -> str:
@@ -3593,6 +3696,12 @@ def api_fbw_supplies():
         cached_for_user = load_fbw_supplies_cache() or {}
         cached_items = cached_for_user.get("items") or []
         items = _merge_package_counts(items, cached_items)
+        
+        # Предварительно загружаем количество коробок для поставок без этой информации
+        # Это делаем только для первой страницы, чтобы не замедлять загрузку
+        if offset <= 0:
+            items = _preload_package_counts(token, items)
+        
         updated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         if offset <= 0:
             save_fbw_supplies_cache({"items": items, "updated_at": updated_at, "next_offset": next_offset})
