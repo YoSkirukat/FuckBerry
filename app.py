@@ -3,6 +3,12 @@ FBS_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
 FBS_STOCKS_BY_WAREHOUSE_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks/{warehouseId}"
 # Supplies API warehouses (for labels tool)
 SUPPLIES_WAREHOUSES_URL = "https://supplies-api.wildberries.ru/api/v1/warehouses"
+# Prices API
+DISCOUNTS_PRICES_API_URL = "https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter"
+# Alternative prices API
+PRICES_API_URL = "https://marketplace-api.wildberries.ru/api/v2/list/goods/filter"
+# Commission API
+COMMISSION_API_URL = "https://common-api.wildberries.ru/api/v1/tariffs/commission"
 import io
 import os
 import json
@@ -18,7 +24,8 @@ import requests
 from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory
 import xlwt
 from io import BytesIO
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+import xlrd
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
@@ -36,6 +43,64 @@ from flask_login import (
 )
 
 APP_VERSION = "1.0.1"
+
+# -------------------- Кэш настроек маржи --------------------
+DEFAULT_MARGIN_SETTINGS = {
+    "tax": 6.0,         # Налог
+    "logistics": 7.5,   # Логистика
+    "storage": 0.5,     # Хранение
+    "receiving": 1.0,   # Приёмка
+    "acquiring": 1.7,   # Эквайринг
+    "scheme": "FBW",   # Схема работы с WB
+}
+
+def _get_cache_dir() -> str:
+    cache_dir = os.path.join(os.path.dirname(__file__), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+def load_user_margin_settings(user_id: int) -> dict:
+    try:
+        cache_dir = _get_cache_dir()
+        path = os.path.join(cache_dir, f"margin_settings_{user_id}.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            result = DEFAULT_MARGIN_SETTINGS.copy()
+            for key, default_val in DEFAULT_MARGIN_SETTINGS.items():
+                val = data.get(key, default_val)
+                if key == "scheme":
+                    # строковое значение
+                    result[key] = str(val or default_val)
+                else:
+                    try:
+                        result[key] = float(val)
+                    except Exception:
+                        result[key] = default_val
+            return result
+    except Exception as e:
+        print(f"Ошибка чтения настроек маржи: {e}")
+    return DEFAULT_MARGIN_SETTINGS.copy()
+
+def save_user_margin_settings(user_id: int, settings: dict) -> dict:
+    normalized = DEFAULT_MARGIN_SETTINGS.copy()
+    for key, default_val in DEFAULT_MARGIN_SETTINGS.items():
+        val = settings.get(key, default_val)
+        if key == "scheme":
+            normalized[key] = str(val or default_val)
+        else:
+            try:
+                normalized[key] = float(val)
+            except Exception:
+                normalized[key] = default_val
+    try:
+        cache_dir = _get_cache_dir()
+        path = os.path.join(cache_dir, f"margin_settings_{user_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Ошибка сохранения настроек маржи: {e}")
+    return normalized
 
 def _read_version() -> str:
     try:
@@ -964,6 +1029,19 @@ class Notification(db.Model):
     notification_type = db.Column(db.String(50), nullable=False)  # 'fbs_new_order', 'system', etc.
     is_read = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ))
+
+
+class PurchasePrice(db.Model):
+    __tablename__ = "purchase_prices"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    barcode = db.Column(db.String(50), nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ))
+    updated_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ), onupdate=datetime.now(MOSCOW_TZ))
+    
+    # Уникальный индекс для комбинации user_id + barcode
+    __table_args__ = (db.UniqueConstraint('user_id', 'barcode', name='unique_user_barcode'),)
     data = db.Column(db.Text, nullable=True)  # JSON data for additional info
     
     user = db.relationship('User', backref=db.backref('notifications', lazy=True))
@@ -5064,6 +5142,8 @@ def api_report_finance():
         total_other_deductions = 0.0
         total_penalties = 0.0
         total_additional_payment = 0.0
+        # Платная доставка (компенсация): sum(ppvz_for_pay) where supplier_oper_name == "Услуга платная доставка"
+        total_paid_delivery = 0.0
         # Компенсация брака составная метрика по ppvz_for_pay
         x1 = x2 = x3 = x4 = x5 = x6 = x7 = x8 = 0.0
         # Комиссия компоненты K1..K9
@@ -5160,6 +5240,9 @@ def api_report_finance():
                 oper_l = (r.get("supplier_oper_name") or "").strip().lower()
                 doc_l = (r.get("doc_type_name") or "").strip().lower()
                 pay_val = float(r.get("ppvz_for_pay") or 0.0)
+                # Платная доставка — учитываем как компенсацию, отдельная метрика
+                if oper_l == "услуга платная доставка":
+                    total_paid_delivery += pay_val
                 if oper_l == "компенсация брака" and doc_l == "продажа":
                     x1 += pay_val
                 if oper_l == "оплата брака" and doc_l == "продажа":
@@ -5250,6 +5333,7 @@ def api_report_finance():
                     "total_penalties": round(total_penalties, 2),
                     "total_defect_compensation": round(defect_comp, 2),
                     "total_damage_compensation": round(damage_comp, 2),
+                    "total_paid_delivery": round(total_paid_delivery, 2),
                     "total_additional_payment": round(total_additional_payment, 2),
                     "total_deductions": round(total_deductions, 2),
                     "total_for_transfer": round(total_for_transfer, 2),
@@ -5272,7 +5356,7 @@ def api_report_finance():
         )
         damage_comp = u1 + u2 - u3 - u4 + u5 - u6 + u7 + u8 - u9 - u10 + u11 - u12 + u13 - u14
         
-        # Удержания и компенсации WB = Комиссия + Эквайринг + Логистика + Хранение + Прочие удержания + Приёмка - Компенсация брака - Компенсация ущерба + Штрафы + Доплаты
+        # Удержания и компенсации WB = Комиссия + Эквайринг + Логистика + Хранение + Прочие удержания + Приёмка - Компенсация брака - Компенсация ущерба - Платная доставка + Штрафы + Доплаты
         total_deductions = (
             commission_total + 
             total_acquiring + 
@@ -5281,7 +5365,8 @@ def api_report_finance():
             total_other_deductions + 
             total_acceptance - 
             defect_comp - 
-            damage_comp + 
+            damage_comp - 
+            total_paid_delivery + 
             total_penalties + 
             total_additional_payment
         )
@@ -5317,12 +5402,13 @@ def api_report_finance():
             "total_other_deductions": round(total_other_deductions, 2),
             "total_penalties": round(total_penalties, 2),
             "total_defect_compensation": round(defect_comp, 2),
-                                "total_damage_compensation": round(damage_comp, 2),
-                    "total_additional_payment": round(total_additional_payment, 2),
-                    "total_deductions": round(total_deductions, 2),
-                    "total_for_transfer": round(total_for_transfer, 2),
-                    "date_from_fmt": date_from_fmt,
-                    "date_to_fmt": date_to_fmt,
+            "total_damage_compensation": round(damage_comp, 2),
+            "total_paid_delivery": round(total_paid_delivery, 2),
+            "total_additional_payment": round(total_additional_payment, 2),
+            "total_deductions": round(total_deductions, 2),
+            "total_for_transfer": round(total_for_transfer, 2),
+            "date_from_fmt": date_from_fmt,
+            "date_to_fmt": date_to_fmt,
         }), 200
     except Exception as exc:
         return jsonify({"items": [], "error": str(exc)}), 200
@@ -6213,16 +6299,152 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             # Получаем название товара
             name = c.get("name") or c.get("title") or c.get("subject") or "Без названия"
             
+            # Получаем subject_id для комиссий
+            subject_id = c.get("subjectID") or c.get("subjectId") or c.get("subject_id")
+            
             items.append({
                 "photo": photo,
                 "supplier_article": supplier_article,
                 "nm_id": nm_id,
                 "barcode": barcode,
                 "name": name,
+                "subject_id": subject_id,
             })
     except Exception:
         pass
     return items
+
+
+def fetch_commission_data(token: str) -> Dict[int, Dict[str, Any]]:
+    """Получает данные о комиссиях Wildberries по всем категориям"""
+    try:
+        print("Получаем данные о комиссиях...")
+        
+        # Попробуем разные варианты заголовков
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.get(
+            COMMISSION_API_URL,
+            headers=headers,
+            timeout=30
+        )
+        
+        print(f"Статус ответа комиссий: {response.status_code}")
+        print(f"Ответ комиссий: {response.text[:500]}...")
+        
+        if response.status_code == 200:
+            result = response.json()
+            # API возвращает данные в формате {"report": [...]}
+            report_data = result.get("report", [])
+            print(f"Получено {len(report_data)} записей о комиссиях")
+            if report_data:
+                print(f"Первая запись: {report_data[0]}")
+            
+            # Создаем словарь для быстрого поиска по subjectID
+            commission_data = {}
+            for item in report_data:
+                subject_id = item.get("subjectID")
+                if subject_id:
+                    commission_data[subject_id] = {
+                        "parent_name": item.get("parentName", ""),
+                        "subject_name": item.get("subjectName", ""),
+                        "fbs_commission": item.get("kgvpMarketplace", 0),  # FBS
+                        "cc_commission": item.get("kgvpPickup", 0),  # C&C
+                        "dbs_dbw_commission": item.get("kgvpSupplier", 0),  # DBS + DBW
+                        "edbs_commission": item.get("kgvpSupplierExpress", 0),  # EDBS
+                        "fbw_commission": item.get("paidStorageKgvp", 0),  # FBW
+                    }
+            
+            print(f"Обработано {len(commission_data)} комиссий")
+            if commission_data:
+                print(f"Пример комиссии: {list(commission_data.values())[0]}")
+                print(f"Доступные subject_id: {list(commission_data.keys())[:10]}...")  # Первые 10 ID
+            return commission_data
+        else:
+            print(f"Ошибка получения комиссий: {response.status_code} - {response.text}")
+            
+    except Exception as e:
+        print(f"Ошибка при получении комиссий: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return {}
+
+
+def fetch_prices_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Получает данные о ценах товаров через API Wildberries"""
+    if not nm_ids:
+        return {}
+    
+    try:
+        print(f"Пробуем получить цены для {len(nm_ids)} товаров")
+        
+        # Используем правильный API согласно Postman
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        # GET запрос с параметром limit
+        params = {"limit": 500}
+        
+        response = requests.get(
+            DISCOUNTS_PRICES_API_URL,
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        
+        print(f"Статус ответа: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"Ответ API: {result}")
+            
+            prices_data = {}
+            
+            # Обрабатываем ответ согласно структуре из Postman
+            if isinstance(result, dict) and "data" in result:
+                list_goods = result["data"].get("listGoods", [])
+                print(f"Найдено {len(list_goods)} товаров в listGoods")
+                
+                for goods_item in list_goods:
+                    nm_id = goods_item.get("nmID")
+                    if nm_id:
+                        # Цены находятся в массиве sizes
+                        sizes = goods_item.get("sizes", [])
+                        print(f"Товар {nm_id}: найдено {len(sizes)} размеров")
+                        
+                        if sizes:
+                            first_size = sizes[0]
+                            price = first_size.get("price", 0)  # Базовая цена
+                            discounted_price = first_size.get("discountedPrice", price)  # Цена со скидкой
+                            
+                            if price > 0:
+                                club_discounted_price = first_size.get("clubDiscountedPrice", discounted_price)  # Цена со скидкой WB кошелька
+                                
+                                prices_data[nm_id] = {
+                                    "price": price,  # Цена до скидки
+                                    "discount_price": discounted_price,  # Цена со скидкой
+                                    "club_discount_price": club_discounted_price  # Цена со скидкой WB кошелька
+                                }
+                                print(f"Товар {nm_id}: цена до скидки {price}, цена со скидкой {discounted_price}, цена WB кошелька {club_discounted_price}")
+                        else:
+                            print(f"Товар {nm_id}: нет размеров")
+            
+            if prices_data:
+                print(f"Успешно получено {len(prices_data)} цен из API")
+                return prices_data
+            else:
+                print("Нет данных о ценах в ответе от API")
+        else:
+            print(f"Ошибка {response.status_code}: {response.text}")
+            
+    except Exception as e:
+        print(f"Ошибка при получении цен: {e}")
+    
+    print("Не удалось получить цены от API")
+    return {}
 
 
 @app.route("/products", methods=["GET"]) 
@@ -7193,7 +7415,418 @@ def test_notification():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/tools/prices", methods=["GET"])
+@login_required
+def tools_prices_page():
+    """Страница управления ценами"""
+    token = current_user.wb_token or ""
+    error = None
+    products = []
+    prices_data = {}
+    
+    if not token:
+        error = "Укажите токен API в профиле"
+    else:
+        try:
+            # Загружаем товары из кэша или с API
+            cached = load_products_cache()
+            if cached and cached.get("_user_id") == current_user.id:
+                products = cached.get("items", [])
+            else:
+                # Загружаем все страницы товаров
+                raw_cards = fetch_all_cards(token, page_limit=100)
+                products = normalize_cards_response({"cards": raw_cards})
+                save_products_cache({"items": products, "_user_id": current_user.id})
+            
+            # Получаем цены продажи для товаров
+            if products:
+                nm_ids = []
+                for p in products:
+                    nm_id = p.get("nm_id")
+                    if nm_id:
+                        try:
+                            # Преобразуем в int, если это строка
+                            nm_ids.append(int(nm_id))
+                        except (ValueError, TypeError):
+                            print(f"Не удалось преобразовать nm_id в int: {nm_id}")
+                            continue
+                
+                print(f"Найдено {len(nm_ids)} валидных nm_id для запроса цен")
+                if nm_ids:
+                    # Получаем цены для всех товаров
+                    prices_data = fetch_prices_data(token, nm_ids)
+            
+            # Получаем данные о комиссиях
+            commission_data = {}
+            try:
+                commission_data = fetch_commission_data(token)
+                print(f"Загружено {len(commission_data)} комиссий")
+            except Exception as e:
+                print(f"Ошибка при загрузке комиссий: {e}")
+                commission_data = {}
+            
+            # Настройки маржи пользователя
+            margin_settings = load_user_margin_settings(current_user.id)
+
+            # Отладочная информация о товарах
+            if products:
+                print(f"Проверяем subject_id у товаров:")
+                found_commissions = 0
+                for i, product in enumerate(products[:5]):  # Первые 5 товаров
+                    subject_id = product.get('subject_id')
+                    print(f"Товар {i+1}: subject_id = {subject_id}, nm_id = {product.get('nm_id')}")
+                    if subject_id and commission_data:
+                        if subject_id in commission_data:
+                            print(f"  -> Найдена комиссия: {commission_data[subject_id]}")
+                            found_commissions += 1
+                        else:
+                            print(f"  -> Комиссия не найдена для subject_id {subject_id}")
+                print(f"Найдено комиссий для {found_commissions} из {min(5, len(products))} товаров")
+            
+            # Получаем сохраненные закупочные цены из базы данных
+            purchase_prices = {}
+            try:
+                saved_prices = PurchasePrice.query.filter_by(user_id=current_user.id).all()
+                for price_record in saved_prices:
+                    purchase_prices[price_record.barcode] = price_record.price
+                print(f"Загружено {len(purchase_prices)} сохраненных закупочных цен")
+            except Exception as e:
+                print(f"Ошибка при загрузке закупочных цен: {e}")
+                purchase_prices = {}
+                    
+        except requests.HTTPError as http_err:
+            error = f"Ошибка API: {http_err.response.status_code}"
+        except Exception as exc:
+            error = f"Ошибка: {exc}"
+    
+    # Время последнего обновления цен на момент рендера страницы
+    prices_last_updated = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+
+    return render_template(
+        "tools_prices.html",
+        products=products,
+        prices_data=prices_data,
+        commission_data=commission_data,
+        purchase_prices=purchase_prices,
+        margin_settings=margin_settings if 'margin_settings' in locals() else load_user_margin_settings(current_user.id),
+        prices_last_updated=prices_last_updated,
+        error=error,
+        token=token
+    )
+
+
+@app.route("/api/prices/upload", methods=["POST"])
+@login_required
+def api_prices_upload():
+    """Загрузка закупочных цен из Excel файла"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "Файл не найден"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "Файл не выбран"}), 400
+        
+        if not file.filename.lower().endswith(('.xlsx', '.xls')):
+            return jsonify({"success": False, "error": "Поддерживаются только Excel файлы (.xlsx, .xls)"}), 400
+        
+        # Читаем Excel файл в зависимости от формата
+        prices = {}
+        updated_count = 0
+        
+        if file.filename.lower().endswith('.xlsx'):
+            # Новый формат Excel (.xlsx)
+            workbook = load_workbook(file, data_only=True)
+            worksheet = workbook.active
+            
+            # Читаем данные из первых двух колонок (баркод и цена)
+            for row in worksheet.iter_rows(min_row=2, max_col=2, values_only=True):
+                if len(row) >= 2 and row[0] and row[1]:
+                    barcode = str(row[0]).strip()
+                    try:
+                        price = float(row[1])
+                        if price > 0:
+                            prices[barcode] = price
+                            updated_count += 1
+                    except (ValueError, TypeError):
+                        continue
+        else:
+            # Старый формат Excel (.xls)
+            file.seek(0)  # Сбрасываем позицию файла
+            workbook = xlrd.open_workbook(file_contents=file.read())
+            worksheet = workbook.sheet_by_index(0)
+            
+            # Читаем данные из первых двух колонок (баркод и цена)
+            for row_idx in range(1, worksheet.nrows):  # Пропускаем заголовок
+                if worksheet.ncols >= 2:
+                    barcode_cell = worksheet.cell_value(row_idx, 0)
+                    price_cell = worksheet.cell_value(row_idx, 1)
+                    
+                    if barcode_cell and price_cell:
+                        barcode = str(barcode_cell).strip()
+                        try:
+                            price = float(price_cell)
+                            if price > 0:
+                                prices[barcode] = price
+                                updated_count += 1
+                        except (ValueError, TypeError):
+                            continue
+        
+        return jsonify({
+            "success": True,
+            "prices": prices,
+            "updated_count": updated_count
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Ошибка обработки файла: {str(e)}"}), 500
+
+
+@app.route("/api/prices/save", methods=["POST"])
+@login_required
+def api_prices_save():
+    """Сохранение закупочных цен"""
+    try:
+        data = request.get_json()
+        prices = data.get('prices', {})
+        
+        if not prices:
+            return jsonify({"success": False, "error": "Нет данных для сохранения"}), 400
+        
+        saved_count = 0
+        
+        # Сохраняем каждую цену в базу данных
+        for barcode, price in prices.items():
+            try:
+                # Ищем существующую запись
+                existing_price = PurchasePrice.query.filter_by(
+                    user_id=current_user.id, 
+                    barcode=barcode
+                ).first()
+                
+                if existing_price:
+                    # Обновляем существующую запись
+                    existing_price.price = price
+                    existing_price.updated_at = datetime.now(MOSCOW_TZ)
+                else:
+                    # Создаем новую запись
+                    new_price = PurchasePrice(
+                        user_id=current_user.id,
+                        barcode=barcode,
+                        price=price
+                    )
+                    db.session.add(new_price)
+                
+                saved_count += 1
+                
+            except Exception as e:
+                print(f"Ошибка при сохранении цены для баркода {barcode}: {e}")
+                continue
+        
+        # Сохраняем изменения в базе данных
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "saved_count": saved_count,
+            "message": f"Сохранено {saved_count} цен"
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "error": f"Ошибка сохранения: {str(e)}"}), 500
+
+
+@app.route("/api/prices/export-excel", methods=["POST"])
+@login_required
+def api_prices_export_excel():
+    """Экспорт данных управления ценами в Excel формат XLS"""
+    try:
+        data = request.get_json()
+        if not data or 'products' not in data:
+            return jsonify({"error": "Нет данных для экспорта"}), 400
+        
+        products = data['products']
+        prices_data = data.get('prices_data', {})
+        commission_data = data.get('commission_data', {})
+        purchase_prices = data.get('purchase_prices', {})
+        
+        print(f"Экспорт Excel: получено {len(products)} товаров")
+        print(f"Экспорт Excel: prices_data содержит {len(prices_data)} записей")
+        print(f"Экспорт Excel: commission_data содержит {len(commission_data)} записей")
+        print(f"Экспорт Excel: purchase_prices содержит {len(purchase_prices)} записей")
+        
+        if not products:
+            return jsonify({"error": "Нет товаров для экспорта"}), 400
+        
+        # Создаем Excel файл в формате XLS (Excel 97-2003)
+        workbook = xlwt.Workbook(encoding='utf-8')
+        worksheet = workbook.add_sheet('Управление ценами')
+        
+        # Стили
+        header_style = xlwt.easyxf('font: bold on; align: horiz center;')
+        number_style = xlwt.easyxf('align: horiz right;')
+        text_style = xlwt.easyxf('align: horiz left;')
+        
+        # Заголовки
+        headers = [
+            '№', 'Наименование', 'Артикул WB', 'Баркод', 'Закупочная цена',
+            'Цена до скидки', 'Цена со скидки', 'Цена со скидкой WB кошелька',
+            'Категория', 'Комиссия FBS %', 'Комиссия C&C %', 'Комиссия DBS/DBW %',
+            'Комиссия EDBS %', 'Комиссия FBW %'
+        ]
+        
+        for col, header in enumerate(headers):
+            worksheet.write(0, col, header, header_style)
+        
+        # Данные
+        for row, product in enumerate(products, 1):
+            nm_id = product.get('nm_id')
+            subject_id = product.get('subject_id')
+            barcode = product.get('barcode', '')
+            
+            # Отладочная информация для первых 3 товаров
+            if row <= 3:
+                print(f"Товар {row}: nm_id={nm_id}, subject_id={subject_id}, barcode={barcode}")
+                print(f"  prices_data содержит nm_id {nm_id}: {str(nm_id) in prices_data if prices_data else False}")
+                print(f"  commission_data содержит subject_id {subject_id}: {str(subject_id) in commission_data if commission_data else False}")
+                print(f"  purchase_prices содержит barcode {barcode}: {barcode in purchase_prices if purchase_prices else False}")
+            
+            # Получаем цены
+            price_before_discount = 0
+            price_with_discount = 0
+            price_wb_wallet = 0
+            if prices_data and str(nm_id) in prices_data:
+                price_before_discount = prices_data[str(nm_id)].get('price', 0)
+                price_with_discount = prices_data[str(nm_id)].get('discount_price', 0)
+                price_wb_wallet = prices_data[str(nm_id)].get('club_discount_price', 0)
+                if row <= 3:
+                    print(f"  Найдены цены: {price_before_discount}, {price_with_discount}, {price_wb_wallet}")
+            
+            # Получаем закупочную цену
+            purchase_price = purchase_prices.get(barcode, 0)
+            
+            # Получаем данные о комиссиях
+            category_name = ""
+            fbs_commission = 0
+            cc_commission = 0
+            dbs_dbw_commission = 0
+            edbs_commission = 0
+            fbw_commission = 0
+            
+            if commission_data and str(subject_id) in commission_data:
+                commission = commission_data[str(subject_id)]
+                category_name = commission.get('subject_name', '')
+                fbs_commission = commission.get('fbs_commission', 0)
+                cc_commission = commission.get('cc_commission', 0)
+                dbs_dbw_commission = commission.get('dbs_dbw_commission', 0)
+                edbs_commission = commission.get('edbs_commission', 0)
+                fbw_commission = commission.get('fbw_commission', 0)
+                if row <= 3:
+                    print(f"  Найдены комиссии: {category_name}, FBS={fbs_commission}, C&C={cc_commission}")
+            
+            # Записываем данные
+            worksheet.write(row, 0, row, number_style)  # №
+            worksheet.write(row, 1, str(product.get('supplier_article', '')), text_style)  # Наименование
+            worksheet.write(row, 2, str(nm_id or ''), text_style)  # Артикул WB
+            worksheet.write(row, 3, str(barcode), text_style)  # Баркод
+            worksheet.write(row, 4, round(purchase_price, 2), number_style)  # Закупочная цена
+            worksheet.write(row, 5, round(price_before_discount, 2), number_style)  # Цена до скидки
+            worksheet.write(row, 6, round(price_with_discount, 2), number_style)  # Цена со скидки
+            worksheet.write(row, 7, round(price_wb_wallet, 2), number_style)  # Цена со скидкой WB кошелька
+            worksheet.write(row, 8, str(category_name), text_style)  # Категория
+            worksheet.write(row, 9, round(fbs_commission, 1), number_style)  # Комиссия FBS %
+            worksheet.write(row, 10, round(cc_commission, 1), number_style)  # Комиссия C&C %
+            worksheet.write(row, 11, round(dbs_dbw_commission, 1), number_style)  # Комиссия DBS/DBW %
+            worksheet.write(row, 12, round(edbs_commission, 1), number_style)  # Комиссия EDBS %
+            worksheet.write(row, 13, round(fbw_commission, 1), number_style)  # Комиссия FBW %
+        
+        # Автоподбор ширины колонок
+        column_widths = [1000, 8000, 2000, 2000, 2000, 2000, 2000, 2000, 3000, 1500, 1500, 1500, 1500, 1500]
+        for col, width in enumerate(column_widths):
+            worksheet.col(col).width = width
+        
+        # Создаем файл в памяти
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        
+        # Генерируем имя файла
+        now = datetime.now()
+        day = now.strftime("%d.%m.%Y")
+        time = now.strftime("%H_%M")
+        filename = f"Управление_ценами_{day}_{time}.xls"
+        
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.ms-excel'
+        )
+        
+    except Exception as e:
+        print(f"Ошибка экспорта в Excel: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Ошибка экспорта: {str(e)}"}), 500
+
+
+
+@app.route("/tools/prices/template", methods=["GET"])
+@login_required
+def download_prices_template():
+    """Скачать шаблон Excel для загрузки закупочных цен (XLS)."""
+    try:
+        workbook = xlwt.Workbook(encoding='utf-8')
+        worksheet = workbook.add_sheet('Шаблон закупочных цен')
+
+        header_style = xlwt.easyxf('font: bold on; align: horiz center;')
+        text_style = xlwt.easyxf('align: horiz left;')
+
+        # Заголовки
+        worksheet.write(0, 0, 'Баркод', header_style)
+        worksheet.write(0, 1, 'Закупочная цена', header_style)
+
+        # Пример строки
+        worksheet.write(1, 0, '2001234567890', text_style)
+        worksheet.write(1, 1, '123.45', text_style)
+
+        worksheet.col(0).width = 5000
+        worksheet.col(1).width = 5000
+
+        output = BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name='Шаблон_закупочных_цен.xls',
+            mimetype='application/vnd.ms-excel'
+        )
+    except Exception as e:
+        return jsonify({"error": f"Не удалось создать шаблон: {str(e)}"}), 500
+
+
+@app.route("/api/tools/prices/margin-settings", methods=["GET", "POST"])
+@login_required
+def api_margin_settings():
+    """Получение/сохранение настроек маржи текущего пользователя."""
+    try:
+        if request.method == "GET":
+            settings = load_user_margin_settings(current_user.id)
+            return jsonify({"success": True, "settings": settings})
+        else:
+            data = request.get_json() or {}
+            saved = save_user_margin_settings(current_user.id, data)
+            return jsonify({"success": True, "settings": saved})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 
 if __name__ == "__main__":
+    # Создаем таблицы в базе данных
+    with app.app_context():
+        db.create_all()
     app.run(host="0.0.0.0", port=5000, debug=True)

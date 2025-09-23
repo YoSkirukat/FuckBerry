@@ -596,9 +596,10 @@
             const addPayEl = document.getElementById('finAdditionalPayVal'); if (addPayEl) addPayEl.textContent = ((Number(data.total_additional_payment)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const defectCompEl = document.getElementById('finDefectCompVal'); if (defectCompEl) defectCompEl.textContent = ((Number(data.total_defect_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const damageCompEl = document.getElementById('finDamageCompVal'); if (damageCompEl) damageCompEl.textContent = ((Number(data.total_damage_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            const paidDeliveryEl0 = document.getElementById('finPaidDeliveryVal'); if (paidDeliveryEl0) paidDeliveryEl0.textContent = ((Number(data.total_paid_delivery)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const commissionEl = document.getElementById('finCommissionVal'); if (commissionEl) commissionEl.textContent = ((Number(data.total_commission)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const wbRealEl = document.getElementById('finWbRealizedVal'); if (wbRealEl) wbRealEl.textContent = ((Number(data.total_wb_realized)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
-            const wbDed = ((Number(data.total_commission)||0) + (Number(data.total_acquiring)||0) + (Number(data.total_logistics)||0) + (Number(data.total_storage)||0) + (Number(data.total_other_deductions)||0) + (Number(data.total_acceptance)||0) - (Number(data.total_defect_compensation)||0) - (Number(data.total_damage_compensation)||0) + (Number(data.total_penalties)||0) + (Number(data.total_additional_payment)||0));
+            const wbDed = ((Number(data.total_commission)||0) + (Number(data.total_acquiring)||0) + (Number(data.total_logistics)||0) + (Number(data.total_storage)||0) + (Number(data.total_other_deductions)||0) + (Number(data.total_acceptance)||0) - (Number(data.total_defect_compensation)||0) - (Number(data.total_damage_compensation)||0) - (Number(data.total_paid_delivery)||0) + (Number(data.total_penalties)||0) + (Number(data.total_additional_payment)||0));
             const wbDedEl = document.getElementById('finWbDedTotal'); if (wbDedEl) wbDedEl.textContent = Number(wbDed).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
             const forPayEl2 = document.getElementById('finForPayVal'); if (forPayEl2) forPayEl2.textContent = (Number(data.total_for_transfer || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const buyoutOps = new Set(['продажа','сторно возвратов','корректная продажа','коррекция продаж']);
@@ -694,6 +695,8 @@
           if (defectCompEl) defectCompEl.textContent = ((Number(data.total_defect_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
           const damageCompEl = document.getElementById('finDamageCompVal');
           if (damageCompEl) damageCompEl.textContent = ((Number(data.total_damage_compensation)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          const paidDeliveryElS = document.getElementById('finPaidDeliveryVal');
+          if (paidDeliveryElS) paidDeliveryElS.textContent = ((Number(data.total_paid_delivery)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
           const commissionEl = document.getElementById('finCommissionVal');
           if (commissionEl) commissionEl.textContent = ((Number(data.total_commission)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
           const commissionPctEl = document.getElementById('finCommissionPct');
@@ -713,6 +716,7 @@
             + (Number(data.total_acceptance)||0)
             - (Number(data.total_defect_compensation)||0)
             - (Number(data.total_damage_compensation)||0)
+            - (Number(data.total_paid_delivery)||0)
             + (Number(data.total_penalties)||0)
             + (Number(data.total_additional_payment)||0)
           );
@@ -880,6 +884,12 @@
           <div class="card h-100 compensation-card"><div class="card-body">
             <div class="text-muted">Компенсация ущерба</div>
             <div class="fs-6"><strong id="finDamageCompVal">0</strong></div>
+          </div></div>
+        </div>
+        <div class="col-12 col-md-3">
+          <div class="card h-100 compensation-card"><div class="card-body">
+            <div class="text-muted">Платная доставка</div>
+            <div class="fs-6"><strong id="finPaidDeliveryVal">0</strong></div>
           </div></div>
         </div>
         <div class="col-12 col-md-3">

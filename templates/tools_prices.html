@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Управление ценами — WB Dashboard</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    h1 { font-size: 1.7rem; }
+    input#productsSearch { padding: .5rem .5rem; }
+    .mb-2 {margin-bottom: 1.1rem !important;}
+    .price-input { width: 100px; }
+    
+    /* Вертикальные разделители для таблицы */
+    #productsTable th:not(:last-child),
+    #productsTable td:not(:last-child) {
+      border-right: 1px solid #dee2e6;
+    }
+    
+    /* Стили для ячеек таблицы */
+    #productsTable td {
+      border-right: 1px solid #dee2e6;
+      padding: 8px;
+    }
+    
+    #productsTable td:last-child {
+      border-right: none;
+    }
+    
+    /* Прилипающая шапка с поиском */
+    .sticky-header {
+      position: sticky;
+      top: 0;
+      z-index: 11;
+      background: #fff;
+      border-bottom: 1px solid #dee2e6;
+      padding: 10px 0;
+      margin-bottom: 0;
+    }
+    
+    /* Прилипающая шапка таблицы */
+    #productsTable thead {
+      position: sticky;
+      top: 60px; /* Высота прилипающей шапки с поиском */
+      z-index: 10;
+      background: #fff;
+    }
+    
+    /* Выравнивание заголовков по центру */
+    #productsTable th {
+      text-align: center !important;
+      vertical-align: middle !important;
+    }
+    #productsTable { font-size: .875em; }
+    /* Цветовые акценты заголовков */
+    #productsTable th.header-purchase { background-color: #dff0d8; }           /* мягкий зелёный */
+    #productsTable th.header-price { background-color: #e7f1ff; }              /* светло-голубой */
+    #productsTable th.header-commission { background-color: #fff3cd; }         /* мягкий жёлтый */
+    #productsTable th.header-total { background-color: #ffe08a; }              /* более насыщенный жёлтый */
+    #productsTable th.header-receive { background-color: #e7f1ff; }            /* светло-голубой */
+    #productsTable th.header-profit { background-color: #d4edda; }             /* зелёный (прибыль) */
+    /* Негативная прибыль */
+    #productsTable td.profit-bad { background-color: #fde2e1; color: #a30000; font-weight: 600; }
+    
+    /* Убираем ограничения контейнера для sticky */
+    .table-responsive {
+      overflow: visible;
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
+      <div class="d-flex align-items-center gap-3 flex-wrap">
+        <h1 class="mb-0">Управление ценами{% if products|length %} ({{ products|length }} шт.){% endif %}</h1>
+        <div class="text-muted">Обновлено: {{ prices_last_updated }}</div>
+      </div>
+      <div class="d-flex gap-2">
+        <button id="refreshProducts" class="btn btn-primary btn-sm">Обновить список товаров</button>
+        <div class="btn-group">
+          <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+            Действия с Excel
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="#" id="actionExportExcel"><i class="fas fa-file-excel me-1"></i> Экспорт в Excel</a></li>
+            <li><a class="dropdown-item" href="#" id="actionUploadPrices"><i class="bi bi-cloud-upload me-1"></i> Загрузить закупочные цены</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="/tools/prices/template"><i class="bi bi-download me-1"></i> Скачать шаблон</a></li>
+          </ul>
+        </div>
+        <button id="columnsSettingsBtn" class="btn btn-outline-secondary btn-sm" title="Настройка колонок">
+          <i class="fas fa-cog"></i>
+        </button>
+        <button id="savePrices" class="btn btn-success btn-sm" style="display: none;">Сохранить изменения</button>
+      </div>
+    </div>
+    
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    
+    
+    <!-- Загрузка закупочных цен: только скрытый input и статус -->
+    <input type="file" id="excelFile" accept=".xlsx,.xls" style="display: none;">
+    <div id="uploadStatus" class="mb-3" style="display: none;"></div>
+    
+    <!-- Блок переменных маржинальности -->
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="row g-2 align-items-center">
+          <div class="col-auto"><strong>Параметры для расчета маржинальности:</strong></div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Налог, %</label>
+            <input type="number" step="0.1" min="0" id="varTax" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.tax }}">
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Логистика, %</label>
+            <input type="number" step="0.1" min="0" id="varLogistics" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.logistics }}">
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Хранение, %</label>
+            <input type="number" step="0.1" min="0" id="varStorage" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.storage }}">
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Приёмка, %</label>
+            <input type="number" step="0.1" min="0" id="varReceiving" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.receiving }}">
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Эквайринг, %</label>
+            <input type="number" step="0.1" min="0" id="varAcquiring" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.acquiring }}">
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Схема WB</label>
+            <select id="varScheme" class="form-select form-select-sm" style="width:140px">
+              {% set s = margin_settings.scheme or 'FBW' %}
+              <option value="FBW" {% if s=='FBW' %}selected{% endif %}>FBW</option>
+              <option value="FBS" {% if s=='FBS' %}selected{% endif %}>FBS</option>
+              <option value="C&C" {% if s=='C&C' %}selected{% endif %}>C&C</option>
+              <option value="DBS/DBW" {% if s=='DBS/DBW' %}selected{% endif %}>DBS/DBW</option>
+              <option value="EDBS" {% if s=='EDBS' %}selected{% endif %}>EDBS</option>
+            </select>
+          </div>
+          <div class="col-auto text-muted small" id="marginSaveStatus" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Прилипающая шапка с поиском -->
+    <div class="sticky-header">
+      <div class="row">
+        <div class="col-12">
+          <input id="productsSearch" type="search" class="form-control form-control-sm" placeholder="Поиск товара" />
+        </div>
+      </div>
+    </div>
+    
+    <!-- Таблица товаров с ценами -->
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0" id="productsTable" style="border-collapse: separate; border-spacing: 0;">
+            <thead class="table-light text-center">
+              <tr>
+            <th style="width:56px; border-right: 1px solid #dee2e6;">#</th>
+            <th style="width:72px; border-right: 1px solid #dee2e6;">Фото</th>
+            <th style="border-right: 1px solid #dee2e6;">Наименование</th>
+            <th class="header-purchase" style="width:120px; border-right: 1px solid #dee2e6;">Закупочная цена</th>
+            <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена до скидки</th>
+            <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена со скидкой</th>
+            <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена со скидкой (WB клуб)</th>
+            <th style="width:150px; border-right: 1px solid #dee2e6;">Категория</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Комиссия WB, %</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Комиссия WB руб.</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Налог руб.</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Логистика руб.</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Хранение руб.</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Приёмка руб.</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Эквайринг руб.</th>
+            <th class="header-total" style="width:140px; border-right: 1px solid #dee2e6;">Итого расходов: руб.</th>
+            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Расходов в %</th>
+            <th class="header-receive" style="width:150px; border-right: 1px solid #dee2e6;">Цена к получению руб.</th>
+            <th class="header-profit" style="width:140px;">Прибыль чистая руб.</th>
+            <th class="header-profit" style="width:120px;">Прибыль %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for product in products %}
+              <tr data-nm-id="{{ product.nm_id }}" data-barcode="{{ product.barcode }}">
+                <td class="text-center">{{ loop.index }}</td>
+                <td>
+                  {% if product.photo %}
+                    <img src="{{ product.photo }}" data-src="{{ product.photo }}" class="product-thumb" alt="photo" style="width:45px;height:65px;object-fit:cover;cursor: zoom-in;" />
+                  {% else %}
+                    <span class="text-muted">нет фото</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div>
+                    {% if product.nm_id %}
+                      <a href="https://www.wildberries.ru/catalog/{{ product.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ product.supplier_article or '' }}</a>
+                    {% else %}
+                      {{ product.supplier_article or '' }}
+                    {% endif %}
+                  </div>
+                  {% if product.nm_id or product.barcode %}
+                    <div class="small text-muted mt-1">
+                      {% if product.nm_id %}Артикул WB: {{ product.nm_id }}{% endif %}
+                      {% if product.nm_id and product.barcode %} | {% endif %}
+                      {% if product.barcode %}Баркод: {{ product.barcode }}{% endif %}
+                    </div>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  <input type="number" 
+                         class="form-control form-control-sm price-input purchase-price" 
+                         placeholder="0.00" 
+                         step="0.01" 
+                         min="0"
+                         data-barcode="{{ product.barcode }}"
+                         value="{% if purchase_prices and product.barcode in purchase_prices %}{{ purchase_prices[product.barcode] }}{% endif %}"
+                         style="display: inline-block; width: 100px;">
+                </td>
+                <td class="text-center">
+                  {% set nm_id = product.nm_id %}
+                  <input type="number" class="form-control form-control-sm text-end price-edit price-before-input"
+                         data-nm-id="{{ nm_id }}" step="0.01" min="0"
+                         value="{% if prices_data and nm_id in prices_data %}{{ '%.2f'|format(prices_data[nm_id].price) }}{% else %}{% endif %}" style="width:110px;display:inline-block;">
+                </td>
+                <td class="text-center">
+                  {% set nm_id = product.nm_id %}
+                  <input type="number" class="form-control form-control-sm text-end price-edit price-discount-input"
+                         data-nm-id="{{ nm_id }}" step="0.01" min="0"
+                         value="{% if prices_data and nm_id in prices_data %}{{ '%.2f'|format(prices_data[nm_id].discount_price) }}{% else %}{% endif %}" style="width:110px;display:inline-block;">
+                </td>
+                <td class="text-center">
+                  {% set nm_id = product.nm_id %}
+                  <input type="number" class="form-control form-control-sm text-end price-edit price-wallet-input"
+                         data-nm-id="{{ nm_id }}" step="0.01" min="0"
+                         value="{% if prices_data and nm_id in prices_data %}{{ '%.2f'|format(prices_data[nm_id].club_discount_price) }}{% else %}{% endif %}" style="width:110px;display:inline-block;">
+                </td>
+                <td class="text-center">
+                  {% set subject_id = product.subject_id %}
+                  {% if commission_data and subject_id in commission_data %}
+                    <span class="small">{{ commission_data[subject_id].subject_name }}</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="text-center commission-percent" data-subject-id="{{ product.subject_id }}">—</td>
+                <td class="text-center commission-rub">—</td>
+                <td class="text-center tax-rub">—</td>
+                <td class="text-center logistics-rub">—</td>
+                <td class="text-center storage-rub">—</td>
+                <td class="text-center receiving-rub">—</td>
+                <td class="text-center acquiring-rub">—</td>
+                <td class="text-center total-expenses-rub">—</td>
+                <td class="text-center expenses-percent">—</td>
+                <td class="text-center price-to-receive-rub">—</td>
+                <td class="text-center profit-net-rub">—</td>
+                <td class="text-center profit-percent">—</td>
+              </tr>
+              {% endfor %}
+              {% if not products %}
+                <tr><td colspan="12" class="text-muted">Нет данных</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+  </div>
+  
+  <div id="imgPreview" style="display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none;">
+    <img id="imgPreviewImg" src="" alt="preview" style="max-width:420px; max-height:560px; display:block;" />
+  </div>
+  
+  <script id="productsDataJson" type="application/json">{{ products|tojson|safe }}</script>
+  <script id="pricesDataJson" type="application/json">{{ prices_data|tojson|safe }}</script>
+  <script id="commissionDataJson" type="application/json">{{ commission_data|tojson|safe }}</script>
+  <script id="purchasePricesDataJson" type="application/json">{{ purchase_prices|tojson|safe }}</script>
+  
+  <!-- Модальное окно настройки колонок -->
+  <div class="modal fade" id="columnsSettingsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Отображение колонок</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row">
+            <div class="col-12" id="columnsChecklist"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+          <button type="button" class="btn btn-primary" id="columnsSaveBtn">Сохранить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    // Данные для экспорта (парсим из JSON-скриптов, чтобы не ломать линтер)
+    const productsData = JSON.parse(document.getElementById('productsDataJson').textContent || '[]');
+    const pricesData = JSON.parse(document.getElementById('pricesDataJson').textContent || '{}');
+    const commissionData = JSON.parse(document.getElementById('commissionDataJson').textContent || '{}');
+    const purchasePricesData = JSON.parse(document.getElementById('purchasePricesDataJson').textContent || '{}');
+    
+    (function(){
+      // ---- Настройки маржи: автосохранение с дебаунсом ----
+      const inputs = {
+        tax: document.getElementById('varTax'),
+        logistics: document.getElementById('varLogistics'),
+        storage: document.getElementById('varStorage'),
+        receiving: document.getElementById('varReceiving'),
+        acquiring: document.getElementById('varAcquiring'),
+        scheme: document.getElementById('varScheme'),
+      };
+      const saveStatus = document.getElementById('marginSaveStatus');
+      let saveTimer = null;
+      function scheduleSave(){
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(doSave, 600);
+      }
+      function doSave(){
+        const payload = {
+          tax: parseFloat(inputs.tax.value || 0) || 0,
+          logistics: parseFloat(inputs.logistics.value || 0) || 0,
+          storage: parseFloat(inputs.storage.value || 0) || 0,
+          receiving: parseFloat(inputs.receiving.value || 0) || 0,
+          acquiring: parseFloat(inputs.acquiring.value || 0) || 0,
+          scheme: (inputs.scheme && inputs.scheme.value) || 'FBW',
+        };
+        saveStatus.style.display = 'inline';
+        saveStatus.textContent = 'Сохранение…';
+        fetch('/api/tools/prices/margin-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).then(r=>r.json()).then(data=>{
+          if (data && data.success){
+            saveStatus.textContent = 'Сохранено';
+          } else {
+            saveStatus.textContent = 'Ошибка сохранения';
+          }
+          setTimeout(()=>{ saveStatus.style.display = 'none'; }, 1200);
+        }).catch(()=>{
+          saveStatus.textContent = 'Ошибка сохранения';
+          setTimeout(()=>{ saveStatus.style.display = 'none'; }, 1500);
+        });
+      }
+      Object.values(inputs).forEach(inp=>{
+        if (inp){ inp.addEventListener('input', scheduleSave); }
+      });
+
+      // ---- Заполнение колонки Комиссия WB, % по выбранной схеме ----
+      function getCommissionPercent(subjectId){
+        if (!commissionData || !subjectId || !commissionData[subjectId]) return null;
+        const item = commissionData[subjectId];
+        const scheme = (inputs.scheme && inputs.scheme.value) || 'FBW';
+        switch(scheme){
+          case 'FBS': return item.fbs_commission ?? null;
+          case 'C&C': return item.cc_commission ?? null;
+          case 'DBS/DBW': return item.dbs_dbw_commission ?? null;
+          case 'EDBS': return item.edbs_commission ?? null;
+          case 'FBW':
+          default: return item.fbw_commission ?? null;
+        }
+      }
+
+      function getDiscountPriceByRow(row){
+        const directInput = row.querySelector('.price-discount-input');
+        if (directInput){
+          const v = Number(directInput.value);
+          if (!isNaN(v)) return v;
+        }
+        const nmId = row.getAttribute('data-nm-id');
+        if (!nmId) return 0;
+        const key = String(nmId);
+        const item = pricesData ? pricesData[key] : null;
+        if (!item) return 0;
+        const v = Number(item.discount_price);
+        return isNaN(v) ? 0 : v;
+      }
+
+      function updateCommissionColumn(){
+        const rows = document.querySelectorAll('#productsTable tbody tr');
+        rows.forEach(row => {
+          const cellPercent = row.querySelector('.commission-percent');
+          const subjectId = cellPercent ? cellPercent.getAttribute('data-subject-id') : null;
+          const val = subjectId ? getCommissionPercent(subjectId) : null;
+          if (cellPercent){ cellPercent.textContent = (val !== null && val !== undefined) ? (Number(val).toFixed(1) + '%') : '—'; }
+
+          // Комиссия WB руб. = Цена со скидкой * (Комиссия WB, % / 100)
+          const cellRub = row.querySelector('.commission-rub');
+          if (cellRub){
+            if (val === null || val === undefined){
+              cellRub.textContent = '—';
+            } else {
+              const discountPrice = getDiscountPriceByRow(row);
+              const commissionRub = discountPrice * (Number(val) / 100);
+              cellRub.textContent = isNaN(commissionRub) ? '—' : commissionRub.toFixed(2);
+            }
+          }
+
+          // Налог руб. = Цена со скидкой * (Налог, % / 100)
+          const taxCell = row.querySelector('.tax-rub');
+          if (taxCell){
+            const taxPercent = inputs.tax ? Number(inputs.tax.value) : 0;
+            const discountPrice = getDiscountPriceByRow(row);
+            const taxRub = discountPrice * (taxPercent / 100);
+            taxCell.textContent = isNaN(taxRub) ? '—' : taxRub.toFixed(2);
+          }
+
+          // Логистика руб. = Цена со скидкой * (Логистика, % / 100)
+          const logisticsCell = row.querySelector('.logistics-rub');
+          if (logisticsCell){
+            const p = inputs.logistics ? Number(inputs.logistics.value) : 0;
+            const d = getDiscountPriceByRow(row);
+            const v = d * (p / 100);
+            logisticsCell.textContent = isNaN(v) ? '—' : v.toFixed(2);
+          }
+
+          // Хранение руб. = Цена со скидкой * (Хранение, % / 100)
+          const storageCell = row.querySelector('.storage-rub');
+          if (storageCell){
+            const p = inputs.storage ? Number(inputs.storage.value) : 0;
+            const d = getDiscountPriceByRow(row);
+            const v = d * (p / 100);
+            storageCell.textContent = isNaN(v) ? '—' : v.toFixed(2);
+          }
+
+          // Приёмка руб. = Цена со скидкой * (Приёмка, % / 100)
+          const receivingCell = row.querySelector('.receiving-rub');
+          if (receivingCell){
+            const p = inputs.receiving ? Number(inputs.receiving.value) : 0;
+            const d = getDiscountPriceByRow(row);
+            const v = d * (p / 100);
+            receivingCell.textContent = isNaN(v) ? '—' : v.toFixed(2);
+          }
+
+          // Эквайринг руб. = Цена со скидкой * (Эквайринг, % / 100)
+          const acquiringCell = row.querySelector('.acquiring-rub');
+          if (acquiringCell){
+            const p = inputs.acquiring ? Number(inputs.acquiring.value) : 0;
+            const d = getDiscountPriceByRow(row);
+            const v = d * (p / 100);
+            acquiringCell.textContent = isNaN(v) ? '—' : v.toFixed(2);
+          }
+
+          // -------- Производные показатели --------
+          const discountPrice = getDiscountPriceByRow(row);
+
+          // Считываем значения ячеек как числа
+          function parseCell(selector){
+            const c = row.querySelector(selector);
+            if (!c) return 0;
+            const t = (c.textContent || '').replace('%','').replace('\u00A0',' ').replace('₽','').trim();
+            const n = Number(t);
+            return isNaN(n) ? 0 : n;
+          }
+
+          const commissionRub = parseCell('.commission-rub');
+          const taxRub = parseCell('.tax-rub');
+          const logisticsRub = parseCell('.logistics-rub');
+          const storageRub = parseCell('.storage-rub');
+          const receivingRub = parseCell('.receiving-rub');
+          const acquiringRub = parseCell('.acquiring-rub');
+
+          // Итого расходов: руб. = Комиссия WB руб. + Налог руб. + Логистика руб. + Хранение руб. + Приёмка руб. + Эквайринг руб.
+          const totalExpenses = commissionRub + taxRub + logisticsRub + storageRub + receivingRub + acquiringRub;
+          const totalCell = row.querySelector('.total-expenses-rub');
+          if (totalCell){ totalCell.textContent = isNaN(totalExpenses) ? '—' : totalExpenses.toFixed(2); }
+
+          // Расходов в % = Итого расходов / Цена со скидкой
+          const expensesPctCell = row.querySelector('.expenses-percent');
+          if (expensesPctCell){
+            const pct = discountPrice > 0 ? (totalExpenses / discountPrice) * 100 : 0;
+            expensesPctCell.textContent = isNaN(pct) ? '—' : pct.toFixed(2) + '%';
+          }
+
+          // Цена к получению руб. = Цена со скидкой - Итого расходов
+          const priceToReceive = discountPrice - totalExpenses;
+          const ptrCell = row.querySelector('.price-to-receive-rub');
+          if (ptrCell){ ptrCell.textContent = isNaN(priceToReceive) ? '—' : priceToReceive.toFixed(2); }
+
+          // Прибыль чистая руб. = Цена со скидкой - Итого расходов - Закупочная цена
+          const purchaseInput = row.querySelector('.purchase-price');
+          const purchaseVal = purchaseInput ? Number(purchaseInput.value) : 0;
+          const profitNet = discountPrice - totalExpenses - (isNaN(purchaseVal) ? 0 : purchaseVal);
+          const profitNetCell = row.querySelector('.profit-net-rub');
+          if (profitNetCell){
+            profitNetCell.textContent = isNaN(profitNet) ? '—' : profitNet.toFixed(2);
+            profitNetCell.classList.toggle('profit-bad', !isNaN(profitNet) && profitNet <= 0);
+          }
+
+          // Прибыль % = Прибыль чистая руб. / Закупочная цена
+          const profitPct = (purchaseVal > 0) ? (profitNet / purchaseVal) * 100 : 0;
+          const profitPctCell = row.querySelector('.profit-percent');
+          if (profitPctCell){
+            profitPctCell.textContent = isNaN(profitPct) ? '—' : profitPct.toFixed(2) + '%';
+            profitPctCell.classList.toggle('profit-bad', !isNaN(profitPct) && profitPct <= 0);
+          }
+        });
+      }
+
+      if (inputs.scheme){
+        inputs.scheme.addEventListener('change', () => { scheduleSave(); updateCommissionColumn(); });
+      }
+      if (inputs.tax){ inputs.tax.addEventListener('input', () => { updateCommissionColumn(); }); }
+      if (inputs.logistics){ inputs.logistics.addEventListener('input', () => { updateCommissionColumn(); }); }
+      if (inputs.storage){ inputs.storage.addEventListener('input', () => { updateCommissionColumn(); }); }
+      if (inputs.receiving){ inputs.receiving.addEventListener('input', () => { updateCommissionColumn(); }); }
+      if (inputs.acquiring){ inputs.acquiring.addEventListener('input', () => { updateCommissionColumn(); }); }
+
+      // Изменение закупочной цены — пересчитывать прибыль и АВТОСОХРАНЯТЬ в БД (дебаунс)
+      const pendingPricesToSave = {};
+      let saveTimerSingle = null;
+      function scheduleSaveSinglePrice(barcode, value){
+        if (!barcode) return;
+        const v = Number(value);
+        if (isNaN(v) || v <= 0) return; // игнорируем пустые/некорректные
+        pendingPricesToSave[barcode] = v;
+        if (saveTimerSingle) clearTimeout(saveTimerSingle);
+        saveTimerSingle = setTimeout(()=>{
+          const batch = { ...pendingPricesToSave };
+          for (const k in pendingPricesToSave) delete pendingPricesToSave[k];
+          savePricesToDatabase(batch);
+        }, 700);
+      }
+
+      document.querySelectorAll('.purchase-price').forEach(inp => {
+        inp.addEventListener('input', (e) => {
+          updateCommissionColumn();
+          const barcode = e.target.getAttribute('data-barcode');
+          scheduleSaveSinglePrice(barcode, e.target.value);
+        });
+        inp.addEventListener('change', (e) => {
+          const barcode = e.target.getAttribute('data-barcode');
+          scheduleSaveSinglePrice(barcode, e.target.value);
+        });
+        inp.addEventListener('blur', (e) => {
+          const barcode = e.target.getAttribute('data-barcode');
+          scheduleSaveSinglePrice(barcode, e.target.value);
+        });
+      });
+
+      // Редактирование цен: обновляем локальный объект и пересчитываем
+      function bindPriceInputs(){
+        document.querySelectorAll('.price-edit').forEach(inp => {
+          inp.addEventListener('input', (e) => {
+            const input = e.target;
+            const nmId = input.getAttribute('data-nm-id');
+            if (!nmId) return;
+            const key = String(nmId);
+            pricesData[key] = pricesData[key] || {};
+            if (input.classList.contains('price-before-input')){
+              pricesData[key].price = Number(input.value) || 0;
+            } else if (input.classList.contains('price-discount-input')){
+              pricesData[key].discount_price = Number(input.value) || 0;
+            } else if (input.classList.contains('price-wallet-input')){
+              pricesData[key].club_discount_price = Number(input.value) || 0;
+            }
+            updateCommissionColumn();
+          });
+        });
+      }
+      bindPriceInputs();
+      // первичная отрисовка после загрузки
+      updateCommissionColumn();
+
+      // ---- Видимость колонок (по аналогии с /fbw/planning) ----
+      const columnsMap = [
+        { key: 'idx', label: '#', selector: 'th:nth-child(1), td:nth-child(1)' },
+        { key: 'photo', label: 'Фото', selector: 'th:nth-child(2), td:nth-child(2)' },
+        { key: 'name', label: 'Наименование', selector: 'th:nth-child(3), td:nth-child(3)' },
+        { key: 'purchase', label: 'Закупочная цена', selector: 'th:nth-child(4), td:nth-child(4)' },
+        { key: 'price_before', label: 'Цена до скидки', selector: 'th:nth-child(5), td:nth-child(5)' },
+        { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(6), td:nth-child(6)' },
+        { key: 'price_wallet', label: 'Цена со скидкой (WB клуб)', selector: 'th:nth-child(7), td:nth-child(7)' },
+        { key: 'category', label: 'Категория', selector: 'th:nth-child(8), td:nth-child(8)' },
+        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(9), td:nth-child(9)' },
+        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(10), td:nth-child(10)' },
+        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(11), td:nth-child(11)' },
+        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(12), td:nth-child(12)' },
+        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(13), td:nth-child(13)' },
+        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(14), td:nth-child(14)' },
+        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(15), td:nth-child(15)' },
+        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(16), td:nth-child(16)' },
+        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(17), td:nth-child(17)' },
+        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(18), td:nth-child(18)' },
+        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(19), td:nth-child(19)' },
+        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(20), td:nth-child(20)' },
+      ];
+
+      const COLUMNS_STORAGE_KEY = 'tools_prices_columns_visibility_v1';
+      function loadColumnsVisibility(){
+        try { return JSON.parse(localStorage.getItem(COLUMNS_STORAGE_KEY) || '{}'); } catch { return {}; }
+      }
+      function saveColumnsVisibility(map){
+        localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(map || {}));
+      }
+      function applyColumnsVisibility(map){
+        columnsMap.forEach(c => {
+          const visible = map[c.key] !== false; // по умолчанию показываем
+          document.querySelectorAll(c.selector).forEach(el => {
+            el.style.display = visible ? '' : 'none';
+          });
+        });
+      }
+      function renderColumnsChecklist(map){
+        const wrap = document.getElementById('columnsChecklist');
+        wrap.innerHTML = '';
+        columnsMap.forEach(c => {
+          const id = 'colchk_' + c.key;
+          const visible = map[c.key] !== false;
+          const div = document.createElement('div');
+          div.className = 'form-check';
+          div.innerHTML = `<input class="form-check-input" type="checkbox" id="${id}" ${visible ? 'checked' : ''}>`+
+                          `<label class="form-check-label" for="${id}">${c.label}</label>`;
+          wrap.appendChild(div);
+        });
+      }
+
+      const columnsBtn = document.getElementById('columnsSettingsBtn');
+      const columnsModalEl = document.getElementById('columnsSettingsModal');
+      const columnsSaveBtn = document.getElementById('columnsSaveBtn');
+
+      if (columnsBtn && columnsModalEl){
+        columnsBtn.addEventListener('click', () => {
+          const map = loadColumnsVisibility();
+          renderColumnsChecklist(map);
+          // Лениво создаем инстанс модалки, когда Bootstrap уже загружен
+          const modal = (window.bootstrap && window.bootstrap.Modal)
+            ? new window.bootstrap.Modal(columnsModalEl)
+            : null;
+          if (modal) modal.show();
+        });
+      }
+      if (columnsSaveBtn){
+        columnsSaveBtn.addEventListener('click', () => {
+          const map = loadColumnsVisibility();
+          columnsMap.forEach(c => {
+            const id = 'colchk_' + c.key;
+            const el = document.getElementById(id);
+            if (el){ map[c.key] = !!el.checked; }
+          });
+          saveColumnsVisibility(map);
+          applyColumnsVisibility(map);
+          if (window.bootstrap && window.bootstrap.Modal){
+            const modal = window.bootstrap.Modal.getInstance(columnsModalEl) || new window.bootstrap.Modal(columnsModalEl);
+            modal.hide();
+          }
+        });
+      }
+      // Применяем сохраненную видимость при загрузке
+      applyColumnsVisibility(loadColumnsVisibility());
+
+      // Обновление списка товаров
+      const refreshBtn = document.getElementById('refreshProducts');
+      if (refreshBtn) {
+        refreshBtn.addEventListener('click', async function(){
+          refreshBtn.disabled = true; 
+          const prev = refreshBtn.textContent; 
+          refreshBtn.textContent = 'Обновление...';
+          try {
+            const res = await fetch('/api/products/refresh', { method: 'POST' });
+            const data = await res.json().catch(()=>({}));
+            if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
+            location.reload();
+          } catch (e) {
+            console.error(e);
+            refreshBtn.textContent = 'Ошибка';
+            setTimeout(()=>{ refreshBtn.textContent = prev; refreshBtn.disabled = false; }, 1500);
+            return;
+          }
+        });
+      }
+      
+      // Поиск по товарам
+      const search = document.getElementById('productsSearch');
+      const tbody = document.querySelector('#productsTable tbody');
+      if (search && tbody) {
+        search.addEventListener('input', function(){
+          const q = (this.value || '').toLowerCase().trim();
+          const rows = tbody.querySelectorAll('tr');
+          rows.forEach(r => {
+            const txt = r.textContent.toLowerCase();
+            r.style.display = q === '' || txt.indexOf(q) !== -1 ? '' : 'none';
+          });
+        });
+      }
+
+      // Предпросмотр изображений
+      const preview = document.getElementById('imgPreview');
+      const previewImg = document.getElementById('imgPreviewImg');
+      document.addEventListener('mouseover', function(e){
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('product-thumb')){
+          const src = t.getAttribute('data-src') || t.getAttribute('src');
+          previewImg.src = src;
+          preview.style.display = 'block';
+        }
+      });
+      document.addEventListener('mouseout', function(e){
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('product-thumb')){
+          preview.style.display = 'none';
+          previewImg.src = '';
+        }
+      });
+      
+      // Загрузка Excel файла
+      const uploadBtn = document.getElementById('actionUploadPrices');
+      const fileInput = document.getElementById('excelFile');
+      const uploadStatus = document.getElementById('uploadStatus');
+      
+      // Обработка клика по кнопке загрузки
+      uploadBtn.addEventListener('click', () => fileInput.click());
+      
+      fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+          handleFileUpload(e.target.files[0]);
+        }
+      });
+      
+      function handleFileUpload(file) {
+        if (!file.name.match(/\.(xlsx|xls)$/i)) {
+          showUploadStatus('Пожалуйста, выберите Excel файл (.xlsx или .xls)', 'danger');
+          return;
+        }
+        
+        showUploadStatus('Загрузка файла...', 'info');
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/api/prices/upload', {
+          method: 'POST',
+          body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            showUploadStatus(`Успешно загружено ${data.updated_count} цен`, 'success');
+            // Обновляем поля закупочных цен
+            updatePurchasePrices(data.prices);
+          } else {
+            showUploadStatus(data.error || 'Ошибка загрузки', 'danger');
+          }
+        })
+        .catch(error => {
+          console.error('Error:', error);
+          showUploadStatus('Ошибка загрузки файла', 'danger');
+        });
+      }
+      
+      function showUploadStatus(message, type) {
+        uploadStatus.innerHTML = `<div class="alert alert-${type} mb-0">${message}</div>`;
+        uploadStatus.style.display = 'block';
+        setTimeout(() => {
+          uploadStatus.style.display = 'none';
+        }, 5000);
+      }
+      
+      function updatePurchasePrices(prices) {
+        const priceInputs = document.querySelectorAll('.purchase-price');
+        priceInputs.forEach(input => {
+          const barcode = input.getAttribute('data-barcode');
+          if (prices[barcode]) {
+            input.value = prices[barcode];
+            input.classList.add('table-success');
+          }
+        });
+        
+        // Автоматически сохраняем цены в базу данных
+        savePricesToDatabase(prices);
+      }
+      
+      function savePricesToDatabase(prices) {
+        if (Object.keys(prices).length === 0) {
+          return;
+        }
+        
+        fetch('/api/prices/save', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ prices: prices })
+        })
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            console.log('Цены автоматически сохранены:', data.message);
+            // Убираем кнопку сохранения, так как уже сохранили
+            const saveBtn = document.getElementById('savePrices');
+            if (saveBtn) {
+              saveBtn.style.display = 'none';
+            }
+          } else {
+            console.error('Ошибка автоматического сохранения:', data.error);
+            // Показываем кнопку сохранения для ручного сохранения
+            const saveBtn = document.getElementById('savePrices');
+            if (saveBtn) {
+              saveBtn.style.display = 'inline-block';
+            }
+          }
+        })
+        .catch(error => {
+          console.error('Ошибка при сохранении цен:', error);
+          // Показываем кнопку сохранения для ручного сохранения
+          const saveBtn = document.getElementById('savePrices');
+          if (saveBtn) {
+            saveBtn.style.display = 'inline-block';
+          }
+        });
+      }
+      
+      // Сохранение изменений
+      const saveBtn = document.getElementById('savePrices');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', function() {
+          const prices = {};
+          const priceInputs = document.querySelectorAll('.purchase-price');
+          priceInputs.forEach(input => {
+            const barcode = input.getAttribute('data-barcode');
+            const value = parseFloat(input.value);
+            if (barcode && !isNaN(value) && value > 0) {
+              prices[barcode] = value;
+            }
+          });
+          
+          if (Object.keys(prices).length === 0) {
+            alert('Нет данных для сохранения');
+            return;
+          }
+          
+          saveBtn.disabled = true;
+          saveBtn.textContent = 'Сохранение...';
+          
+          fetch('/api/prices/save', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ prices: prices })
+          })
+          .then(response => response.json())
+          .then(data => {
+            if (data.success) {
+              showUploadStatus(`Сохранено ${data.saved_count} цен`, 'success');
+              saveBtn.style.display = 'none';
+            } else {
+              showUploadStatus(data.error || 'Ошибка сохранения', 'danger');
+            }
+          })
+          .catch(error => {
+            console.error('Error:', error);
+            showUploadStatus('Ошибка сохранения', 'danger');
+          })
+          .finally(() => {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Сохранить изменения';
+          });
+        });
+      }
+      
+      // Экспорт в Excel
+      const exportBtn = document.getElementById('actionExportExcel');
+      if (exportBtn) {
+        exportBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          exportBtn.classList.add('disabled');
+          
+          // Собираем данные для экспорта
+          const exportData = {
+            products: productsData,
+            prices_data: pricesData || {},
+            commission_data: commissionData || {},
+            purchase_prices: purchasePricesData || {}
+          };
+          
+          console.log('Export data:', exportData);
+          
+          fetch('/api/prices/export-excel', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(exportData)
+          })
+          .then(response => {
+            if (response.ok) {
+              return response.blob();
+            } else {
+              return response.json().then(data => {
+                throw new Error(data.error || 'Ошибка экспорта');
+              });
+            }
+          })
+          .then(blob => {
+            // Создаем ссылку для скачивания
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Управление_ценами_${new Date().toISOString().slice(0, 10)}.xls`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+          })
+          .catch(error => {
+            console.error('Export error:', error);
+            alert('Ошибка экспорта: ' + error.message);
+          })
+          .finally(() => {
+            exportBtn.classList.remove('disabled');
+          });
+        });
+      }
+    })();
+  </script>
+  {% include '_footer.html' %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

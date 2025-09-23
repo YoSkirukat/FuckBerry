@@ -194,6 +194,7 @@
           <a class="nav-link dropdown-toggle {% if request.path.startswith('/tools') %}active{% endif %}" href="#" id="toolsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">Инструменты</a>
           <ul class="dropdown-menu" aria-labelledby="toolsDropdown">
             <li><a class="dropdown-item {% if request.path == '/tools/labels' %}active{% endif %}" href="/tools/labels">Этикетки для коробов</a></li>
+            <li><a class="dropdown-item {% if request.path == '/tools/prices' %}active{% endif %}" href="/tools/prices">Управление ценами</a></li>
           </ul>
         </li>
       </ul>
