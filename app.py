@@ -1028,6 +1028,7 @@ class Notification(db.Model):
     message = db.Column(db.Text, nullable=False)
     notification_type = db.Column(db.String(50), nullable=False)  # 'fbs_new_order', 'system', etc.
     is_read = db.Column(db.Boolean, default=False)
+    data = db.Column(db.Text, nullable=True)  # JSON data for additional notification info
     created_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ))
 
 
@@ -7650,11 +7651,14 @@ def api_prices_export_excel():
         prices_data = data.get('prices_data', {})
         commission_data = data.get('commission_data', {})
         purchase_prices = data.get('purchase_prices', {})
+        visible_columns = data.get('visible_columns', [])
+        margin_settings = data.get('margin_settings', {})
         
         print(f"Экспорт Excel: получено {len(products)} товаров")
         print(f"Экспорт Excel: prices_data содержит {len(prices_data)} записей")
         print(f"Экспорт Excel: commission_data содержит {len(commission_data)} записей")
         print(f"Экспорт Excel: purchase_prices содержит {len(purchase_prices)} записей")
+        print(f"Экспорт Excel: видимые колонки: {visible_columns}")
         
         if not products:
             return jsonify({"error": "Нет товаров для экспорта"}), 400
@@ -7668,13 +7672,36 @@ def api_prices_export_excel():
         number_style = xlwt.easyxf('align: horiz right;')
         text_style = xlwt.easyxf('align: horiz left;')
         
-        # Заголовки
-        headers = [
-            '№', 'Наименование', 'Артикул WB', 'Баркод', 'Закупочная цена',
-            'Цена до скидки', 'Цена со скидки', 'Цена со скидкой WB кошелька',
-            'Категория', 'Комиссия FBS %', 'Комиссия C&C %', 'Комиссия DBS/DBW %',
-            'Комиссия EDBS %', 'Комиссия FBW %'
-        ]
+        # Определяем заголовки на основе видимых колонок
+        column_mapping = {
+            'index': '№',
+            'photo': 'Фото',
+            'name': 'Наименование',
+            'purchase': 'Закупочная цена',
+            'price_before': 'Цена до скидки',
+            'price_discount': 'Цена со скидки',
+            'price_wallet': 'Цена со скидкой (WB клуб)',
+            'category': 'Категория',
+            'commission_pct': 'Комиссия WB, %',
+            'commission_rub': 'Комиссия WB руб.',
+            'tax_rub': 'Налог руб.',
+            'logistics_rub': 'Логистика руб.',
+            'storage_rub': 'Хранение руб.',
+            'receiving_rub': 'Приёмка руб.',
+            'acquiring_rub': 'Эквайринг руб.',
+            'total_expenses': 'Итого расходов: руб.',
+            'expenses_pct': 'Расходов в %',
+            'price_to_receive': 'Цена к получению руб.',
+            'profit_net': 'Прибыль чистая руб.',
+            'profit_pct': 'Прибыль %'
+        }
+        
+        # Если не указаны видимые колонки, используем все
+        if not visible_columns:
+            visible_columns = list(column_mapping.keys())
+        
+        # Формируем заголовки только для видимых колонок
+        headers = [column_mapping.get(col, col) for col in visible_columns if col in column_mapping]
         
         for col, header in enumerate(headers):
             worksheet.write(0, col, header, header_style)
@@ -7685,13 +7712,6 @@ def api_prices_export_excel():
             subject_id = product.get('subject_id')
             barcode = product.get('barcode', '')
             
-            # Отладочная информация для первых 3 товаров
-            if row <= 3:
-                print(f"Товар {row}: nm_id={nm_id}, subject_id={subject_id}, barcode={barcode}")
-                print(f"  prices_data содержит nm_id {nm_id}: {str(nm_id) in prices_data if prices_data else False}")
-                print(f"  commission_data содержит subject_id {subject_id}: {str(subject_id) in commission_data if commission_data else False}")
-                print(f"  purchase_prices содержит barcode {barcode}: {barcode in purchase_prices if purchase_prices else False}")
-            
             # Получаем цены
             price_before_discount = 0
             price_with_discount = 0
@@ -7700,51 +7720,114 @@ def api_prices_export_excel():
                 price_before_discount = prices_data[str(nm_id)].get('price', 0)
                 price_with_discount = prices_data[str(nm_id)].get('discount_price', 0)
                 price_wb_wallet = prices_data[str(nm_id)].get('club_discount_price', 0)
-                if row <= 3:
-                    print(f"  Найдены цены: {price_before_discount}, {price_with_discount}, {price_wb_wallet}")
             
             # Получаем закупочную цену
             purchase_price = purchase_prices.get(barcode, 0)
             
             # Получаем данные о комиссиях
             category_name = ""
-            fbs_commission = 0
-            cc_commission = 0
-            dbs_dbw_commission = 0
-            edbs_commission = 0
-            fbw_commission = 0
-            
+            commission_pct = 0
             if commission_data and str(subject_id) in commission_data:
                 commission = commission_data[str(subject_id)]
                 category_name = commission.get('subject_name', '')
-                fbs_commission = commission.get('fbs_commission', 0)
-                cc_commission = commission.get('cc_commission', 0)
-                dbs_dbw_commission = commission.get('dbs_dbw_commission', 0)
-                edbs_commission = commission.get('edbs_commission', 0)
-                fbw_commission = commission.get('fbw_commission', 0)
-                if row <= 3:
-                    print(f"  Найдены комиссии: {category_name}, FBS={fbs_commission}, C&C={cc_commission}")
+                # Определяем комиссию по выбранной схеме
+                scheme = margin_settings.get('scheme', 'FBW')
+                if scheme == 'FBS':
+                    commission_pct = commission.get('fbs_commission', 0)
+                elif scheme == 'C&C':
+                    commission_pct = commission.get('cc_commission', 0)
+                elif scheme == 'DBS/DBW':
+                    commission_pct = commission.get('dbs_dbw_commission', 0)
+                elif scheme == 'EDBS':
+                    commission_pct = commission.get('edbs_commission', 0)
+                elif scheme == 'FBW':
+                    commission_pct = commission.get('fbw_commission', 0)
             
-            # Записываем данные
-            worksheet.write(row, 0, row, number_style)  # №
-            worksheet.write(row, 1, str(product.get('supplier_article', '')), text_style)  # Наименование
-            worksheet.write(row, 2, str(nm_id or ''), text_style)  # Артикул WB
-            worksheet.write(row, 3, str(barcode), text_style)  # Баркод
-            worksheet.write(row, 4, round(purchase_price, 2), number_style)  # Закупочная цена
-            worksheet.write(row, 5, round(price_before_discount, 2), number_style)  # Цена до скидки
-            worksheet.write(row, 6, round(price_with_discount, 2), number_style)  # Цена со скидки
-            worksheet.write(row, 7, round(price_wb_wallet, 2), number_style)  # Цена со скидкой WB кошелька
-            worksheet.write(row, 8, str(category_name), text_style)  # Категория
-            worksheet.write(row, 9, round(fbs_commission, 1), number_style)  # Комиссия FBS %
-            worksheet.write(row, 10, round(cc_commission, 1), number_style)  # Комиссия C&C %
-            worksheet.write(row, 11, round(dbs_dbw_commission, 1), number_style)  # Комиссия DBS/DBW %
-            worksheet.write(row, 12, round(edbs_commission, 1), number_style)  # Комиссия EDBS %
-            worksheet.write(row, 13, round(fbw_commission, 1), number_style)  # Комиссия FBW %
+            # Вычисляем маржинальные показатели
+            tax_pct = margin_settings.get('tax', 6)
+            logistics_pct = margin_settings.get('logistics', 7.5)
+            storage_pct = margin_settings.get('storage', 0.5)
+            receiving_pct = margin_settings.get('receiving', 1)
+            acquiring_pct = margin_settings.get('acquiring', 1.7)
+            
+            # Расчеты в рублях
+            commission_rub = price_with_discount * (commission_pct / 100)
+            tax_rub = price_with_discount * (tax_pct / 100)
+            logistics_rub = price_with_discount * (logistics_pct / 100)
+            storage_rub = price_with_discount * (storage_pct / 100)
+            receiving_rub = price_with_discount * (receiving_pct / 100)
+            acquiring_rub = price_with_discount * (acquiring_pct / 100)
+            
+            total_expenses = commission_rub + tax_rub + logistics_rub + storage_rub + receiving_rub + acquiring_rub
+            expenses_pct = (total_expenses / price_with_discount * 100) if price_with_discount > 0 else 0
+            price_to_receive = price_with_discount - total_expenses
+            profit_net = price_to_receive - purchase_price
+            profit_pct = (profit_net / purchase_price * 100) if purchase_price > 0 else 0
+            
+            # Формируем данные для записи
+            row_data = {
+                'index': row,
+                'photo': '',  # Фото не экспортируем
+                'name': str(product.get('supplier_article', '')),
+                'purchase': round(purchase_price, 2),
+                'price_before': round(price_before_discount, 2),
+                'price_discount': round(price_with_discount, 2),
+                'price_wallet': round(price_wb_wallet, 2),
+                'category': str(category_name),
+                'commission_pct': round(commission_pct, 1),
+                'commission_rub': round(commission_rub, 2),
+                'tax_rub': round(tax_rub, 2),
+                'logistics_rub': round(logistics_rub, 2),
+                'storage_rub': round(storage_rub, 2),
+                'receiving_rub': round(receiving_rub, 2),
+                'acquiring_rub': round(acquiring_rub, 2),
+                'total_expenses': round(total_expenses, 2),
+                'expenses_pct': round(expenses_pct, 1),
+                'price_to_receive': round(price_to_receive, 2),
+                'profit_net': round(profit_net, 2),
+                'profit_pct': round(profit_pct, 1)
+            }
+            
+            # Записываем только видимые колонки
+            col_index = 0
+            for col_key in visible_columns:
+                if col_key in row_data:
+                    value = row_data[col_key]
+                    if col_key in ['commission_pct', 'expenses_pct', 'profit_pct']:
+                        worksheet.write(row, col_index, value, number_style)
+                    elif col_key in ['commission_rub', 'tax_rub', 'logistics_rub', 'storage_rub', 'receiving_rub', 'acquiring_rub', 'total_expenses', 'price_to_receive', 'profit_net', 'purchase', 'price_before', 'price_discount', 'price_wallet']:
+                        worksheet.write(row, col_index, value, number_style)
+                    else:
+                        worksheet.write(row, col_index, str(value), text_style)
+                    col_index += 1
         
-        # Автоподбор ширины колонок
-        column_widths = [1000, 8000, 2000, 2000, 2000, 2000, 2000, 2000, 3000, 1500, 1500, 1500, 1500, 1500]
-        for col, width in enumerate(column_widths):
-            worksheet.col(col).width = width
+        # Автоподбор ширины колонок на основе видимых колонок
+        column_widths_map = {
+            'index': 1000,
+            'photo': 1000,
+            'name': 8000,
+            'purchase': 2000,
+            'price_before': 2000,
+            'price_discount': 2000,
+            'price_wallet': 2000,
+            'category': 3000,
+            'commission_pct': 1500,
+            'commission_rub': 2000,
+            'tax_rub': 2000,
+            'logistics_rub': 2000,
+            'storage_rub': 2000,
+            'receiving_rub': 2000,
+            'acquiring_rub': 2000,
+            'total_expenses': 2000,
+            'expenses_pct': 1500,
+            'price_to_receive': 2000,
+            'profit_net': 2000,
+            'profit_pct': 1500
+        }
+        
+        for col, col_key in enumerate(visible_columns):
+            if col_key in column_widths_map:
+                worksheet.col(col).width = column_widths_map[col_key]
         
         # Создаем файл в памяти
         output = BytesIO()
