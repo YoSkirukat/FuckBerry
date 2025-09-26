@@ -563,6 +563,14 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
   }catch(_){ }
 })();
 
+// Автоматическое обновление при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+  // Небольшая задержка, чтобы страница полностью загрузилась
+  setTimeout(() => {
+    refresh();
+  }, 500);
+});
+
 </script>
 </html>
 
