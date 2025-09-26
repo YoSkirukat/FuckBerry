@@ -114,27 +114,27 @@
         <div class="row g-2 align-items-center">
           <div class="col-auto"><strong>Параметры для расчета маржинальности:</strong></div>
           <div class="col-auto">
-            <label class="form-label mb-0 small">Налог, %</label>
+            <label class="form-label mb-0 small">Налог, % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Ваша налоговая ставка (указать вручную)"></i></label>
             <input type="number" step="0.1" min="0" id="varTax" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.tax }}">
           </div>
           <div class="col-auto">
-            <label class="form-label mb-0 small">Логистика, %</label>
-            <input type="number" step="0.1" min="0" id="varLogistics" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.logistics }}">
-          </div>
-          <div class="col-auto">
-            <label class="form-label mb-0 small">Хранение, %</label>
+            <label class="form-label mb-0 small">Хранение, % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Процент от выручки. Среднее значение можно посмотреть в еженедельном финансовом отчете (указать вручную)"></i></label>
             <input type="number" step="0.1" min="0" id="varStorage" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.storage }}">
           </div>
           <div class="col-auto">
-            <label class="form-label mb-0 small">Приёмка, %</label>
+            <label class="form-label mb-0 small">Приёмка, % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Процент от выручки. Среднее значение можно посмотреть в еженедельном финансовом отчете (указать вручную)"></i></label>
             <input type="number" step="0.1" min="0" id="varReceiving" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.receiving }}">
           </div>
           <div class="col-auto">
-            <label class="form-label mb-0 small">Эквайринг, %</label>
+            <label class="form-label mb-0 small">Эквайринг, % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Процент от выручки. Среднее значение можно посмотреть в еженедельном финансовом отчете (указать вручную)"></i></label>
             <input type="number" step="0.1" min="0" id="varAcquiring" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.acquiring }}">
           </div>
           <div class="col-auto">
-            <label class="form-label mb-0 small">Схема WB</label>
+            <label class="form-label mb-0 small">Индекс локализации <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Ваш персональный индекс, узнать его можно в личном кабинете селлера в разделе &quot;Поставки и заказы&quot; - &quot;Тарифы&quot; (если у вас его нет, оставить значение 1)"></i></label>
+            <input type="number" step="0.1" min="0.1" max="10" id="varLocalizationIndex" class="form-control form-control-sm" style="width:90px" value="{{ margin_settings.localization_index or 1.0 }}">
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Схема WB <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Выберите схему работы с маркетплейсом для рассчета комиссии"></i></label>
             <select id="varScheme" class="form-select form-select-sm" style="width:140px">
               {% set s = margin_settings.scheme or 'FBW' %}
               <option value="FBW" {% if s=='FBW' %}selected{% endif %}>FBW</option>
@@ -143,6 +143,22 @@
               <option value="DBS/DBW" {% if s=='DBS/DBW' %}selected{% endif %}>DBS/DBW</option>
               <option value="EDBS" {% if s=='EDBS' %}selected{% endif %}>EDBS</option>
             </select>
+          </div>
+          <div class="col-auto">
+            <label class="form-label mb-0 small">Склад поставки <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="выберите склад чтобы получить значение коэфф. логистики, влияет на стоимость логистики."></i></label>
+            <div class="position-relative">
+              <input type="text" id="warehouseSearch" class="form-control form-control-sm" style="width:200px; padding-right:30px;" placeholder="Выберите склад..." autocomplete="off">
+              <button type="button" id="clearWarehouse" class="btn btn-sm position-absolute" style="right:5px; top:50%; transform:translateY(-50%); padding:2px 6px; border:none; background:none; color:#dc3545; font-size:14px; line-height:1;" title="Очистить выбор">✕</button>
+              <div id="warehouseDropdown" class="dropdown-menu" style="max-height:200px; overflow-y:auto; display:none;">
+                {% for warehouse in warehouses_data %}
+                <a class="dropdown-item warehouse-option" href="#" data-name="{{ warehouse.name }}" data-coef="{{ warehouse.coefficient }}">{{ warehouse.name }}</a>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          <div class="col-auto">
+            <label for="varWarehouseCoef" class="form-label mb-0 small">Коэфф. логистики склада % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Коэффициент логистики выбранного склада, влияет на стоимость логистики вашего товара к конечному потребителю"></i></label>
+            <input type="number" step="1" min="0" id="varWarehouseCoef" class="form-control form-control-sm" style="width:120px" value="{{ margin_settings.warehouse_coef }}" readonly>
           </div>
           <div class="col-auto text-muted small" id="marginSaveStatus" style="display:none"></div>
         </div>
@@ -171,6 +187,7 @@
             <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена со скидкой</th>
             <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена со скидкой (WB клуб)</th>
             <th style="width:150px; border-right: 1px solid #dee2e6;">Категория</th>
+            <th style="width:100px; border-right: 1px solid #dee2e6;">Объём л.</th>
             <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Комиссия WB, %</th>
             <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Комиссия WB руб.</th>
             <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Налог руб.</th>
@@ -248,6 +265,17 @@
                     <span class="text-muted">—</span>
                   {% endif %}
                 </td>
+                <td class="text-center">
+                  {% set nm_id = product.nm_id %}
+                  {% set product_dimensions = product.dimensions %}
+                  {% if product_dimensions and product_dimensions.volume > 0 %}
+                    <span class="small">{{ "%.2f"|format(product_dimensions.volume) }}</span>
+                  {% elif dimensions_data and nm_id in dimensions_data %}
+                    <span class="small">{{ "%.2f"|format(dimensions_data[nm_id].volume) }}</span>
+                  {% else %}
+                    <span class="text-muted" title="nm_id: {{ nm_id }}, product_dimensions: {{ product_dimensions }}, dimensions_data keys: {{ dimensions_data.keys()|list|slice(5)|list }}">—</span>
+                  {% endif %}
+                </td>
                 <td class="text-center commission-percent" data-subject-id="{{ product.subject_id }}">—</td>
                 <td class="text-center commission-rub">—</td>
                 <td class="text-center tax-rub">—</td>
@@ -277,6 +305,8 @@
   <script id="productsDataJson" type="application/json">{{ products|tojson|safe }}</script>
   <script id="pricesDataJson" type="application/json">{{ prices_data|tojson|safe }}</script>
   <script id="commissionDataJson" type="application/json">{{ commission_data|tojson|safe }}</script>
+  <script id="dimensionsDataJson" type="application/json">{{ dimensions_data|tojson|safe }}</script>
+  <script id="warehousesDataJson" type="application/json">{{ warehouses_data|tojson|safe }}</script>
   <script id="purchasePricesDataJson" type="application/json">{{ purchase_prices|tojson|safe }}</script>
   
   <!-- Модальное окно настройки колонок -->
@@ -304,17 +334,47 @@
     const productsData = JSON.parse(document.getElementById('productsDataJson').textContent || '[]');
     const pricesData = JSON.parse(document.getElementById('pricesDataJson').textContent || '{}');
     const commissionData = JSON.parse(document.getElementById('commissionDataJson').textContent || '{}');
+    const dimensionsData = JSON.parse(document.getElementById('dimensionsDataJson').textContent || '{}');
+    const warehousesData = JSON.parse(document.getElementById('warehousesDataJson').textContent || '[]');
     const purchasePricesData = JSON.parse(document.getElementById('purchasePricesDataJson').textContent || '{}');
+    
+    // Отладочная информация
+    console.log('Dimensions data loaded:', dimensionsData);
+    console.log('Dimensions data keys:', Object.keys(dimensionsData));
+    console.log('Warehouses data loaded:', warehousesData);
+    console.log('First few products:', productsData.slice(0, 3).map(p => ({ 
+      nm_id: p.nm_id, 
+      supplier_article: p.supplier_article,
+      dimensions: p.dimensions 
+    })));
+    
+    // Проверяем, есть ли размеры в самих продуктах
+    const productsWithDimensions = productsData.filter(p => p.dimensions && p.dimensions.volume > 0);
+    console.log(`Products with dimensions: ${productsWithDimensions.length} out of ${productsData.length}`);
+    if (productsWithDimensions.length > 0) {
+      console.log('First product with dimensions:', productsWithDimensions[0]);
+    }
+    
+    // Проверяем данные о складах
+    console.log(`Warehouses loaded: ${warehousesData.length}`);
+    console.log('Warehouses data:', warehousesData);
+    if (warehousesData.length > 0) {
+      console.log('First few warehouses:', warehousesData.slice(0, 3));
+    } else {
+      console.log('Warehouses data is empty or not loaded!');
+    }
     
     (function(){
       // ---- Настройки маржи: автосохранение с дебаунсом ----
       const inputs = {
         tax: document.getElementById('varTax'),
-        logistics: document.getElementById('varLogistics'),
         storage: document.getElementById('varStorage'),
         receiving: document.getElementById('varReceiving'),
         acquiring: document.getElementById('varAcquiring'),
+        localizationIndex: document.getElementById('varLocalizationIndex'),
         scheme: document.getElementById('varScheme'),
+        warehouse: document.getElementById('warehouseSearch'),
+        warehouseCoef: document.getElementById('varWarehouseCoef'),
       };
       const saveStatus = document.getElementById('marginSaveStatus');
       let saveTimer = null;
@@ -325,12 +385,21 @@
       function doSave(){
         const payload = {
           tax: parseFloat(inputs.tax.value || 0) || 0,
-          logistics: parseFloat(inputs.logistics.value || 0) || 0,
           storage: parseFloat(inputs.storage.value || 0) || 0,
           receiving: parseFloat(inputs.receiving.value || 0) || 0,
           acquiring: parseFloat(inputs.acquiring.value || 0) || 0,
+          localization_index: parseFloat(inputs.localizationIndex.value || 1) || 1,
           scheme: (inputs.scheme && inputs.scheme.value) || 'FBW',
+          warehouse: (inputs.warehouse && inputs.warehouse.value) || '',
+          warehouse_coef: parseFloat(inputs.warehouseCoef.value || 0) || 0,
         };
+        
+        console.log('Saving margin settings:', {
+          warehouse: payload.warehouse,
+          warehouse_coef: payload.warehouse_coef,
+          inputsWarehouse: inputs.warehouse ? inputs.warehouse.value : 'undefined',
+          inputsWarehouseCoef: inputs.warehouseCoef ? inputs.warehouseCoef.value : 'undefined'
+        });
         saveStatus.style.display = 'inline';
         saveStatus.textContent = 'Сохранение…';
         fetch('/api/tools/prices/margin-settings', {
@@ -412,13 +481,53 @@
             taxCell.textContent = isNaN(taxRub) ? '—' : taxRub.toFixed(2);
           }
 
-          // Логистика руб. = Цена со скидкой * (Логистика, % / 100)
+          // Логистика руб. - новая схема на основе объёма
           const logisticsCell = row.querySelector('.logistics-rub');
           if (logisticsCell){
-            const p = inputs.logistics ? Number(inputs.logistics.value) : 0;
-            const d = getDiscountPriceByRow(row);
-            const v = d * (p / 100);
-            logisticsCell.textContent = isNaN(v) ? '—' : v.toFixed(2);
+            const volumeCell = row.querySelector('td:nth-child(9)'); // Колонка объёма
+            let logisticsValue = 0;
+            
+            if (volumeCell) {
+              const volumeText = volumeCell.textContent.trim();
+              if (volumeText && volumeText !== '—') {
+                const volume = parseFloat(volumeText);
+                if (!isNaN(volume)) {
+                  if (volume < 1) {
+                    // Для товаров до 1 литра
+                    if (volume >= 0.001 && volume <= 0.200) {
+                      logisticsValue = 23;
+                    } else if (volume >= 0.201 && volume <= 0.400) {
+                      logisticsValue = 26;
+                    } else if (volume >= 0.401 && volume <= 0.600) {
+                      logisticsValue = 29;
+                    } else if (volume >= 0.601 && volume <= 0.800) {
+                      logisticsValue = 30;
+                    } else if (volume >= 0.801 && volume <= 0.999) {
+                      logisticsValue = 32;
+                    }
+                  } else {
+                    // Для товаров от 1 литра и выше
+                    const firstLiter = 46; // Стоимость первого литра
+                    const additionalLiters = Math.max(0, volume - 1) * 14; // Дополнительные литры
+                    logisticsValue = firstLiter + additionalLiters;
+                  }
+                }
+              }
+            }
+            
+            // Применяем коэффициент склада, если он выбран
+            const warehouseCoef = parseFloat(inputs.warehouseCoef.value) || 0;
+            if (warehouseCoef > 0 && logisticsValue > 0) {
+              logisticsValue = logisticsValue * warehouseCoef / 100;
+            }
+            
+            // Применяем индекс локализации
+            const localizationIndex = parseFloat(inputs.localizationIndex.value) || 1;
+            if (localizationIndex > 0 && logisticsValue > 0) {
+              logisticsValue = logisticsValue * localizationIndex;
+            }
+            
+            logisticsCell.textContent = logisticsValue > 0 ? logisticsValue.toFixed(2) : '—';
           }
 
           // Хранение руб. = Цена со скидкой * (Хранение, % / 100)
@@ -508,10 +617,170 @@
         inputs.scheme.addEventListener('change', () => { scheduleSave(); updateCommissionColumn(); });
       }
       if (inputs.tax){ inputs.tax.addEventListener('input', () => { updateCommissionColumn(); }); }
-      if (inputs.logistics){ inputs.logistics.addEventListener('input', () => { updateCommissionColumn(); }); }
       if (inputs.storage){ inputs.storage.addEventListener('input', () => { updateCommissionColumn(); }); }
       if (inputs.receiving){ inputs.receiving.addEventListener('input', () => { updateCommissionColumn(); }); }
       if (inputs.acquiring){ inputs.acquiring.addEventListener('input', () => { updateCommissionColumn(); }); }
+      if (inputs.localizationIndex){ inputs.localizationIndex.addEventListener('input', () => { updateCommissionColumn(); }); }
+
+      // ---- Поиск складов с живым поиском ----
+      const warehouseSearch = document.getElementById('warehouseSearch');
+      const warehouseDropdown = document.getElementById('warehouseDropdown');
+      const warehouseCoefField = document.getElementById('varWarehouseCoef');
+      const warehouseCoefLabel = document.querySelector('label[for="varWarehouseCoef"]');
+      
+      if (warehouseSearch && warehouseDropdown) {
+        console.log('Warehouse search elements found:', { warehouseSearch, warehouseDropdown });
+        console.log('Warehouse options count:', document.querySelectorAll('.warehouse-option').length);
+        
+        // Скрываем поле коэффициента по умолчанию
+        if (warehouseCoefField && warehouseCoefLabel) {
+          warehouseCoefField.style.display = 'none';
+          warehouseCoefLabel.style.display = 'none';
+        }
+        
+        // Показываем выпадающий список при клике/фокусе
+        warehouseSearch.addEventListener('click', () => {
+          filterWarehouses();
+          warehouseDropdown.style.display = 'block';
+        });
+        
+        warehouseSearch.addEventListener('focus', () => {
+          filterWarehouses();
+          warehouseDropdown.style.display = 'block';
+        });
+        
+        warehouseSearch.addEventListener('blur', (e) => {
+          // Задержка, чтобы клик по опции успел сработать
+          setTimeout(() => {
+            warehouseDropdown.style.display = 'none';
+          }, 200);
+        });
+        
+        // Поиск при вводе + подгрузка с сервера, если список пуст
+        warehouseSearch.addEventListener('input', async () => {
+          // если нет опций, попробуем подтянуть с сервера
+          if (document.querySelectorAll('.warehouse-option').length === 0) {
+            try {
+              const r = await fetch('/api/tools/prices/warehouses');
+              const j = await r.json();
+              if (j && j.success && Array.isArray(j.warehouses)) {
+                const dd = document.getElementById('warehouseDropdown');
+                dd.innerHTML = j.warehouses.map(w => `<a class="dropdown-item warehouse-option" href="#" data-name="${w.name}" data-coef="${w.coefficient}">${w.name}</a>`).join('');
+              }
+            } catch (e) { console.warn('Не удалось загрузить склады', e); }
+          }
+          filterWarehouses();
+          warehouseDropdown.style.display = 'block';
+        });
+        
+        // Фильтрация складов
+        function filterWarehouses() {
+          const searchTerm = warehouseSearch.value.toLowerCase();
+          const warehouseOptions = document.querySelectorAll('.warehouse-option');
+          
+          console.log('Filtering warehouses with term:', searchTerm);
+          console.log('Found warehouse options:', warehouseOptions.length);
+          
+          warehouseOptions.forEach(option => {
+            const warehouseName = option.textContent.toLowerCase();
+            if (warehouseName.includes(searchTerm)) {
+              option.style.display = 'block';
+            } else {
+              option.style.display = 'none';
+            }
+          });
+        }
+        
+        // Выбор склада
+        document.addEventListener('click', (e) => {
+          if (e.target.classList.contains('warehouse-option')) {
+            e.preventDefault();
+            const warehouseName = e.target.getAttribute('data-name');
+            const warehouseCoef = e.target.getAttribute('data-coef');
+            
+            warehouseSearch.value = warehouseName;
+            inputs.warehouseCoef.value = warehouseCoef;
+            
+            warehouseDropdown.style.display = 'none';
+            
+            // Обновляем UI
+            updateWarehouseUI();
+            
+            // Пересчитываем все строки с новым коэффициентом склада
+            updateCommissionColumn();
+            
+            // Сохраняем настройки
+            scheduleSave();
+          }
+        });
+        
+        // Кнопка очистки склада
+        const clearWarehouseBtn = document.getElementById('clearWarehouse');
+        if (clearWarehouseBtn) {
+          clearWarehouseBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Очищаем поля
+            warehouseSearch.value = '';
+            inputs.warehouseCoef.value = '0';
+            
+            warehouseDropdown.style.display = 'none';
+            
+            // Обновляем UI
+            updateWarehouseUI();
+            
+            // Пересчитываем все строки с новым коэффициентом склада
+            updateCommissionColumn();
+            
+            // Сохраняем настройки
+            scheduleSave();
+          });
+        }
+        
+        // Показываем поле коэффициента и кнопку очистки, если склад уже выбран при загрузке
+        function updateWarehouseUI() {
+          const hasWarehouse = warehouseSearch.value.trim();
+          console.log('updateWarehouseUI called:', {
+            warehouseValue: warehouseSearch.value,
+            hasWarehouse: hasWarehouse,
+            warehouseCoef: inputs.warehouseCoef.value
+          });
+          
+          if (warehouseCoefField && warehouseCoefLabel) {
+            if (hasWarehouse) {
+              warehouseCoefField.style.display = 'block';
+              warehouseCoefLabel.style.display = 'block';
+            } else {
+              warehouseCoefField.style.display = 'none';
+              warehouseCoefLabel.style.display = 'none';
+            }
+          }
+          if (clearWarehouseBtn) {
+            clearWarehouseBtn.style.display = hasWarehouse ? 'block' : 'none';
+          }
+          
+          // Пересчитываем логистику при изменении склада
+          // Пересчет происходит автоматически при изменении параметров
+        }
+        
+        // Инициализация при загрузке
+        // Явно устанавливаем значение склада из сохраненных настроек
+        const savedWarehouse = '{{ margin_settings.warehouse or "" }}';
+        console.log('Debug warehouse restoration:', {
+          savedWarehouse: savedWarehouse,
+          warehouseSearchExists: !!warehouseSearch,
+          savedWarehouseLength: savedWarehouse.length
+        });
+        
+        if (warehouseSearch && savedWarehouse && savedWarehouse.trim()) {
+          warehouseSearch.value = savedWarehouse;
+          console.log('Restored warehouse from settings:', savedWarehouse);
+        } else {
+          console.log('Warehouse not restored - conditions not met');
+        }
+        updateWarehouseUI();
+      }
 
       // Изменение закупочной цены — пересчитывать прибыль и АВТОСОХРАНЯТЬ в БД (дебаунс)
       const pendingPricesToSave = {};
@@ -579,18 +848,19 @@
         { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(6), td:nth-child(6)', exportKey: 'price_discount' },
         { key: 'price_wallet', label: 'Цена со скидкой (WB клуб)', selector: 'th:nth-child(7), td:nth-child(7)', exportKey: 'price_wallet' },
         { key: 'category', label: 'Категория', selector: 'th:nth-child(8), td:nth-child(8)', exportKey: 'category' },
-        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(9), td:nth-child(9)', exportKey: 'commission_pct' },
-        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(10), td:nth-child(10)', exportKey: 'commission_rub' },
-        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(11), td:nth-child(11)', exportKey: 'tax_rub' },
-        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(12), td:nth-child(12)', exportKey: 'logistics_rub' },
-        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(13), td:nth-child(13)', exportKey: 'storage_rub' },
-        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(14), td:nth-child(14)', exportKey: 'receiving_rub' },
-        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(15), td:nth-child(15)', exportKey: 'acquiring_rub' },
-        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(16), td:nth-child(16)', exportKey: 'total_expenses' },
-        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(17), td:nth-child(17)', exportKey: 'expenses_pct' },
-        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(18), td:nth-child(18)', exportKey: 'price_to_receive' },
-        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(19), td:nth-child(19)', exportKey: 'profit_net' },
-        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(20), td:nth-child(20)', exportKey: 'profit_pct' },
+        { key: 'volume', label: 'Объём', selector: 'th:nth-child(9), td:nth-child(9)', exportKey: 'volume' },
+        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(10), td:nth-child(10)', exportKey: 'commission_pct' },
+        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(11), td:nth-child(11)', exportKey: 'commission_rub' },
+        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(12), td:nth-child(12)', exportKey: 'tax_rub' },
+        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(13), td:nth-child(13)', exportKey: 'logistics_rub' },
+        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(14), td:nth-child(14)', exportKey: 'storage_rub' },
+        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(15), td:nth-child(15)', exportKey: 'receiving_rub' },
+        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(16), td:nth-child(16)', exportKey: 'acquiring_rub' },
+        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(17), td:nth-child(17)', exportKey: 'total_expenses' },
+        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(18), td:nth-child(18)', exportKey: 'expenses_pct' },
+        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(19), td:nth-child(19)', exportKey: 'price_to_receive' },
+        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(20), td:nth-child(20)', exportKey: 'profit_net' },
+        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(21), td:nth-child(21)', exportKey: 'profit_pct' },
       ];
 
       const COLUMNS_STORAGE_KEY = 'tools_prices_columns_visibility_v1';
@@ -881,11 +1151,11 @@
             products: productsData,
             prices_data: pricesData || {},
             commission_data: commissionData || {},
+            dimensions_data: dimensionsData || {},
             purchase_prices: purchasePricesData || {},
             visible_columns: visibleColumns.map(col => col.exportKey),
             margin_settings: {
               tax: inputs.tax ? Number(inputs.tax.value) : 6,
-              logistics: inputs.logistics ? Number(inputs.logistics.value) : 7.5,
               storage: inputs.storage ? Number(inputs.storage.value) : 0.5,
               receiving: inputs.receiving ? Number(inputs.receiving.value) : 1,
               acquiring: inputs.acquiring ? Number(inputs.acquiring.value) : 1.7,
@@ -931,6 +1201,12 @@
           });
         });
       }
+      
+      // Инициализация Bootstrap tooltips
+      const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+      tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+      });
     })();
   </script>
   {% include '_footer.html' %}

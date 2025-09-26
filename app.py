@@ -9,6 +9,8 @@ DISCOUNTS_PRICES_API_URL = "https://discounts-prices-api.wildberries.ru/api/v2/l
 PRICES_API_URL = "https://marketplace-api.wildberries.ru/api/v2/list/goods/filter"
 # Commission API
 COMMISSION_API_URL = "https://common-api.wildberries.ru/api/v1/tariffs/commission"
+DIMENSIONS_API_URL = "https://content-api.wildberries.ru/content/v1/cards/list"
+WAREHOUSES_API_URL = "https://common-api.wildberries.ru/api/v1/tariffs/box"
 import io
 import os
 import json
@@ -47,11 +49,13 @@ APP_VERSION = "1.0.1"
 # -------------------- Кэш настроек маржи --------------------
 DEFAULT_MARGIN_SETTINGS = {
     "tax": 6.0,         # Налог
-    "logistics": 7.5,   # Логистика
     "storage": 0.5,     # Хранение
     "receiving": 1.0,   # Приёмка
     "acquiring": 1.7,   # Эквайринг
     "scheme": "FBW",   # Схема работы с WB
+    "warehouse": "",    # Склад поставки
+    "warehouse_coef": 0.0,  # Коэффициент логистики склада
+    "localization_index": 1.0,  # Индекс локализации
 }
 
 def _get_cache_dir() -> str:
@@ -69,10 +73,11 @@ def load_user_margin_settings(user_id: int) -> dict:
             result = DEFAULT_MARGIN_SETTINGS.copy()
             for key, default_val in DEFAULT_MARGIN_SETTINGS.items():
                 val = data.get(key, default_val)
-                if key == "scheme":
-                    # строковое значение
+                if key in ["scheme", "warehouse"]:
+                    # строковые значения
                     result[key] = str(val or default_val)
                 else:
+                    # числовые значения
                     try:
                         result[key] = float(val)
                     except Exception:
@@ -86,9 +91,11 @@ def save_user_margin_settings(user_id: int, settings: dict) -> dict:
     normalized = DEFAULT_MARGIN_SETTINGS.copy()
     for key, default_val in DEFAULT_MARGIN_SETTINGS.items():
         val = settings.get(key, default_val)
-        if key == "scheme":
+        if key in ["scheme", "warehouse"]:
+            # Строковые значения
             normalized[key] = str(val or default_val)
         else:
+            # Числовые значения
             try:
                 normalized[key] = float(val)
             except Exception:
@@ -792,8 +799,6 @@ def load_products_cache() -> Dict[str, Any] | None:
             return json.load(f)
     except Exception:
         return None
-
-
 def save_products_cache(payload: Dict[str, Any]) -> None:
     path = _products_cache_path_for_user()
     try:
@@ -1526,8 +1531,6 @@ def aggregate_top_products_sales(rows: List[Dict[str, Any]], warehouse: str | No
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
         counts[str(product)] += 1
     return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-
-
 def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
     counts: Dict[str, int] = defaultdict(int)
     revenue_by_product: Dict[str, float] = defaultdict(float)
@@ -2260,8 +2263,6 @@ def check_fbs_new_orders_for_notifications():
                     
         except Exception as e:
             print(f"Error in FBS notifications check: {e}")
-
-
 def check_version_updates():
     """Check for version updates and create notifications"""
     with app.app_context():
@@ -3040,8 +3041,6 @@ def index():
         include_sales=include_sales,
         top_mode=top_mode,
     )
-
-
 @app.route("/fbw", methods=["GET"]) 
 @login_required
 def fbw_supplies_page():
@@ -3802,8 +3801,6 @@ def fbs_stock_page():
         warehouses = cached.get("warehouses", []) or []
         updated_at = cached.get("updated_at", "")
     return render_template("fbs_stock.html", error=error, warehouses=warehouses, updated_at=updated_at)
-
-
 @app.route("/api/fbs-stock/refresh", methods=["POST"]) 
 @login_required
 def api_fbs_stock_refresh():
@@ -4476,8 +4473,6 @@ def api_top_products_orders():
         "total_qty": total_qty,
         "total_sum": round(total_sum, 2)
     })
-
-
 @app.route("/report/sales", methods=["GET"]) 
 @login_required
 def report_sales_page():
@@ -5114,8 +5109,6 @@ def report_finance_page():
         date_from_val=req_from,
         date_to_val=req_to,
     ), 200
-
-
 @app.route("/api/report/finance", methods=["GET"]) 
 @login_required
 def api_report_finance():
@@ -5294,17 +5287,17 @@ def api_report_finance():
                     u6 += pay_val
                 if oper_l == "компенсация подмененного товара" and doc_l == "продажа":
                     u7 += pay_val
-                if oper_l == "компенсация подмен" and doc_l == "продажа":
-                    u8 += pay_val
                 if oper_l == "компенсация подмененного товара" and doc_l == "возврат":
+                    u8 += pay_val
+                if oper_l == "компенсация подмененного товара" and doc_l == "продажа":
                     u9 += pay_val
-                if oper_l == "компенсация подмен" and doc_l == "возврат":
+                if oper_l == "компенсация подмененного товара" and doc_l == "возврат":
                     u10 += pay_val
                 if oper_l == "компенсация ущерба" and doc_l == "продажа":
                     u11 += pay_val
                 if oper_l == "компенсация ущерба" and doc_l == "возврат":
                     u12 += pay_val
-                if oper_l == "компенсация подмена" and doc_l == "продажа":
+                if oper_l == "компенсация подмен" and doc_l == "продажа":
                     u13 += pay_val
                 if oper_l == "компенсация подмен" and doc_l == "возврат":
                     u14 += pay_val
@@ -5784,7 +5777,7 @@ def _aggregate_fbs_supplies(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if status_counts:
             # Priority: Отгрузите поставку -> Поставку приняли -> otherwise most frequent
             lowered = {k.lower(): k for k in status_counts.keys()}
-            # Look for 'отгрузите поставку'
+            # Look for 'отгруз'
             for lk, orig in lowered.items():
                 if "отгруз" in lk:
                     status_final = orig
@@ -5805,8 +5798,6 @@ def _aggregate_fbs_supplies(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         })
     result.sort(key=lambda x: x.get("ts", 0), reverse=True)
     return result
-
-
 @app.route("/api/fbs/supplies", methods=["GET"]) 
 @login_required
 def api_fbs_supplies():
@@ -6303,6 +6294,13 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             # Получаем subject_id для комиссий
             subject_id = c.get("subjectID") or c.get("subjectId") or c.get("subject_id")
             
+            # Получаем размеры товара
+            dimensions = c.get("dimensions") or {}
+            length = dimensions.get("length", 0)
+            width = dimensions.get("width", 0)
+            height = dimensions.get("height", 0)
+            volume = (length * width * height) / 1000 if all([length, width, height]) else 0
+            
             items.append({
                 "photo": photo,
                 "supplier_article": supplier_article,
@@ -6310,6 +6308,12 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "barcode": barcode,
                 "name": name,
                 "subject_id": subject_id,
+                "dimensions": {
+                    "length": length,
+                    "width": width,
+                    "height": height,
+                    "volume": round(volume, 2)
+                }
             })
     except Exception:
         pass
@@ -6373,6 +6377,184 @@ def fetch_commission_data(token: str) -> Dict[int, Dict[str, Any]]:
         traceback.print_exc()
     
     return {}
+
+
+def fetch_warehouses_data(token: str) -> List[Dict[str, Any]]:
+    """Получение данных о складах через API Wildberries"""
+    try:
+        from datetime import datetime
+        
+        # Получаем текущую дату в формате ГГГГ-ММ-ДД
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        print(f"Получаем данные о складах на дату {current_date}")
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Добавляем параметр date в URL
+        url = f"{WAREHOUSES_API_URL}?date={current_date}"
+        
+        response = requests.get(url, headers=headers, timeout=30)
+        print(f"Статус ответа API складов: {response.status_code}")
+        response.raise_for_status()
+        data = response.json()
+        
+        print(f"Ответ API складов: {data}")
+        
+        # Обрабатываем ответ
+        warehouses = []
+        if isinstance(data, list):
+            warehouses = data
+        elif isinstance(data, dict):
+            # Проверяем разные возможные структуры ответа
+            if 'response' in data and isinstance(data['response'], dict):
+                # Структура: {'response': {'data': {'warehouseList': [...]}}}
+                response_data = data['response']
+                if 'data' in response_data and isinstance(response_data['data'], dict):
+                    if 'warehouseList' in response_data['data']:
+                        warehouses = response_data['data']['warehouseList']
+                elif 'data' in response_data and isinstance(response_data['data'], list):
+                    warehouses = response_data['data']
+            elif 'data' in data:
+                if isinstance(data['data'], list):
+                    warehouses = data['data']
+                elif isinstance(data['data'], dict) and 'warehouseList' in data['data']:
+                    warehouses = data['data']['warehouseList']
+            elif 'warehouseList' in data:
+                warehouses = data['warehouseList']
+        
+        print(f"Найдено {len(warehouses)} складов в ответе API")
+        
+        # Отладочная информация о структуре данных
+        if warehouses:
+            print(f"Первый склад (структура): {warehouses[0]}")
+            print(f"Ключи первого склада: {list(warehouses[0].keys())}")
+        
+        # Формируем список складов с нужными данными
+        warehouses_list = []
+        for i, warehouse in enumerate(warehouses):
+            # Пробуем разные возможные названия полей
+            warehouse_name = (warehouse.get('warehouseName') or 
+                            warehouse.get('name') or 
+                            warehouse.get('warehouse_name') or 
+                            warehouse.get('title') or '')
+            
+            box_delivery_coef = (warehouse.get('boxDeliveryCoefExpr') or 
+                               warehouse.get('coefficient') or 
+                               warehouse.get('coef') or 0)
+            
+            print(f"Склад {i+1}: name='{warehouse_name}', coef='{box_delivery_coef}'")
+            print(f"  Все поля: {list(warehouse.keys())}")
+            
+            if warehouse_name:
+                try:
+                    # Преобразуем коэффициент в целое число
+                    coef_value = int(float(box_delivery_coef)) if box_delivery_coef else 0
+                    warehouses_list.append({
+                        'name': warehouse_name,
+                        'coefficient': coef_value
+                    })
+                except (ValueError, TypeError):
+                    print(f"  Ошибка преобразования коэффициента: {box_delivery_coef}")
+                    warehouses_list.append({
+                        'name': warehouse_name,
+                        'coefficient': 0
+                    })
+        
+        print(f"Загружено {len(warehouses_list)} складов")
+        return warehouses_list
+        
+    except Exception as e:
+        print(f"Ошибка загрузки складов: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def fetch_dimensions_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Получение данных о размерах товаров через API Wildberries"""
+    if not nm_ids:
+        return {}
+    
+    try:
+        print(f"Получаем размеры для {len(nm_ids)} товаров")
+        
+        # Разбиваем на батчи по 100 товаров (лимит API)
+        batch_size = 100
+        dimensions_dict = {}
+        
+        for i in range(0, len(nm_ids), batch_size):
+            batch_nm_ids = nm_ids[i:i + batch_size]
+            
+            payload = {
+                "id": [str(nm_id) for nm_id in batch_nm_ids]
+            }
+            
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            response = requests.post(DIMENSIONS_API_URL, json=payload, headers=headers, timeout=30)
+            print(f"Статус ответа API размеров: {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            
+            print(f"Ответ API размеров: {data}")
+            print(f"Ключи в ответе: {list(data.keys()) if isinstance(data, dict) else 'Не словарь'}")
+            
+            # Обрабатываем ответ - проверяем разные возможные структуры
+            items = []
+            if 'data' in data:
+                items = data['data']
+            elif isinstance(data, list):
+                items = data
+            elif 'cards' in data:
+                items = data['cards']
+            
+            print(f"Найдено {len(items)} элементов для обработки")
+            
+            for item in items:
+                print(f"Обрабатываем элемент: {item}")
+                nm_id = item.get('id') or item.get('nm_id')
+                dimensions = item.get('dimensions', {})
+                
+                print(f"nm_id: {nm_id}, dimensions: {dimensions}")
+                
+                if nm_id and dimensions:
+                    length = dimensions.get('length', 0)
+                    width = dimensions.get('width', 0)
+                    height = dimensions.get('height', 0)
+                    
+                    print(f"Размеры: length={length}, width={width}, height={height}")
+                    
+                    # Вычисляем объём по формуле: (length * width * height) / 1000
+                    volume = (length * width * height) / 1000 if all([length, width, height]) else 0
+                    
+                    dimensions_dict[int(nm_id)] = {
+                        'length': length,
+                        'width': width,
+                        'height': height,
+                        'volume': round(volume, 2)
+                    }
+                    print(f"Добавлен объём {volume} для nm_id {nm_id}")
+                else:
+                    print(f"Пропущен элемент: nm_id={nm_id}, dimensions={dimensions}")
+            
+            # Небольшая пауза между запросами
+            time.sleep(0.1)
+        
+        print(f"Загружено {len(dimensions_dict)} записей размеров")
+        return dimensions_dict
+        
+    except Exception as e:
+        print(f"Ошибка загрузки размеров: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
 
 
 def fetch_prices_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, Any]]:
@@ -6446,8 +6628,6 @@ def fetch_prices_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, Any]
     
     print("Не удалось получить цены от API")
     return {}
-
-
 @app.route("/products", methods=["GET"]) 
 @login_required
 def products_page():
@@ -7213,8 +7393,6 @@ def tools_labels_page():
         "tools_labels.html",
         warehouses=warehouses,
     )
-
-
 @app.route("/tools/labels/download", methods=["POST"]) 
 @login_required
 def tools_labels_download():
@@ -7466,16 +7644,50 @@ def tools_prices_page():
                 print(f"Ошибка при загрузке комиссий: {e}")
                 commission_data = {}
             
+            # Получаем данные о размерах товаров из карточек
+            dimensions_data = {}
+            try:
+                for product in products:
+                    nm_id = product.get('nm_id')
+                    dimensions = product.get('dimensions', {})
+                    if nm_id and dimensions:
+                        dimensions_data[nm_id] = dimensions
+                print(f"Загружено {len(dimensions_data)} записей размеров из карточек")
+            except Exception as e:
+                print(f"Ошибка при обработке размеров: {e}")
+                dimensions_data = {}
+            
+            # Получаем данные о складах
+            warehouses_data = []
+            try:
+                warehouses_data = fetch_warehouses_data(token)
+                print(f"Загружено {len(warehouses_data)} складов")
+                if warehouses_data:
+                    print(f"Первый склад: {warehouses_data[0]}")
+                else:
+                    print("Список складов пуст!")
+            except Exception as e:
+                print(f"Ошибка при загрузке складов: {e}")
+                import traceback
+                traceback.print_exc()
+                warehouses_data = []
+            
             # Настройки маржи пользователя
             margin_settings = load_user_margin_settings(current_user.id)
 
             # Отладочная информация о товарах
             if products:
-                print(f"Проверяем subject_id у товаров:")
+                print(f"Проверяем subject_id и размеры у товаров:")
                 found_commissions = 0
+                found_dimensions = 0
                 for i, product in enumerate(products[:5]):  # Первые 5 товаров
                     subject_id = product.get('subject_id')
-                    print(f"Товар {i+1}: subject_id = {subject_id}, nm_id = {product.get('nm_id')}")
+                    nm_id = product.get('nm_id')
+                    dimensions = product.get('dimensions', {})
+                    print(f"Товар {i+1}: subject_id = {subject_id}, nm_id = {nm_id}")
+                    print(f"  -> Размеры: {dimensions}")
+                    if dimensions and dimensions.get('volume', 0) > 0:
+                        found_dimensions += 1
                     if subject_id and commission_data:
                         if subject_id in commission_data:
                             print(f"  -> Найдена комиссия: {commission_data[subject_id]}")
@@ -7483,6 +7695,7 @@ def tools_prices_page():
                         else:
                             print(f"  -> Комиссия не найдена для subject_id {subject_id}")
                 print(f"Найдено комиссий для {found_commissions} из {min(5, len(products))} товаров")
+                print(f"Найдено размеров для {found_dimensions} из {min(5, len(products))} товаров")
             
             # Получаем сохраненные закупочные цены из базы данных
             purchase_prices = {}
@@ -7508,6 +7721,8 @@ def tools_prices_page():
         products=products,
         prices_data=prices_data,
         commission_data=commission_data,
+        dimensions_data=dimensions_data if 'dimensions_data' in locals() else {},
+        warehouses_data=warehouses_data if 'warehouses_data' in locals() else [],
         purchase_prices=purchase_prices,
         margin_settings=margin_settings if 'margin_settings' in locals() else load_user_margin_settings(current_user.id),
         prices_last_updated=prices_last_updated,
@@ -7650,6 +7865,7 @@ def api_prices_export_excel():
         products = data['products']
         prices_data = data.get('prices_data', {})
         commission_data = data.get('commission_data', {})
+        dimensions_data = data.get('dimensions_data', {})
         purchase_prices = data.get('purchase_prices', {})
         visible_columns = data.get('visible_columns', [])
         margin_settings = data.get('margin_settings', {})
@@ -7657,6 +7873,7 @@ def api_prices_export_excel():
         print(f"Экспорт Excel: получено {len(products)} товаров")
         print(f"Экспорт Excel: prices_data содержит {len(prices_data)} записей")
         print(f"Экспорт Excel: commission_data содержит {len(commission_data)} записей")
+        print(f"Экспорт Excel: dimensions_data содержит {len(dimensions_data)} записей")
         print(f"Экспорт Excel: purchase_prices содержит {len(purchase_prices)} записей")
         print(f"Экспорт Excel: видимые колонки: {visible_columns}")
         
@@ -7682,6 +7899,7 @@ def api_prices_export_excel():
             'price_discount': 'Цена со скидки',
             'price_wallet': 'Цена со скидкой (WB клуб)',
             'category': 'Категория',
+            'volume': 'Объём л.',
             'commission_pct': 'Комиссия WB, %',
             'commission_rub': 'Комиссия WB руб.',
             'tax_rub': 'Налог руб.',
@@ -7724,6 +7942,11 @@ def api_prices_export_excel():
             # Получаем закупочную цену
             purchase_price = purchase_prices.get(barcode, 0)
             
+            # Получаем данные о размерах
+            volume = 0
+            if dimensions_data and nm_id in dimensions_data:
+                volume = dimensions_data[nm_id].get('volume', 0)
+            
             # Получаем данные о комиссиях
             category_name = ""
             commission_pct = 0
@@ -7745,7 +7968,6 @@ def api_prices_export_excel():
             
             # Вычисляем маржинальные показатели
             tax_pct = margin_settings.get('tax', 6)
-            logistics_pct = margin_settings.get('logistics', 7.5)
             storage_pct = margin_settings.get('storage', 0.5)
             receiving_pct = margin_settings.get('receiving', 1)
             acquiring_pct = margin_settings.get('acquiring', 1.7)
@@ -7753,7 +7975,38 @@ def api_prices_export_excel():
             # Расчеты в рублях
             commission_rub = price_with_discount * (commission_pct / 100)
             tax_rub = price_with_discount * (tax_pct / 100)
-            logistics_rub = price_with_discount * (logistics_pct / 100)
+            
+            # Новая логика расчета логистики на основе объёма
+            logistics_rub = 0
+            if volume > 0:
+                if volume < 1:
+                    # Для товаров до 1 литра
+                    if 0.001 <= volume <= 0.200:
+                        logistics_rub = 23
+                    elif 0.201 <= volume <= 0.400:
+                        logistics_rub = 26
+                    elif 0.401 <= volume <= 0.600:
+                        logistics_rub = 29
+                    elif 0.601 <= volume <= 0.800:
+                        logistics_rub = 30
+                    elif 0.801 <= volume <= 0.999:
+                        logistics_rub = 32
+                else:
+                    # Для товаров от 1 литра и выше
+                    first_liter = 46  # Стоимость первого литра
+                    additional_liters = max(0, volume - 1) * 14  # Дополнительные литры
+                    logistics_rub = first_liter + additional_liters
+                
+                # Применяем коэффициент склада, если он выбран
+                warehouse_coef = margin_settings.get('warehouse_coef', 0)
+                if warehouse_coef > 0:
+                    logistics_rub = logistics_rub * warehouse_coef / 100
+                
+                # Применяем индекс локализации
+                localization_index = margin_settings.get('localization_index', 1.0)
+                if localization_index > 0:
+                    logistics_rub = logistics_rub * localization_index
+            
             storage_rub = price_with_discount * (storage_pct / 100)
             receiving_rub = price_with_discount * (receiving_pct / 100)
             acquiring_rub = price_with_discount * (acquiring_pct / 100)
@@ -7774,6 +8027,7 @@ def api_prices_export_excel():
                 'price_discount': round(price_with_discount, 2),
                 'price_wallet': round(price_wb_wallet, 2),
                 'category': str(category_name),
+                'volume': round(volume, 2),
                 'commission_pct': round(commission_pct, 1),
                 'commission_rub': round(commission_rub, 2),
                 'tax_rub': round(tax_rub, 2),
@@ -7811,6 +8065,7 @@ def api_prices_export_excel():
             'price_discount': 2000,
             'price_wallet': 2000,
             'category': 3000,
+            'volume': 1500,
             'commission_pct': 1500,
             'commission_rub': 2000,
             'tax_rub': 2000,
@@ -7906,6 +8161,19 @@ def api_margin_settings():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+@app.route("/api/tools/prices/warehouses", methods=["GET"])
+@login_required
+def api_tools_prices_warehouses():
+    """Возвращает список складов с коэффициентами для выпадающего списка."""
+    try:
+        token = current_user.wb_token or ""
+        if not token:
+            return jsonify({"success": False, "error": "Не указан WB токен"}), 400
+        warehouses = fetch_warehouses_data(token)
+        return jsonify({"success": True, "warehouses": warehouses})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 if __name__ == "__main__":
