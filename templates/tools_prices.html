@@ -157,7 +157,7 @@
             </div>
           </div>
           <div class="col-auto">
-            <label for="varWarehouseCoef" class="form-label mb-0 small">Коэфф. логистики склада % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Коэффициент логистики выбранного склада, влияет на стоимость логистики вашего товара к конечному потребителю"></i></label>
+            <label for="varWarehouseCoef" class="form-label mb-0 small">Коэфф. логистики склада % <i class="bi bi-info-circle text-info" data-bs-toggle="tooltip" title="Коэффициент логистики выбранного склада (по тарифу на остаток, не на новую поставку!), влияет на стоимость логистики вашего товара к конечному потребителю"></i></label>
             <input type="number" step="1" min="0" id="varWarehouseCoef" class="form-control form-control-sm" style="width:120px" value="{{ margin_settings.warehouse_coef }}" readonly>
           </div>
           <div class="col-auto text-muted small" id="marginSaveStatus" style="display:none"></div>
