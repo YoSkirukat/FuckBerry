@@ -468,8 +468,10 @@
           rows.forEach((row, index) => {
             const cells = row.querySelectorAll('td');
             if (cells.length >= 8) {
-              const photo = cells[1].querySelector('img')?.src || '';
-              const supplierArticle = cells[2].textContent.trim();
+              // Чистые значения берём из дата-атрибутов строки
+              const supplierArticle = row.getAttribute('data-vendor-code') || '';
+              const nmId = row.getAttribute('data-nm-id') || '';
+              const barcode = row.getAttribute('data-barcode') || '';
               const lengthInput = cells[3].querySelector('input');
               const widthInput = cells[4].querySelector('input');
               const heightInput = cells[5].querySelector('input');
@@ -484,8 +486,9 @@
               
               products.push({
                 index: index + 1,
-                photo: photo,
                 supplier_article: supplierArticle,
+                nm_id: nmId ? parseInt(nmId) : '',
+                barcode: barcode,
                 length: length,
                 width: width,
                 height: height,

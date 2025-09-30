@@ -7367,8 +7367,9 @@ def api_products_export_excel():
         # Заголовки
         headers = [
             "№", 
-            "Фото", 
             "Артикул продавца", 
+            "Артикул WB",
+            "Баркод",
             "Длина, см", 
             "Ширина, см", 
             "Высота, см", 
@@ -7391,10 +7392,12 @@ def api_products_export_excel():
         
         # Данные товаров
         for product in products:
+            nm_val = product.get("nm_id") if "nm_id" in product else product.get("nmID")
             row = [
                 product.get("index", ""),
-                product.get("photo", ""),
                 product.get("supplier_article", ""),
+                nm_val or "",
+                product.get("barcode", ""),
                 product.get("length", 0),
                 product.get("width", 0),
                 product.get("height", 0),
