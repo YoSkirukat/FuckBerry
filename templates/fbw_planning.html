@@ -1957,9 +1957,9 @@
     }
     
     function addEditableCellHandlers() {
-      const editableCells = document.querySelectorAll('.editable-cell');
-      editableCells.forEach(cell => {
-        cell.addEventListener('change', function() {
+      const inputs = document.querySelectorAll('.editable-cell input[data-field="toSupply"]');
+      inputs.forEach(input => {
+        input.addEventListener('change', function() {
           const index = this.dataset.index;
           const field = this.dataset.field;
           const value = parseInt(this.value) || 0;
@@ -1974,11 +1974,25 @@
         });
         
         // Также обновляем итоги при вводе (не только при потере фокуса)
-        cell.addEventListener('input', function() {
+        input.addEventListener('input', function() {
           // Обновляем стили фона
           updateInputBackground(this);
           
           updateTotals();
+        });
+        
+        // Добавляем обработчик для клавиши Enter
+        input.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault(); // Предотвращаем стандартное поведение
+            
+            const allInputs = Array.from(document.querySelectorAll('.editable-cell input[data-field="toSupply"]'));
+            const currentIndex = allInputs.indexOf(this);
+            const nextIndex = (currentIndex + 1) % allInputs.length;
+            
+            allInputs[nextIndex].focus();
+            allInputs[nextIndex].select();
+          }
         });
       });
     }
