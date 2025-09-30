@@ -320,6 +320,7 @@ FBW_SUPPLY_GOODS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}
 FBW_SUPPLY_PACKAGE_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/package"
 # Wildberries Content API: cards list
 WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
+WB_CARDS_UPDATE_URL = "https://content-api.wildberries.ru/content/v2/cards/update"
 STOCKS_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
 FIN_REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 
@@ -6192,7 +6193,14 @@ def post_with_retry(url: str, headers: Dict[str, str], json_body: Dict[str, Any]
     raise RuntimeError("Request failed after retries")
 
 
-def fetch_cards_list(token: str, nm_ids: List[int] | None = None, cursor: Dict[str, Any] | None = None, limit: int = 100) -> Dict[str, Any]:
+def fetch_cards_list(
+    token: str,
+    nm_ids: List[int] | None = None,
+    cursor: Dict[str, Any] | None = None,
+    limit: int = 100,
+    text_search: str | None = None,
+    vendor_codes: List[str] | None = None,
+) -> Dict[str, Any]:
     # Build request body per WB docs: settings.cursor + settings.filter
     base_cursor = {"limit": limit, "nmID": 0}
     if cursor:
@@ -6201,13 +6209,17 @@ def fetch_cards_list(token: str, nm_ids: List[int] | None = None, cursor: Dict[s
         "settings": {
             "cursor": base_cursor,
             "filter": {
-                "textSearch": "",
+                "textSearch": (text_search or ""),
                 "withPhoto": -1,  # -1 — не фильтровать по наличию фото
             },
         }
     }
     if nm_ids:
+        # Точный запрос карточек по списку nmID — поле верхнего уровня
         body["nmID"] = nm_ids
+    if vendor_codes:
+        # Точный фильтр по артикулу продавца
+        body["settings"]["filter"]["vendorCode"] = vendor_codes
     # Try with Bearer first, then raw token (Content API часто принимает без Bearer)
     headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     try:
@@ -6279,12 +6291,20 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             except Exception:
                 photo = None
             barcode = None
+            size_info = None
             try:
                 sizes = c.get("sizes") or []
                 for s in sizes:
-                    tech = s.get("skus") or s.get("barcodes") or []
-                    if tech:
-                        barcode = str(tech[0])
+                    # запомним первый размер как источник chrtID и штрихкода
+                    chrt_id = s.get("chrtID")
+                    skus = s.get("skus") or s.get("barcodes") or []
+                    if skus and not barcode:
+                        barcode = str(skus[0])
+                    if chrt_id:
+                        size_info = {
+                            "chrtID": chrt_id,
+                            "skus": [str(x) for x in (s.get("skus") or [])]
+                        }
                         break
             except Exception:
                 barcode = None
@@ -6299,6 +6319,7 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             length = dimensions.get("length", 0)
             width = dimensions.get("width", 0)
             height = dimensions.get("height", 0)
+            weight = dimensions.get("weightBrutto", 0)
             volume = (length * width * height) / 1000 if all([length, width, height]) else 0
             
             items.append({
@@ -6306,18 +6327,208 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "supplier_article": supplier_article,
                 "nm_id": nm_id,
                 "barcode": barcode,
+                "chrt_id": size_info.get("chrtID") if size_info else None,
                 "name": name,
                 "subject_id": subject_id,
                 "dimensions": {
                     "length": length,
                     "width": width,
                     "height": height,
+                    "weight": weight,
                     "volume": round(volume, 2)
-                }
+                },
+                "size_info": size_info
             })
     except Exception:
         pass
     return items
+
+
+def update_cards_dimensions(token: str, updates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Обновляет размеры и вес товаров через API Wildberries
+    
+    Args:
+        token: API токен Wildberries
+        updates: Список обновлений в формате [{"nmID": int, "vendorCode": str, "barcode": str, "chrtID": int, "dimensions": {...}}]
+    
+    Returns:
+        Результат обновления
+    """
+    if not updates:
+        return {"error": "Нет данных для обновления"}
+    
+    # Получаем кэш товаров для fallback данных
+    try:
+        cached = load_products_cache()
+        products_cache = {item.get("nm_id"): item for item in cached.get("items", [])} if cached else {}
+    except Exception as e:
+        print(f"Ошибка загрузки кэша товаров: {e}")
+        products_cache = {}
+    
+    # Подготавливаем данные для API (строго сохраняем все поля карточки, меняем только dimensions)
+    cards_data = []
+    skipped = []
+
+    for update in updates:
+        nm_id = update.get("nmID")
+        vendor_from_ui = (update.get("vendorCode") or "").strip()
+        dimensions = update.get("dimensions", {})
+
+        if not nm_id:
+            skipped.append({"nmID": nm_id, "reason": "no_nmID"})
+            continue
+
+        # 1) Получаем полную карточку: сначала строго по nmID; если не нашли — по vendorCode (UI/кэш);
+        #    если всё ещё нет — пробуем textSearch по nmID строкой. Цель — всегда иметь полную карточку для merge.
+        base = None
+        last_err = None
+        try:
+            fc = fetch_cards_list(token, nm_ids=[nm_id], limit=2)
+            payload = fc.get("data") or fc
+            cards = payload.get("cards") or []
+            exact = [c for c in cards if (c.get("nmID") == nm_id or c.get("nmId") == nm_id)]
+            if exact:
+                base = exact[0]
+        except Exception as e_fetch:
+            last_err = e_fetch
+            print(f"fetch by nmID failed for {nm_id}: {e_fetch}")
+
+        if base is None:
+            # fallback by vendorCode
+            vendor_fallback = vendor_from_ui
+            if not vendor_fallback:
+                try:
+                    vendor_fallback = (products_cache.get(nm_id) or {}).get("supplier_article") or ""
+                except Exception:
+                    vendor_fallback = ""
+            if vendor_fallback:
+                try:
+                    fc_v = fetch_cards_list(token, vendor_codes=[str(vendor_fallback)], limit=100)
+                    pl_v = fc_v.get("data") or fc_v
+                    cards_v = pl_v.get("cards") or []
+                    # сначала по точному nmID, иначе по совпадению vendorCode
+                    exact_nm = [c for c in cards_v if (c.get("nmID") == nm_id or c.get("nmId") == nm_id)]
+                    base = exact_nm[0] if exact_nm else next((c for c in cards_v if str(c.get("vendorCode", "")).strip() == str(vendor_fallback).strip()), None)
+                except Exception as e_v:
+                    last_err = e_v
+                    print(f"fetch by vendorCode failed for {nm_id}/{vendor_fallback}: {e_v}")
+
+        if base is None:
+            # last resort: textSearch by nmID string
+            try:
+                fc_t = fetch_cards_list(token, text_search=str(nm_id), limit=50)
+                pl_t = fc_t.get("data") or fc_t
+                cards_t = pl_t.get("cards") or []
+                base = next((c for c in cards_t if (c.get("nmID") == nm_id or c.get("nmId") == nm_id)), None)
+            except Exception as e_t:
+                last_err = e_t
+                print(f"fetch by textSearch failed for {nm_id}: {e_t}")
+
+        if base is None:
+            reason = "not_found"
+            if last_err is not None:
+                reason = f"fetch_failed: {last_err}"
+            skipped.append({"nmID": nm_id, "reason": reason})
+            continue
+
+        # 2) Обновляем только нужные поля dimensions
+        base_dimensions = (base.get("dimensions") or {}).copy()
+        if "length" in dimensions:
+            base_dimensions["length"] = dimensions["length"]
+        if "width" in dimensions:
+            base_dimensions["width"] = dimensions["width"]
+        if "height" in dimensions:
+            base_dimensions["height"] = dimensions["height"]
+        if "weightBrutto" in dimensions:
+            base_dimensions["weightBrutto"] = dimensions["weightBrutto"]
+        base_dimensions["isValid"] = True
+
+        # 3) Собираем карточку, сохраняя все остальные поля без изменений
+        card_data = {
+            "nmID": base.get("nmID") or nm_id,
+            "vendorCode": base.get("vendorCode", ""),
+            "dimensions": base_dimensions,
+            "sizes": base.get("sizes", []),
+            "characteristics": base.get("characteristics", []),
+            "title": base.get("title", ""),
+            "description": base.get("description", ""),
+            "brand": base.get("brand", "")
+        }
+
+        cards_data.append(card_data)
+        print(f"Добавлена карточка для обновления (merge): nmID={nm_id}")
+    
+    if not cards_data:
+        return {"ok": True, "skipped": skipped, "message": "Нет валидных данных для обновления"}
+    
+    # Отправляем запросы по одному
+    headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    aggregated_results = []
+    aggregated_errors = []
+
+    for card in cards_data:
+        nm = card.get("nmID")
+        try:
+            print(f"Отправляем запрос к {WB_CARDS_UPDATE_URL} для nmID {nm}")
+            print(f"Данные для отправки: {[card]}")
+            resp = post_with_retry(WB_CARDS_UPDATE_URL, headers1, [card])
+            print(f"Ответ API: статус {resp.status_code}, текст: {resp.text}")
+            
+            if resp.status_code == 200:
+                try:
+                    result = resp.json()
+                    aggregated_results.append(result)
+                    print(f"Успешно обновлен nmID {nm}")
+                except Exception as e:
+                    aggregated_results.append({"nmID": nm, "raw": resp.text, "error": str(e)})
+            else:
+                error_info = {"nmID": nm, "status": resp.status_code, "text": resp.text}
+                aggregated_errors.append(error_info)
+                print(f"Ошибка обновления nmID {nm}: {resp.status_code} - {resp.text}")
+
+        except requests.HTTPError as err:
+            if err.response is not None and err.response.status_code in (401, 403):
+                # Пробуем с другим форматом авторизации
+                headers2 = {"Authorization": f"{token}", "Content-Type": "application/json"}
+                try:
+                    resp2 = post_with_retry(WB_CARDS_UPDATE_URL, headers2, [card])
+                    if resp2.status_code == 200:
+                        try:
+                            result = resp2.json()
+                            aggregated_results.append(result)
+                            print(f"Успешно обновлен nmID {nm} (второй запрос)")
+                        except Exception as e:
+                            aggregated_results.append({"nmID": nm, "raw": resp2.text, "error": str(e)})
+                    else:
+                        error_info = {"nmID": nm, "status": resp2.status_code, "text": resp2.text}
+                        aggregated_errors.append(error_info)
+                        print(f"Ошибка обновления nmID {nm} (второй запрос): {resp2.status_code} - {resp2.text}")
+                except Exception as e2:
+                    error_info = {"nmID": nm, "error": f"Ошибка авторизации: {e2}"}
+                    aggregated_errors.append(error_info)
+                    print(f"Ошибка авторизации для nmID {nm}: {e2}")
+            else:
+                error_info = {"nmID": nm, "error": f"HTTP ошибка {err.response.status_code}: {err.response.text}" if err.response else f"HTTP ошибка: {err}"}
+                aggregated_errors.append(error_info)
+                print(f"HTTP ошибка для nmID {nm}: {error_info['error']}")
+        except Exception as e:
+            error_info = {"nmID": nm, "error": f"Ошибка запроса: {e}"}
+            aggregated_errors.append(error_info)
+            print(f"Ошибка запроса для nmID {nm}: {e}")
+
+    # Возвращаем результат
+    result = {
+        "ok": True,
+        "updated_count": len(aggregated_results),
+        "skipped": skipped,
+        "results": aggregated_results
+    }
+    
+    if aggregated_errors:
+        result["errors"] = aggregated_errors
+    
+    return result
 
 
 def fetch_commission_data(token: str) -> Dict[int, Dict[str, Any]]:
@@ -6638,14 +6849,14 @@ def products_page():
         error = "Укажите токен API в профиле"
     else:
         try:
-            cached = load_products_cache()
-            if cached and cached.get("_user_id") == current_user.id:
-                products = cached.get("items", [])
-            else:
-                # Load all pages
-                raw_cards = fetch_all_cards(token, page_limit=100)
-                products = normalize_cards_response({"cards": raw_cards})
+            # Всегда грузим свежие данные с WB без использования локального кэша
+            raw_cards = fetch_all_cards(token, page_limit=100)
+            products = normalize_cards_response({"cards": raw_cards})
+            # Обновим кэш в фоне для других страниц, но страница /products всегда показывает live-данные
+            try:
                 save_products_cache({"items": products})
+            except Exception:
+                pass
         except requests.HTTPError as http_err:
             error = f"Ошибка API: {http_err.response.status_code}"
         except Exception as exc:
@@ -7045,6 +7256,185 @@ def api_products_refresh():
         return jsonify({"error": "http", "status": http_err.response.status_code}), 502
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+@app.route("/api/products/update-dimensions", methods=["POST"])
+@login_required
+def api_products_update_dimensions():
+    """API для обновления размеров и веса товаров"""
+    token = current_user.wb_token or ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    
+    try:
+        data = request.get_json()
+        updates = data.get("updates", [])
+        
+        # Добавляем chrtID если пришел с фронта
+        for u in updates:
+            if not isinstance(u, dict):
+                continue
+            u.setdefault("vendorCode", "")
+            u.setdefault("barcode", "")
+            u.setdefault("chrtID", None)
+        
+        if not updates:
+            return jsonify({"error": "Нет данных для обновления"}), 400
+        
+        # Обновляем карточки через API Wildberries
+        result = update_cards_dimensions(token, updates)
+        
+        # Проверяем, есть ли реальная ошибка
+        if result.get("error") and result.get("error") != "Нет данных для обновления":
+            return jsonify({"error": result.get("error", "Неизвестная ошибка API")}), 400
+        
+        # Обновляем кэш товаров: сначала оперативно патчим локальный кэш
+        try:
+            cached = load_products_cache() or {}
+            items = cached.get("items") or []
+            if items:
+                # Быстрое локальное применение изменений в кэше для мгновенного отображения
+                nm_to_item = {it.get("nm_id"): it for it in items}
+                for upd in updates:
+                    nm_id_u = upd.get("nmID")
+                    dims_u = upd.get("dimensions") or {}
+                    it = nm_to_item.get(nm_id_u)
+                    if not it:
+                        continue
+                    it_dims = (it.get("dimensions") or {}).copy()
+                    if "length" in dims_u:
+                        it_dims["length"] = dims_u["length"]
+                    if "width" in dims_u:
+                        it_dims["width"] = dims_u["width"]
+                    if "height" in dims_u:
+                        it_dims["height"] = dims_u["height"]
+                    if "weightBrutto" in dims_u:
+                        it_dims["weight"] = dims_u["weightBrutto"]
+                    # Пересчёт объёма (л)
+                    length = float(it_dims.get("length") or 0)
+                    width = float(it_dims.get("width") or 0)
+                    height = float(it_dims.get("height") or 0)
+                    volume = (length * width * height) / 1000 if (length and width and height) else 0
+                    it_dims["volume"] = round(volume, 2)
+                    it["dimensions"] = it_dims
+                
+                save_products_cache({"items": items})
+        except Exception as cache_patch_err:
+            print(f"Ошибка оперативного патча кэша: {cache_patch_err}")
+
+        # Затем пытаемся подтянуть свежие данные из WB (могут обновляться с задержкой)
+        try:
+            raw_cards = fetch_all_cards(token, page_limit=100)
+            items_full = normalize_cards_response({"cards": raw_cards})
+            if items_full:
+                save_products_cache({"items": items_full})
+        except Exception as cache_err:
+            # Логируем ошибку кэша, но не прерываем выполнение
+            print(f"Ошибка обновления кэша: {cache_err}")
+        
+        return jsonify({
+            "ok": True, 
+            "updated_count": result.get("updated_count", 0),
+            "skipped": result.get("skipped", []),
+            "errors": result.get("errors", []),
+            "result": result
+        })
+
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/products/export-excel", methods=["POST"])
+@login_required
+def api_products_export_excel():
+    """Экспорт товаров в Excel формат"""
+    try:
+        data = request.get_json()
+        if not data or 'products' not in data:
+            return jsonify({"error": "Нет данных для экспорта"}), 400
+        
+        products = data['products']
+        
+        if not products:
+            return jsonify({"error": "Нет товаров для экспорта"}), 400
+        
+        print(f"Экспорт Excel: получено {len(products)} товаров")
+        
+        # Создаем Excel файл
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Товары"
+        
+        # Заголовки
+        headers = [
+            "№", 
+            "Фото", 
+            "Артикул продавца", 
+            "Длина, см", 
+            "Ширина, см", 
+            "Высота, см", 
+            "Объём л.", 
+            "Вес, кг"
+        ]
+        ws.append(headers)
+        
+        # Стили для заголовков
+        from openpyxl.styles import Font, Alignment, PatternFill
+        header_font = Font(bold=True)
+        header_fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+        
+        # Данные товаров
+        for product in products:
+            row = [
+                product.get("index", ""),
+                product.get("photo", ""),
+                product.get("supplier_article", ""),
+                product.get("length", 0),
+                product.get("width", 0),
+                product.get("height", 0),
+                product.get("volume", 0),
+                product.get("weight", 0)
+            ]
+            ws.append(row)
+        
+        # Автоподбор ширины колонок
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Сохраняем в память
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        # Генерируем имя файла
+        from datetime import datetime
+        filename = f"wb_products_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        
+        return send_file(
+            output, 
+            as_attachment=True, 
+            download_name=filename, 
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+    except Exception as e:
+        print(f"Ошибка экспорта Excel: {e}")
+        return jsonify({"error": f"Ошибка экспорта: {str(e)}"}), 500
 
 @app.route('/favicon.ico')
 def favicon():

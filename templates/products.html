@@ -18,7 +18,18 @@
   <div class="container mt-3">
     <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
       <h1 class="mb-0">Товары{% if items_count is defined %} ({{ items_count }} шт.){% endif %}</h1>
+        <div class="d-flex gap-2">
+          <button id="saveChanges" class="btn btn-success btn-sm" disabled>Сохранить правки</button>
       <button id="refreshProducts" class="btn btn-primary btn-sm">Обновить список товаров</button>
+          <div class="btn-group">
+            <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+              Действия с Excel
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><a class="dropdown-item" href="#" id="actionExportExcel"><i class="fas fa-file-excel me-1"></i> Экспорт в Excel</a></li>
+            </ul>
+          </div>
+        </div>
     </div>
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
@@ -32,17 +43,22 @@
                 <th class="text-center" style="width:56px;">#</th>
                 <th style="width:72px;">Фото</th>
                 <th>Артикул продавца</th>
+                <th class="text-center" style="width:80px;">Длина, см</th>
+                <th class="text-center" style="width:80px;">Ширина, см</th>
+                <th class="text-center" style="width:80px;">Высота, см</th>
+                <th class="text-center" style="width:80px;">Объём л.</th>
+                <th class="text-center" style="width:80px;">Вес, кг</th>
                 <th class="text-center" style="width:48px;"></th>
               </tr>
               <tr>
-                <th colspan="3">
+                <th colspan="8">
                   <input id="productsSearch" type="search" class="form-control form-control-sm" placeholder="Поиск товара" />
                 </th>
               </tr>
             </thead>
             <tbody>
               {% for it in items %}
-              <tr>
+              <tr data-nm-id="{{ it.nm_id }}" data-vendor-code="{{ it.supplier_article }}" data-barcode="{{ it.barcode }}" data-chrt-id="{{ it.chrt_id }}">
                 <td class="text-center">{{ loop.index }}</td>
                 <td>
                   {% if it.photo %}
@@ -68,6 +84,59 @@
                   {% endif %}
                 </td>
                 <td class="text-center">
+                  <input type="number" 
+                         class="form-control form-control-sm dimension-input" 
+                         data-field="length" 
+                         data-nm-id="{{ it.nm_id }}"
+                         value="{{ it.dimensions.length if it.dimensions and it.dimensions.length else '' }}" 
+                         min="0" 
+                         step="0.1" 
+                         placeholder="—" 
+                         style="width: 70px; text-align: center;" />
+                </td>
+                <td class="text-center">
+                  <input type="number" 
+                         class="form-control form-control-sm dimension-input" 
+                         data-field="width" 
+                         data-nm-id="{{ it.nm_id }}"
+                         value="{{ it.dimensions.width if it.dimensions and it.dimensions.width else '' }}" 
+                         min="0" 
+                         step="0.1" 
+                         placeholder="—" 
+                         style="width: 70px; text-align: center;" />
+                </td>
+                <td class="text-center">
+                  <input type="number" 
+                         class="form-control form-control-sm dimension-input" 
+                         data-field="height" 
+                         data-nm-id="{{ it.nm_id }}"
+                         value="{{ it.dimensions.height if it.dimensions and it.dimensions.height else '' }}" 
+                         min="0" 
+                         step="0.1" 
+                         placeholder="—" 
+                         style="width: 70px; text-align: center;" />
+                </td>
+                <td class="text-center">
+                  <span class="volume-display" data-nm-id="{{ it.nm_id }}">
+                    {% if it.dimensions and it.dimensions.volume %}
+                      {{ it.dimensions.volume }}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </span>
+                </td>
+                <td class="text-center">
+                  <input type="number" 
+                         class="form-control form-control-sm dimension-input" 
+                         data-field="weight" 
+                         data-nm-id="{{ it.nm_id }}"
+                         value="{{ it.dimensions.weight if it.dimensions and it.dimensions.weight else '' }}" 
+                         min="0" 
+                         step="0.01" 
+                         placeholder="—" 
+                         style="width: 70px; text-align: center;" />
+                </td>
+                <td class="text-center">
                   {% if it.nm_id %}
                     <a href="https://seller.wildberries.ru/new-goods/card?nmID={{ it.nm_id }}&type=EXIST_CARD" target="_blank" rel="noopener" title="Редактировать" class="text-decoration-none">✎</a>
                   {% endif %}
@@ -75,7 +144,7 @@
               </tr>
               {% endfor %}
               {% if not items %}
-                <tr><td colspan="4" class="text-muted">Нет данных</td></tr>
+                <tr><td colspan="9" class="text-muted">Нет данных</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -86,12 +155,145 @@
   <div id="imgPreview" style="display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none;">
     <img id="imgPreviewImg" src="" alt="preview" style="max-width:420px; max-height:560px; display:block;" />
   </div>
+
+  <!-- Модальное окно для подтверждения изменений -->
+  <div class="modal fade" id="confirmChangesModal" tabindex="-1" aria-labelledby="confirmChangesModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="confirmChangesModalLabel">Подтверждение изменений</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Будут обновлены следующие товары:</p>
+          <div class="table-responsive">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Артикул</th>
+                  <th>Длина</th>
+                  <th>Ширина</th>
+                  <th>Высота</th>
+                  <th>Вес</th>
+                </tr>
+              </thead>
+              <tbody id="changesList">
+                <!-- Список изменений будет добавлен через JavaScript -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" class="btn btn-success" id="confirmSaveChanges">Сохранить</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     (function(){
-      const btn = document.getElementById('refreshProducts');
-      if (!btn) return;
-      btn.addEventListener('click', async function(){
-        btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Обновление...';
+      // Хранилище изменений
+      const changes = new Map();
+      const originalValues = new Map();
+      
+      // Кнопки и элементы
+      const refreshBtn = document.getElementById('refreshProducts');
+      const saveBtn = document.getElementById('saveChanges');
+      let confirmModal;
+      const confirmSaveBtn = document.getElementById('confirmSaveChanges');
+      
+      // Инициализация модального окна после загрузки Bootstrap
+      function initModal() {
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+          confirmModal = new bootstrap.Modal(document.getElementById('confirmChangesModal'));
+        } else {
+          console.warn('Bootstrap не загружен, модальное окно недоступно');
+          // Попробуем инициализировать позже
+          setTimeout(initModal, 100);
+        }
+      }
+      
+      // Инициализация оригинальных значений
+      function initOriginalValues() {
+        const inputs = document.querySelectorAll('.dimension-input');
+        if (inputs.length === 0) {
+          console.warn('Поля ввода размеров не найдены');
+          return;
+        }
+        inputs.forEach(input => {
+          const nmId = input.dataset.nmId;
+          const field = input.dataset.field;
+          if (!originalValues.has(nmId)) {
+            originalValues.set(nmId, {});
+          }
+          originalValues.get(nmId)[field] = input.value;
+        });
+      }
+      
+      // Обновление объёма
+      function updateVolume(nmId) {
+        const inputs = document.querySelectorAll(`[data-nm-id="${nmId}"]`);
+        const length = parseFloat(document.querySelector(`[data-nm-id="${nmId}"][data-field="length"]`)?.value || 0);
+        const width = parseFloat(document.querySelector(`[data-nm-id="${nmId}"][data-field="width"]`)?.value || 0);
+        const height = parseFloat(document.querySelector(`[data-nm-id="${nmId}"][data-field="height"]`)?.value || 0);
+        
+        const volumeDisplay = document.querySelector(`.volume-display[data-nm-id="${nmId}"]`);
+        if (volumeDisplay) {
+          if (length && width && height) {
+            const volume = (length * width * height) / 1000;
+            volumeDisplay.textContent = volume.toFixed(2);
+          } else {
+            volumeDisplay.textContent = '—';
+          }
+        }
+      }
+      
+      // Проверка изменений
+      function checkForChanges() {
+        const inputs = document.querySelectorAll('.dimension-input');
+        let hasChanges = false;
+        
+        inputs.forEach(input => {
+          const nmId = input.dataset.nmId;
+          const field = input.dataset.field;
+          const currentValue = input.value;
+          const originalValue = originalValues.get(nmId)?.[field] || '';
+          
+          if (currentValue !== originalValue) {
+            hasChanges = true;
+            if (!changes.has(nmId)) {
+              changes.set(nmId, {});
+            }
+            changes.get(nmId)[field] = currentValue;
+          } else {
+            if (changes.has(nmId)) {
+              delete changes.get(nmId)[field];
+              if (Object.keys(changes.get(nmId)).length === 0) {
+                changes.delete(nmId);
+              }
+            }
+          }
+        });
+        
+        saveBtn.disabled = !hasChanges;
+        return hasChanges;
+      }
+      
+      // Обработчики событий для полей ввода
+      document.addEventListener('input', function(e) {
+        if (e.target.classList.contains('dimension-input')) {
+          const nmId = e.target.dataset.nmId;
+          updateVolume(nmId);
+          checkForChanges();
+        }
+      });
+      
+      // Кнопка обновления товаров
+      if (refreshBtn) {
+        refreshBtn.addEventListener('click', async function(){
+          refreshBtn.disabled = true; 
+          const prev = refreshBtn.textContent; 
+          refreshBtn.textContent = 'Обновление...';
         try {
           const res = await fetch('/api/products/refresh', { method: 'POST' });
           const data = await res.json().catch(()=>({}));
@@ -99,11 +301,125 @@
           location.reload();
         } catch (e) {
           console.error(e);
-          btn.textContent = 'Ошибка';
-          setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; }, 1500);
+            refreshBtn.textContent = 'Ошибка';
+            setTimeout(()=>{ refreshBtn.textContent = prev; refreshBtn.disabled = false; }, 1500);
           return;
         }
       });
+      }
+      
+      // Кнопка сохранения изменений
+      if (saveBtn) {
+        saveBtn.addEventListener('click', function() {
+          if (changes.size === 0) return;
+          
+          // Заполняем модальное окно
+          const changesList = document.getElementById('changesList');
+          changesList.innerHTML = '';
+          
+          changes.forEach((productChanges, nmId) => {
+            const row = document.createElement('tr');
+            const article = document.querySelector(`[data-nm-id="${nmId}"]`)?.closest('tr')?.querySelector('a')?.textContent || nmId;
+            
+            row.innerHTML = `
+              <td>${article}</td>
+              <td>${productChanges.length || '—'}</td>
+              <td>${productChanges.width || '—'}</td>
+              <td>${productChanges.height || '—'}</td>
+              <td>${productChanges.weight || '—'}</td>
+            `;
+            changesList.appendChild(row);
+          });
+          
+          if (confirmModal) {
+            confirmModal.show();
+          } else {
+            alert('Модальное окно недоступно. Bootstrap не загружен.');
+          }
+        });
+      }
+      
+      // Подтверждение сохранения
+      if (confirmSaveBtn) {
+        confirmSaveBtn.addEventListener('click', async function() {
+          confirmSaveBtn.disabled = true;
+          confirmSaveBtn.textContent = 'Сохранение...';
+          
+          try {
+            const updateData = [];
+            changes.forEach((productChanges, nmId) => {
+              // Формируем полный набор размеров из текущей строки (во избежание обнуления полей на стороне WB)
+              const row = document.querySelector(`[data-nm-id="${nmId}"]`)?.closest('tr');
+              const getNum = (selector) => {
+                const el = row?.querySelector(selector);
+                const val = el ? parseFloat(el.value) : NaN;
+                return Number.isFinite(val) ? val : 0;
+              };
+              const dimensions = {
+                length: getNum('input[data-field="length"]'),
+                width: getNum('input[data-field="width"]'),
+                height: getNum('input[data-field="height"]'),
+                weightBrutto: getNum('input[data-field="weight"]')
+              };
+
+              // Берём vendorCode и barcode из строки таблицы
+              const vendorText = row?.querySelector('td:nth-child(3) a')?.textContent?.trim() || '';
+              const metaText = row?.querySelector('td:nth-child(3) .small.text-muted.mt-1')?.textContent || '';
+              let barcode = '';
+              const m = /Баркод:\s*([0-9]+)/.exec(metaText);
+              if (m) barcode = m[1];
+
+              // chrtID попытаемся взять из дата-атрибута на строке (если он отрисовывается шаблоном)
+              const chrtIdAttr = row?.getAttribute('data-chrt-id');
+              const chrtID = chrtIdAttr ? parseInt(chrtIdAttr) : undefined;
+
+              updateData.push({
+                nmID: parseInt(nmId),
+                vendorCode: vendorText,
+                barcode: barcode,
+                chrtID: chrtID,
+                dimensions: dimensions
+              });
+            });
+            
+            console.log('Отправляем данные для обновления:', updateData);
+            
+            const response = await fetch('/api/products/update-dimensions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ updates: updateData })
+            });
+            
+            console.log('Ответ сервера:', response.status, response.statusText);
+            
+            const result = await response.json();
+            console.log('Результат от сервера:', result);
+            
+            if (response.ok && !result.error) {
+              alert('Изменения успешно сохранены!');
+              if (confirmModal) {
+                confirmModal.hide();
+              }
+              changes.clear();
+              initOriginalValues();
+              checkForChanges();
+            } else {
+              const errorMsg = result.error || 'Ошибка при сохранении';
+              console.error('Ошибка сохранения:', errorMsg);
+              throw new Error(errorMsg);
+            }
+          } catch (error) {
+            console.error('Ошибка:', error);
+            alert('Ошибка при сохранении: ' + error.message);
+          } finally {
+            confirmSaveBtn.disabled = false;
+            confirmSaveBtn.textContent = 'Сохранить';
+          }
+        });
+      }
+      
       // Live search
       const search = document.getElementById('productsSearch');
       const tbody = document.querySelector('#productsTable tbody');
@@ -136,6 +452,105 @@
           previewImg.src = '';
         }
       });
+      
+      // Экспорт в Excel
+      const exportBtn = document.getElementById('actionExportExcel');
+      if (exportBtn) {
+        exportBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          exportBtn.classList.add('disabled');
+          exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Экспорт...';
+          
+          // Собираем данные из таблицы
+          const products = [];
+          const rows = document.querySelectorAll('#productsTable tbody tr');
+          
+          rows.forEach((row, index) => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length >= 8) {
+              const photo = cells[1].querySelector('img')?.src || '';
+              const supplierArticle = cells[2].textContent.trim();
+              const lengthInput = cells[3].querySelector('input');
+              const widthInput = cells[4].querySelector('input');
+              const heightInput = cells[5].querySelector('input');
+              const volumeSpan = cells[6].querySelector('span');
+              const weightInput = cells[7].querySelector('input');
+              
+              const length = lengthInput ? parseFloat(lengthInput.value) || 0 : 0;
+              const width = widthInput ? parseFloat(widthInput.value) || 0 : 0;
+              const height = heightInput ? parseFloat(heightInput.value) || 0 : 0;
+              const volume = volumeSpan ? parseFloat(volumeSpan.textContent) || 0 : 0;
+              const weight = weightInput ? parseFloat(weightInput.value) || 0 : 0;
+              
+              products.push({
+                index: index + 1,
+                photo: photo,
+                supplier_article: supplierArticle,
+                length: length,
+                width: width,
+                height: height,
+                volume: volume,
+                weight: weight
+              });
+            }
+          });
+          
+          if (products.length === 0) {
+            alert('Нет данных для экспорта');
+            exportBtn.classList.remove('disabled');
+            exportBtn.innerHTML = '<i class="fas fa-file-excel me-1"></i> Экспорт в Excel';
+            return;
+          }
+          
+          // Отправляем запрос на сервер
+          fetch('/api/products/export-excel', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ products: products })
+          })
+          .then(response => {
+            if (response.ok) {
+              return response.blob();
+            } else {
+              return response.json().then(data => {
+                throw new Error(data.error || 'Ошибка экспорта');
+              });
+            }
+          })
+          .then(blob => {
+            // Создаем ссылку для скачивания
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `wb_products_${new Date().toISOString().slice(0, 10)}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+          })
+          .catch(error => {
+            console.error('Ошибка экспорта:', error);
+            alert('Ошибка при экспорте: ' + error.message);
+          })
+          .finally(() => {
+            exportBtn.classList.remove('disabled');
+            exportBtn.innerHTML = '<i class="fas fa-file-excel me-1"></i> Экспорт в Excel';
+          });
+        });
+      }
+      
+      // Инициализация
+      initOriginalValues();
+      checkForChanges();
+      
+      // Инициализация модального окна после загрузки DOM
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initModal);
+      } else {
+        initModal();
+      }
     })();
   </script>
   {% include '_footer.html' %}
