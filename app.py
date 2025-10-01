@@ -175,9 +175,22 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(os.path.dirname(__file__), 'app.db')}")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# Настройки сессии для стабильной работы авторизации
+app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24 часа
+app.config["SESSION_COOKIE_SECURE"] = False  # Для разработки
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_NAME"] = "fuckberry_session"
+app.config["SESSION_COOKIE_PATH"] = "/"
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
+login_manager.login_message = "Пожалуйста, войдите в систему для доступа к этой странице."
+login_manager.login_message_category = "info"
+login_manager.session_protection = "strong"  # Защита сессии
+login_manager.refresh_view = "login"  # Страница для обновления сессии
+login_manager.needs_refresh_message = "Пожалуйста, войдите в систему для доступа к этой странице."
+login_manager.needs_refresh_message_category = "info"
 # --- DB init helpers (portable across common DBs) ---
 def _ensure_schema_users_validity_columns() -> None:
     try:
@@ -1082,6 +1095,15 @@ def _enforce_account_validity():
     endpoint = (request.endpoint or "")
     if endpoint in {"login", "logout", "favicon", "logo"} or endpoint.startswith("static"):
         return None
+    
+    # Принудительно загружаем пользователя для всех страниц, требующих авторизации
+    # Исключаем только публичные страницы
+    public_pages = ["/login", "/logout", "/favicon.ico", "/logo.png"]
+    if not any(request.path.startswith(page) for page in public_pages):
+        if not current_user.is_authenticated:
+            # Если пользователь не авторизован, перенаправляем на логин
+            return redirect(url_for("login"))
+    
     if current_user.is_authenticated:
         if not _is_user_valid_now(current_user):
             logout_user()
