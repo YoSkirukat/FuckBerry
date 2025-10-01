@@ -69,6 +69,47 @@
     .table-responsive {
       overflow: visible;
     }
+    
+    /* Стили для сортировки */
+    .sortable {
+      position: relative;
+      user-select: none;
+      padding-right: 18px; /* место под иконку справа */
+    }
+    
+    .sortable:hover {
+      background-color: #f8f9fa !important;
+    }
+    
+    .sort-icon {
+      position: absolute;
+      right: 6px;
+      bottom: 4px;
+      font-size: 0.9em;
+      opacity: 0.6;
+      transition: opacity 0.2s;
+      pointer-events: none; /* не перехватывать клики */
+      margin: 0;
+    }
+    
+    .sortable:hover .sort-icon {
+      opacity: 1;
+    }
+    
+    .sortable.sort-asc .sort-icon::before {
+      content: "\f0de"; /* bi-arrow-up */
+      opacity: 1;
+    }
+    
+    .sortable.sort-desc .sort-icon::before {
+      content: "\f0dd"; /* bi-arrow-down */
+      opacity: 1;
+    }
+    
+    .sortable.sort-asc .sort-icon,
+    .sortable.sort-desc .sort-icon {
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
@@ -182,24 +223,60 @@
             <th style="width:56px; border-right: 1px solid #dee2e6;">#</th>
             <th style="width:72px; border-right: 1px solid #dee2e6;">Фото</th>
             <th style="border-right: 1px solid #dee2e6;">Наименование</th>
-            <th class="header-purchase" style="width:120px; border-right: 1px solid #dee2e6;">Закупочная цена</th>
-            <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена до скидки</th>
-            <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена со скидкой</th>
-            <th class="header-price" style="width:120px; border-right: 1px solid #dee2e6;">Цена со скидкой (WB клуб)</th>
-            <th style="width:150px; border-right: 1px solid #dee2e6;">Категория</th>
-            <th style="width:100px; border-right: 1px solid #dee2e6;">Объём л.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Комиссия WB, %</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Комиссия WB руб.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Налог руб.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Логистика руб.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Хранение руб.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Приёмка руб.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Эквайринг руб.</th>
-            <th class="header-total" style="width:140px; border-right: 1px solid #dee2e6;">Итого расходов: руб.</th>
-            <th class="header-commission" style="width:120px; border-right: 1px solid #dee2e6;">Расходов в %</th>
-            <th class="header-receive" style="width:150px; border-right: 1px solid #dee2e6;">Цена к получению руб.</th>
-            <th class="header-profit" style="width:140px;">Прибыль чистая руб.</th>
-            <th class="header-profit" style="width:120px;">Прибыль %</th>
+            <th class="header-purchase sortable" data-column="purchase" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Закупочная цена <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-price sortable" data-column="price_before" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Цена до скидки <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-price sortable" data-column="price_discount" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Цена со скидкой <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-price sortable" data-column="price_wallet" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Цена со скидкой (WB клуб) <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="sortable" data-column="category" style="width:150px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Категория <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="sortable" data-column="volume" style="width:100px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Объём л. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="commission_pct" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Комиссия WB, % <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="commission_rub" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Комиссия WB руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="tax_rub" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Налог руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="logistics_rub" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Логистика руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="storage_rub" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Хранение руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="receiving_rub" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Приёмка руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="acquiring_rub" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Эквайринг руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-total sortable" data-column="total_expenses" style="width:140px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Итого расходов: руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-commission sortable" data-column="expenses_pct" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Расходов в % <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-receive sortable" data-column="price_to_receive" style="width:150px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Цена к получению руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-profit sortable" data-column="profit_net" style="width:140px; cursor: pointer;">
+              Прибыль чистая руб. <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
+            <th class="header-profit sortable" data-column="profit_pct" style="width:120px; cursor: pointer;">
+              Прибыль % <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
               </tr>
             </thead>
             <tbody>
@@ -286,8 +363,12 @@
                 <td class="text-center total-expenses-rub">—</td>
                 <td class="text-center expenses-percent">—</td>
                 <td class="text-center price-to-receive-rub">—</td>
-                <td class="text-center profit-net-rub">—</td>
-                <td class="text-center profit-percent">—</td>
+                <td class="text-center profit-net-rub">
+                  <input type="number" class="form-control form-control-sm text-end profit-net-input" step="0.01" placeholder="0.00" style="width:110px;display:inline-block;">
+                </td>
+                <td class="text-center profit-percent">
+                  <input type="number" class="form-control form-control-sm text-end profit-pct-input" step="0.01" placeholder="0.00" style="width:90px;display:inline-block;">
+                </td>
               </tr>
               {% endfor %}
               {% if not products %}
@@ -597,18 +678,24 @@
           const purchaseInput = row.querySelector('.purchase-price');
           const purchaseVal = purchaseInput ? Number(purchaseInput.value) : 0;
           const profitNet = discountPrice - totalExpenses - (isNaN(purchaseVal) ? 0 : purchaseVal);
-          const profitNetCell = row.querySelector('.profit-net-rub');
-          if (profitNetCell){
-            profitNetCell.textContent = isNaN(profitNet) ? '—' : profitNet.toFixed(2);
-            profitNetCell.classList.toggle('profit-bad', !isNaN(profitNet) && profitNet <= 0);
+          const profitNetInput = row.querySelector('.profit-net-input');
+          if (profitNetInput){
+            profitNetInput.value = isNaN(profitNet) ? '' : profitNet.toFixed(2);
+            const profitNetTd = profitNetInput.closest('td');
+            if (profitNetTd){
+              profitNetTd.classList.toggle('profit-bad', !isNaN(profitNet) && profitNet <= 0);
+            }
           }
 
           // Прибыль % = Прибыль чистая руб. / Закупочная цена
           const profitPct = (purchaseVal > 0) ? (profitNet / purchaseVal) * 100 : 0;
-          const profitPctCell = row.querySelector('.profit-percent');
-          if (profitPctCell){
-            profitPctCell.textContent = isNaN(profitPct) ? '—' : profitPct.toFixed(2) + '%';
-            profitPctCell.classList.toggle('profit-bad', !isNaN(profitPct) && profitPct <= 0);
+          const profitPctInput = row.querySelector('.profit-pct-input');
+          if (profitPctInput){
+            profitPctInput.value = isNaN(profitPct) ? '' : profitPct.toFixed(2);
+            const profitPctTd = profitPctInput.closest('td');
+            if (profitPctTd){
+              profitPctTd.classList.toggle('profit-bad', !isNaN(profitPct) && profitPct <= 0);
+            }
           }
         });
       }
@@ -835,6 +922,103 @@
         });
       }
       bindPriceInputs();
+      
+      // Обратный расчет цены со скидкой по целевой прибыли (руб. или %)
+      function bindProfitInputs(){
+        document.querySelectorAll('#productsTable tbody tr').forEach(row => {
+          const profitNetInput = row.querySelector('.profit-net-input');
+          const profitPctInput = row.querySelector('.profit-pct-input');
+          const purchaseInput = row.querySelector('.purchase-price');
+          const nmId = row.getAttribute('data-nm-id');
+          const key = nmId ? String(nmId) : null;
+
+          function getExpensesForDiscount(discount){
+            // Временная подстановка: проставим в DOM значения на основе discount, чтобы переиспользовать логику
+            const tmpDirectInput = row.querySelector('.price-discount-input');
+            if (tmpDirectInput){ tmpDirectInput.value = isNaN(discount) ? '' : Number(discount).toFixed(2); }
+            if (key){
+              pricesData[key] = pricesData[key] || {};
+              pricesData[key].discount_price = Number(discount) || 0;
+            }
+            // Обновляем вычисляемые ячейки для строки
+            updateCommissionColumn();
+            // Считываем обратно приведенные значения расходов
+            const parseCell = (sel)=>{
+              const c = row.querySelector(sel);
+              if (!c) return 0;
+              const t = (c.textContent || '').replace('%','').replace('\u00A0',' ').replace('₽','').trim();
+              const n = Number(t);
+              return isNaN(n) ? 0 : n;
+            };
+            const commissionRub = parseCell('.commission-rub');
+            const taxRub = parseCell('.tax-rub');
+            const logisticsRub = parseCell('.logistics-rub');
+            const storageRub = parseCell('.storage-rub');
+            const receivingRub = parseCell('.receiving-rub');
+            const acquiringRub = parseCell('.acquiring-rub');
+            return commissionRub + taxRub + logisticsRub + storageRub + receivingRub + acquiringRub;
+          }
+
+          function setDiscountPrice(newDiscount){
+            const discountInput = row.querySelector('.price-discount-input');
+            if (discountInput){
+              discountInput.value = isNaN(newDiscount) ? '' : Number(newDiscount).toFixed(2);
+              // Обновить локальное хранилище
+              if (key){
+                pricesData[key] = pricesData[key] || {};
+                pricesData[key].discount_price = Number(newDiscount) || 0;
+              }
+            }
+            updateCommissionColumn();
+          }
+
+          if (profitNetInput){
+            const handler = ()=>{
+              const targetProfitNet = Number(profitNetInput.value);
+              const purchase = purchaseInput ? Number(purchaseInput.value) : 0;
+              if (isNaN(targetProfitNet)) return;
+              
+              // Ищем discountPrice численным методом, т.к. расходы зависят от discount
+              // Целевая функция: f(d) = d - expenses(d) - purchase - targetProfitNet = 0
+              let left = 0;
+              let right = 1_000_000; // верхняя оценка
+              for (let i=0;i<25;i++){
+                const mid = (left + right) / 2;
+                const expenses = getExpensesForDiscount(mid);
+                const f = mid - expenses - purchase - targetProfitNet;
+                if (f >= 0) right = mid; else left = mid;
+              }
+              setDiscountPrice((left + right) / 2);
+            };
+            profitNetInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') handler(); });
+            profitNetInput.addEventListener('change', handler);
+            profitNetInput.addEventListener('blur', handler);
+          }
+
+          if (profitPctInput){
+            const handler = ()=>{
+              const targetPct = Number(profitPctInput.value);
+              const purchase = purchaseInput ? Number(purchaseInput.value) : 0;
+              if (isNaN(targetPct) || purchase <= 0) return;
+              const targetProfitNet = purchase * (targetPct / 100);
+              // Ищем discountPrice по той же схеме
+              let left = 0;
+              let right = 1_000_000;
+              for (let i=0;i<25;i++){
+                const mid = (left + right) / 2;
+                const expenses = getExpensesForDiscount(mid);
+                const f = mid - expenses - purchase - targetProfitNet;
+                if (f >= 0) right = mid; else left = mid;
+              }
+              setDiscountPrice((left + right) / 2);
+            };
+            profitPctInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') handler(); });
+            profitPctInput.addEventListener('change', handler);
+            profitPctInput.addEventListener('blur', handler);
+          }
+        });
+      }
+      bindProfitInputs();
       // первичная отрисовка после загрузки
       updateCommissionColumn();
 
@@ -1143,16 +1327,116 @@
           e.preventDefault();
           exportBtn.classList.add('disabled');
           
-          // Собираем данные для экспорта с учетом видимости колонок
+          // Собираем данные для экспорта с учетом видимости колонок и актуальных значений
           const visibilityMap = loadColumnsVisibility();
           const visibleColumns = columnsMap.filter(col => visibilityMap[col.key] !== false);
           
+          // Собираем актуальные данные из видимых строк таблицы
+          const currentTableData = [];
+          const visibleRows = document.querySelectorAll('#productsTable tbody tr:not([style*="display: none"])');
+          
+          visibleRows.forEach((row, index) => {
+            const rowData = {
+              index: index + 1,
+              nm_id: row.getAttribute('data-nm-id'),
+              barcode: row.getAttribute('data-barcode')
+            };
+            
+            // Собираем данные из видимых колонок
+            visibleColumns.forEach(col => {
+              let value = '';
+              
+              switch(col.key) {
+                case 'photo':
+                  const img = row.querySelector('.product-thumb');
+                  value = img ? img.src : '';
+                  break;
+                case 'name':
+                  const nameCell = row.querySelector('td:nth-child(3)');
+                  value = nameCell ? nameCell.textContent.trim() : '';
+                  break;
+                case 'purchase':
+                  const purchaseInput = row.querySelector('.purchase-price');
+                  value = purchaseInput ? (purchaseInput.value || '') : '';
+                  break;
+                case 'price_before':
+                  const priceBeforeInput = row.querySelector('.price-before-input');
+                  value = priceBeforeInput ? (priceBeforeInput.value || '') : '';
+                  break;
+                case 'price_discount':
+                  const priceDiscountInput = row.querySelector('.price-discount-input');
+                  value = priceDiscountInput ? (priceDiscountInput.value || '') : '';
+                  break;
+                case 'price_wallet':
+                  const priceWalletInput = row.querySelector('.price-wallet-input');
+                  value = priceWalletInput ? (priceWalletInput.value || '') : '';
+                  break;
+                case 'category':
+                  const categoryCell = row.querySelector('td:nth-child(8)');
+                  value = categoryCell ? categoryCell.textContent.trim() : '';
+                  break;
+                case 'volume':
+                  const volumeCell = row.querySelector('td:nth-child(9)');
+                  value = volumeCell ? volumeCell.textContent.trim() : '';
+                  break;
+                case 'commission_pct':
+                  const commissionPctCell = row.querySelector('.commission-percent');
+                  value = commissionPctCell ? commissionPctCell.textContent.trim() : '';
+                  break;
+                case 'commission_rub':
+                  const commissionRubCell = row.querySelector('.commission-rub');
+                  value = commissionRubCell ? commissionRubCell.textContent.trim() : '';
+                  break;
+                case 'tax_rub':
+                  const taxCell = row.querySelector('.tax-rub');
+                  value = taxCell ? taxCell.textContent.trim() : '';
+                  break;
+                case 'logistics_rub':
+                  const logisticsCell = row.querySelector('.logistics-rub');
+                  value = logisticsCell ? logisticsCell.textContent.trim() : '';
+                  break;
+                case 'storage_rub':
+                  const storageCell = row.querySelector('.storage-rub');
+                  value = storageCell ? storageCell.textContent.trim() : '';
+                  break;
+                case 'receiving_rub':
+                  const receivingCell = row.querySelector('.receiving-rub');
+                  value = receivingCell ? receivingCell.textContent.trim() : '';
+                  break;
+                case 'acquiring_rub':
+                  const acquiringCell = row.querySelector('.acquiring-rub');
+                  value = acquiringCell ? acquiringCell.textContent.trim() : '';
+                  break;
+                case 'total_expenses':
+                  const totalCell = row.querySelector('.total-expenses-rub');
+                  value = totalCell ? totalCell.textContent.trim() : '';
+                  break;
+                case 'expenses_pct':
+                  const expensesPctCell = row.querySelector('.expenses-percent');
+                  value = expensesPctCell ? expensesPctCell.textContent.trim() : '';
+                  break;
+                case 'price_to_receive':
+                  const priceToReceiveCell = row.querySelector('.price-to-receive-rub');
+                  value = priceToReceiveCell ? priceToReceiveCell.textContent.trim() : '';
+                  break;
+                case 'profit_net':
+                  const profitNetInput = row.querySelector('.profit-net-input');
+                  value = profitNetInput ? (profitNetInput.value || '') : '';
+                  break;
+                case 'profit_pct':
+                  const profitPctInput = row.querySelector('.profit-pct-input');
+                  value = profitPctInput ? (profitPctInput.value || '') : '';
+                  break;
+              }
+              
+              rowData[col.exportKey] = value;
+            });
+            
+            currentTableData.push(rowData);
+          });
+          
           const exportData = {
-            products: productsData,
-            prices_data: pricesData || {},
-            commission_data: commissionData || {},
-            dimensions_data: dimensionsData || {},
-            purchase_prices: purchasePricesData || {},
+            table_data: currentTableData,
             visible_columns: visibleColumns.map(col => col.exportKey),
             margin_settings: {
               tax: inputs.tax ? Number(inputs.tax.value) : 6,
@@ -1202,6 +1486,223 @@
         });
       }
       
+      // ---- Сортировка таблицы ----
+      let currentSortColumn = null;
+      let currentSortDirection = 'asc';
+      
+      function initSorting() {
+        const sortableHeaders = document.querySelectorAll('.sortable');
+        sortableHeaders.forEach(header => {
+          header.addEventListener('click', function() {
+            const column = this.getAttribute('data-column');
+            if (!column) return;
+            
+            // Определяем направление сортировки
+            if (currentSortColumn === column) {
+              currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+              currentSortDirection = 'asc';
+            }
+            currentSortColumn = column;
+            
+            // Обновляем визуальные индикаторы
+            updateSortIndicators(column, currentSortDirection);
+            
+            // Выполняем сортировку
+            sortTable(column, currentSortDirection);
+          });
+        });
+      }
+      
+      function updateSortIndicators(column, direction) {
+        // Сбрасываем все индикаторы
+        document.querySelectorAll('.sortable').forEach(header => {
+          header.classList.remove('sort-asc', 'sort-desc');
+        });
+        
+        // Устанавливаем индикатор для текущей колонки
+        const currentHeader = document.querySelector(`[data-column="${column}"]`);
+        if (currentHeader) {
+          currentHeader.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+        }
+      }
+      
+      function sortTable(column, direction) {
+        const tbody = document.querySelector('#productsTable tbody');
+        if (!tbody) return;
+        
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        
+        rows.sort((a, b) => {
+          let aValue, bValue;
+          
+          // Получаем значения в зависимости от колонки
+          switch(column) {
+            case 'purchase':
+              const aPurchaseInput = a.querySelector('.purchase-price');
+              const bPurchaseInput = b.querySelector('.purchase-price');
+              aValue = aPurchaseInput ? parseFloat(aPurchaseInput.value) || 0 : 0;
+              bValue = bPurchaseInput ? parseFloat(bPurchaseInput.value) || 0 : 0;
+              break;
+              
+            case 'price_before':
+              const aPriceBeforeInput = a.querySelector('.price-before-input');
+              const bPriceBeforeInput = b.querySelector('.price-before-input');
+              aValue = aPriceBeforeInput ? parseFloat(aPriceBeforeInput.value) || 0 : 0;
+              bValue = bPriceBeforeInput ? parseFloat(bPriceBeforeInput.value) || 0 : 0;
+              break;
+              
+            case 'price_discount':
+              const aPriceDiscountInput = a.querySelector('.price-discount-input');
+              const bPriceDiscountInput = b.querySelector('.price-discount-input');
+              aValue = aPriceDiscountInput ? parseFloat(aPriceDiscountInput.value) || 0 : 0;
+              bValue = bPriceDiscountInput ? parseFloat(bPriceDiscountInput.value) || 0 : 0;
+              break;
+              
+            case 'price_wallet':
+              const aPriceWalletInput = a.querySelector('.price-wallet-input');
+              const bPriceWalletInput = b.querySelector('.price-wallet-input');
+              aValue = aPriceWalletInput ? parseFloat(aPriceWalletInput.value) || 0 : 0;
+              bValue = bPriceWalletInput ? parseFloat(bPriceWalletInput.value) || 0 : 0;
+              break;
+              
+            case 'category':
+              const aCategoryCell = a.querySelector('td:nth-child(8)');
+              const bCategoryCell = b.querySelector('td:nth-child(8)');
+              aValue = aCategoryCell ? aCategoryCell.textContent.trim() : '';
+              bValue = bCategoryCell ? bCategoryCell.textContent.trim() : '';
+              break;
+              
+            case 'volume':
+              const aVolumeCell = a.querySelector('td:nth-child(9)');
+              const bVolumeCell = b.querySelector('td:nth-child(9)');
+              aValue = aVolumeCell ? parseFloat(aVolumeCell.textContent.trim()) || 0 : 0;
+              bValue = bVolumeCell ? parseFloat(bVolumeCell.textContent.trim()) || 0 : 0;
+              break;
+              
+            case 'commission_pct':
+              const aCommissionPctCell = a.querySelector('.commission-percent');
+              const bCommissionPctCell = b.querySelector('.commission-percent');
+              aValue = aCommissionPctCell ? parseFloat(aCommissionPctCell.textContent.replace('%', '')) || 0 : 0;
+              bValue = bCommissionPctCell ? parseFloat(bCommissionPctCell.textContent.replace('%', '')) || 0 : 0;
+              break;
+              
+            case 'commission_rub':
+              const aCommissionRubCell = a.querySelector('.commission-rub');
+              const bCommissionRubCell = b.querySelector('.commission-rub');
+              aValue = aCommissionRubCell ? parseFloat(aCommissionRubCell.textContent) || 0 : 0;
+              bValue = bCommissionRubCell ? parseFloat(bCommissionRubCell.textContent) || 0 : 0;
+              break;
+              
+            case 'tax_rub':
+              const aTaxCell = a.querySelector('.tax-rub');
+              const bTaxCell = b.querySelector('.tax-rub');
+              aValue = aTaxCell ? parseFloat(aTaxCell.textContent) || 0 : 0;
+              bValue = bTaxCell ? parseFloat(bTaxCell.textContent) || 0 : 0;
+              break;
+              
+            case 'logistics_rub':
+              const aLogisticsCell = a.querySelector('.logistics-rub');
+              const bLogisticsCell = b.querySelector('.logistics-rub');
+              aValue = aLogisticsCell ? parseFloat(aLogisticsCell.textContent) || 0 : 0;
+              bValue = bLogisticsCell ? parseFloat(bLogisticsCell.textContent) || 0 : 0;
+              break;
+              
+            case 'storage_rub':
+              const aStorageCell = a.querySelector('.storage-rub');
+              const bStorageCell = b.querySelector('.storage-rub');
+              aValue = aStorageCell ? parseFloat(aStorageCell.textContent) || 0 : 0;
+              bValue = bStorageCell ? parseFloat(bStorageCell.textContent) || 0 : 0;
+              break;
+              
+            case 'receiving_rub':
+              const aReceivingCell = a.querySelector('.receiving-rub');
+              const bReceivingCell = b.querySelector('.receiving-rub');
+              aValue = aReceivingCell ? parseFloat(aReceivingCell.textContent) || 0 : 0;
+              bValue = bReceivingCell ? parseFloat(bReceivingCell.textContent) || 0 : 0;
+              break;
+              
+            case 'acquiring_rub':
+              const aAcquiringCell = a.querySelector('.acquiring-rub');
+              const bAcquiringCell = b.querySelector('.acquiring-rub');
+              aValue = aAcquiringCell ? parseFloat(aAcquiringCell.textContent) || 0 : 0;
+              bValue = bAcquiringCell ? parseFloat(bAcquiringCell.textContent) || 0 : 0;
+              break;
+              
+            case 'total_expenses':
+              const aTotalCell = a.querySelector('.total-expenses-rub');
+              const bTotalCell = b.querySelector('.total-expenses-rub');
+              aValue = aTotalCell ? parseFloat(aTotalCell.textContent) || 0 : 0;
+              bValue = bTotalCell ? parseFloat(bTotalCell.textContent) || 0 : 0;
+              break;
+              
+            case 'expenses_pct':
+              const aExpensesPctCell = a.querySelector('.expenses-percent');
+              const bExpensesPctCell = b.querySelector('.expenses-percent');
+              aValue = aExpensesPctCell ? parseFloat(aExpensesPctCell.textContent.replace('%', '')) || 0 : 0;
+              bValue = bExpensesPctCell ? parseFloat(bExpensesPctCell.textContent.replace('%', '')) || 0 : 0;
+              break;
+              
+            case 'price_to_receive':
+              const aPriceToReceiveCell = a.querySelector('.price-to-receive-rub');
+              const bPriceToReceiveCell = b.querySelector('.price-to-receive-rub');
+              aValue = aPriceToReceiveCell ? parseFloat(aPriceToReceiveCell.textContent) || 0 : 0;
+              bValue = bPriceToReceiveCell ? parseFloat(bPriceToReceiveCell.textContent) || 0 : 0;
+              break;
+              
+            case 'profit_net':
+              const aProfitNetInput = a.querySelector('.profit-net-input');
+              const bProfitNetInput = b.querySelector('.profit-net-input');
+              aValue = aProfitNetInput ? parseFloat(aProfitNetInput.value) || 0 : 0;
+              bValue = bProfitNetInput ? parseFloat(bProfitNetInput.value) || 0 : 0;
+              break;
+              
+            case 'profit_pct':
+              const aProfitPctInput = a.querySelector('.profit-pct-input');
+              const bProfitPctInput = b.querySelector('.profit-pct-input');
+              aValue = aProfitPctInput ? parseFloat(aProfitPctInput.value) || 0 : 0;
+              bValue = bProfitPctInput ? parseFloat(bProfitPctInput.value) || 0 : 0;
+              break;
+              
+            default:
+              return 0;
+          }
+          
+          // Сравниваем значения
+          if (typeof aValue === 'string' && typeof bValue === 'string') {
+            // Для строк используем лексикографическое сравнение
+            const comparison = aValue.localeCompare(bValue, 'ru');
+            return direction === 'asc' ? comparison : -comparison;
+          } else {
+            // Для чисел используем численное сравнение
+            const comparison = aValue - bValue;
+            return direction === 'asc' ? comparison : -comparison;
+          }
+        });
+        
+        // Очищаем tbody и добавляем отсортированные строки
+        tbody.innerHTML = '';
+        rows.forEach(row => {
+          tbody.appendChild(row);
+        });
+        
+        // Обновляем номера строк
+        updateRowNumbers();
+      }
+      
+      function updateRowNumbers() {
+        const rows = document.querySelectorAll('#productsTable tbody tr');
+        rows.forEach((row, index) => {
+          const numberCell = row.querySelector('td:first-child');
+          if (numberCell) {
+            numberCell.textContent = index + 1;
+          }
+        });
+      }
+      
+      // Инициализируем сортировку
+      initSorting();
+
       // Инициализация Bootstrap tooltips
       const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
       tooltipTriggerList.map(function (tooltipTriggerEl) {

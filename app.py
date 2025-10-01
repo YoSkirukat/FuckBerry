@@ -8252,26 +8252,18 @@ def api_prices_export_excel():
     """Экспорт данных управления ценами в Excel формат XLS"""
     try:
         data = request.get_json()
-        if not data or 'products' not in data:
+        if not data or 'table_data' not in data:
             return jsonify({"error": "Нет данных для экспорта"}), 400
         
-        products = data['products']
-        prices_data = data.get('prices_data', {})
-        commission_data = data.get('commission_data', {})
-        dimensions_data = data.get('dimensions_data', {})
-        purchase_prices = data.get('purchase_prices', {})
+        table_data = data['table_data']
         visible_columns = data.get('visible_columns', [])
         margin_settings = data.get('margin_settings', {})
         
-        print(f"Экспорт Excel: получено {len(products)} товаров")
-        print(f"Экспорт Excel: prices_data содержит {len(prices_data)} записей")
-        print(f"Экспорт Excel: commission_data содержит {len(commission_data)} записей")
-        print(f"Экспорт Excel: dimensions_data содержит {len(dimensions_data)} записей")
-        print(f"Экспорт Excel: purchase_prices содержит {len(purchase_prices)} записей")
+        print(f"Экспорт Excel: получено {len(table_data)} строк таблицы")
         print(f"Экспорт Excel: видимые колонки: {visible_columns}")
         
-        if not products:
-            return jsonify({"error": "Нет товаров для экспорта"}), 400
+        if not table_data:
+            return jsonify({"error": "Нет данных для экспорта"}), 400
         
         # Создаем Excel файл в формате XLS (Excel 97-2003)
         workbook = xlwt.Workbook(encoding='utf-8')
@@ -8317,124 +8309,8 @@ def api_prices_export_excel():
         for col, header in enumerate(headers):
             worksheet.write(0, col, header, header_style)
         
-        # Данные
-        for row, product in enumerate(products, 1):
-            nm_id = product.get('nm_id')
-            subject_id = product.get('subject_id')
-            barcode = product.get('barcode', '')
-            
-            # Получаем цены
-            price_before_discount = 0
-            price_with_discount = 0
-            price_wb_wallet = 0
-            if prices_data and str(nm_id) in prices_data:
-                price_before_discount = prices_data[str(nm_id)].get('price', 0)
-                price_with_discount = prices_data[str(nm_id)].get('discount_price', 0)
-                price_wb_wallet = prices_data[str(nm_id)].get('club_discount_price', 0)
-            
-            # Получаем закупочную цену
-            purchase_price = purchase_prices.get(barcode, 0)
-            
-            # Получаем данные о размерах
-            volume = 0
-            if dimensions_data and nm_id in dimensions_data:
-                volume = dimensions_data[nm_id].get('volume', 0)
-            
-            # Получаем данные о комиссиях
-            category_name = ""
-            commission_pct = 0
-            if commission_data and str(subject_id) in commission_data:
-                commission = commission_data[str(subject_id)]
-                category_name = commission.get('subject_name', '')
-                # Определяем комиссию по выбранной схеме
-                scheme = margin_settings.get('scheme', 'FBW')
-                if scheme == 'FBS':
-                    commission_pct = commission.get('fbs_commission', 0)
-                elif scheme == 'C&C':
-                    commission_pct = commission.get('cc_commission', 0)
-                elif scheme == 'DBS/DBW':
-                    commission_pct = commission.get('dbs_dbw_commission', 0)
-                elif scheme == 'EDBS':
-                    commission_pct = commission.get('edbs_commission', 0)
-                elif scheme == 'FBW':
-                    commission_pct = commission.get('fbw_commission', 0)
-            
-            # Вычисляем маржинальные показатели
-            tax_pct = margin_settings.get('tax', 6)
-            storage_pct = margin_settings.get('storage', 0.5)
-            receiving_pct = margin_settings.get('receiving', 1)
-            acquiring_pct = margin_settings.get('acquiring', 1.7)
-            
-            # Расчеты в рублях
-            commission_rub = price_with_discount * (commission_pct / 100)
-            tax_rub = price_with_discount * (tax_pct / 100)
-            
-            # Новая логика расчета логистики на основе объёма
-            logistics_rub = 0
-            if volume > 0:
-                if volume < 1:
-                    # Для товаров до 1 литра
-                    if 0.001 <= volume <= 0.200:
-                        logistics_rub = 23
-                    elif 0.201 <= volume <= 0.400:
-                        logistics_rub = 26
-                    elif 0.401 <= volume <= 0.600:
-                        logistics_rub = 29
-                    elif 0.601 <= volume <= 0.800:
-                        logistics_rub = 30
-                    elif 0.801 <= volume <= 0.999:
-                        logistics_rub = 32
-                else:
-                    # Для товаров от 1 литра и выше
-                    first_liter = 46  # Стоимость первого литра
-                    additional_liters = max(0, volume - 1) * 14  # Дополнительные литры
-                    logistics_rub = first_liter + additional_liters
-                
-                # Применяем коэффициент склада, если он выбран
-                warehouse_coef = margin_settings.get('warehouse_coef', 0)
-                if warehouse_coef > 0:
-                    logistics_rub = logistics_rub * warehouse_coef / 100
-                
-                # Применяем индекс локализации
-                localization_index = margin_settings.get('localization_index', 1.0)
-                if localization_index > 0:
-                    logistics_rub = logistics_rub * localization_index
-            
-            storage_rub = price_with_discount * (storage_pct / 100)
-            receiving_rub = price_with_discount * (receiving_pct / 100)
-            acquiring_rub = price_with_discount * (acquiring_pct / 100)
-            
-            total_expenses = commission_rub + tax_rub + logistics_rub + storage_rub + receiving_rub + acquiring_rub
-            expenses_pct = (total_expenses / price_with_discount * 100) if price_with_discount > 0 else 0
-            price_to_receive = price_with_discount - total_expenses
-            profit_net = price_to_receive - purchase_price
-            profit_pct = (profit_net / purchase_price * 100) if purchase_price > 0 else 0
-            
-            # Формируем данные для записи
-            row_data = {
-                'index': row,
-                'photo': '',  # Фото не экспортируем
-                'name': str(product.get('supplier_article', '')),
-                'purchase': round(purchase_price, 2),
-                'price_before': round(price_before_discount, 2),
-                'price_discount': round(price_with_discount, 2),
-                'price_wallet': round(price_wb_wallet, 2),
-                'category': str(category_name),
-                'volume': round(volume, 2),
-                'commission_pct': round(commission_pct, 1),
-                'commission_rub': round(commission_rub, 2),
-                'tax_rub': round(tax_rub, 2),
-                'logistics_rub': round(logistics_rub, 2),
-                'storage_rub': round(storage_rub, 2),
-                'receiving_rub': round(receiving_rub, 2),
-                'acquiring_rub': round(acquiring_rub, 2),
-                'total_expenses': round(total_expenses, 2),
-                'expenses_pct': round(expenses_pct, 1),
-                'price_to_receive': round(price_to_receive, 2),
-                'profit_net': round(profit_net, 2),
-                'profit_pct': round(profit_pct, 1)
-            }
-            
+        # Данные из таблицы
+        for row, row_data in enumerate(table_data, 1):
             # Записываем только видимые колонки
             col_index = 0
             for col_key in visible_columns:
