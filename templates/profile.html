@@ -41,6 +41,47 @@
               <div>{{ seller_info.name or seller_info.companyName or seller_info.supplierName }}</div>
             </div>
           {% endif %}
+
+          {% if token_info %}
+            <div class="mt-3">
+              <h6 class="mb-2">Информация о токене</h6>
+              <div class="row g-2">
+                {% if token_info.created_at %}
+                  <div class="col-12">
+                    <div class="text-muted small">Дата создания</div>
+                    <div>{{ token_info.created_at.strftime('%d.%m.%Y %H:%M') }}</div>
+                  </div>
+                {% endif %}
+                {% if token_info.expires_at %}
+                  <div class="col-12">
+                    <div class="text-muted small">Срок действия до</div>
+                    <div class="{% if token_info.is_expired %}text-danger{% elif token_info.days_until_expiry <= 7 %}text-warning{% else %}text-success{% endif %}">
+                      {{ token_info.expires_at.strftime('%d.%m.%Y %H:%M') }}
+                      {% if token_info.days_until_expiry is defined %}
+                        <span class="badge bg-{% if token_info.is_expired %}danger{% elif token_info.days_until_expiry <= 7 %}warning{% else %}success{% endif %} ms-2">
+                          {% if token_info.is_expired %}
+                            Истёк
+                          {% elif token_info.days_until_expiry == 0 %}
+                            Истекает сегодня
+                          {% elif token_info.days_until_expiry == 1 %}
+                            Истекает завтра
+                          {% else %}
+                            {{ token_info.days_until_expiry }} дн.
+                          {% endif %}
+                        </span>
+                      {% endif %}
+                    </div>
+                  </div>
+                {% endif %}
+                {% if token_info.subject %}
+                  <div class="col-12">
+                    <div class="text-muted small">ID токена</div>
+                    <div class="font-monospace small">{{ token_info.subject[:20] }}...</div>
+                  </div>
+                {% endif %}
+              </div>
+            </div>
+          {% endif %}
         </div></div>
       </div>
 

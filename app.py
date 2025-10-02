@@ -1932,6 +1932,50 @@ def fetch_seller_info(token: str) -> Dict[str, Any] | None:
             return None
 
 
+def decode_token_info(token: str) -> Dict[str, Any] | None:
+    """Decode JWT token to extract creation and expiration information"""
+    if not token:
+        return None
+    
+    try:
+        # Decode JWT token without verification (we only need the payload)
+        decoded = jwt.decode(token, options={"verify_signature": False})
+        
+        token_info = {}
+        
+        # Extract creation date (iat - issued at)
+        if 'iat' in decoded:
+            iat_timestamp = decoded['iat']
+            token_info['created_at'] = datetime.fromtimestamp(iat_timestamp, tz=MOSCOW_TZ)
+        
+        # Extract expiration date (exp - expiration)
+        if 'exp' in decoded:
+            exp_timestamp = decoded['exp']
+            token_info['expires_at'] = datetime.fromtimestamp(exp_timestamp, tz=MOSCOW_TZ)
+            
+            # Calculate days until expiration
+            now = datetime.now(MOSCOW_TZ)
+            if token_info['expires_at'] > now:
+                days_left = (token_info['expires_at'] - now).days
+                token_info['days_until_expiry'] = days_left
+                token_info['is_expired'] = False
+            else:
+                token_info['days_until_expiry'] = 0
+                token_info['is_expired'] = True
+        
+        # Extract other useful information if available
+        if 'sub' in decoded:
+            token_info['subject'] = decoded['sub']
+        if 'iss' in decoded:
+            token_info['issuer'] = decoded['iss']
+        
+        return token_info
+        
+    except Exception as e:
+        print(f"Error decoding token: {e}")
+        return None
+
+
 def fetch_acceptance_coefficients(token: str) -> List[Dict[str, Any]] | None:
     if not token:
         return None
@@ -4320,12 +4364,15 @@ def api_orders_refresh():
 @login_required
 def profile():
     seller_info: Dict[str, Any] | None = None
+    token_info: Dict[str, Any] | None = None
     token = current_user.wb_token or ""
     if token:
         try:
             seller_info = fetch_seller_info(token)
+            token_info = decode_token_info(token)
         except Exception:
             seller_info = None
+            token_info = None
     validity_status = None
     if current_user.valid_from or current_user.valid_to:
         today = datetime.now(MOSCOW_TZ).date()
@@ -4340,6 +4387,7 @@ def profile():
         message=None,
         token=token,
         seller_info=seller_info,
+        token_info=token_info,
         valid_from=current_user.valid_from.strftime("%d.%m.%Y") if current_user.valid_from else None,
         valid_to=current_user.valid_to.strftime("%d.%m.%Y") if current_user.valid_to else None,
         validity_status=validity_status,
