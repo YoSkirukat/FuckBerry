@@ -27,6 +27,56 @@
     .status-notallowed { color: #ef3a00; background: #ffdf7d; font-size: 11px; font-weight: bold; }
     .status-planned { color: #0c4a6e; background: #e0f2fe; font-size: 11px; font-weight: bold; }
     .text-free { color: #14532d; font-weight: 600; }
+    
+    /* Стили для индикатора загрузки */
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      backdrop-filter: blur(2px);
+      z-index: 9999;
+      display: none;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .loading-content {
+      text-align: center;
+      background: white;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+    
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #007bff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+      color: #666;
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+    
+    .table-blurred {
+      filter: blur(1px);
+      opacity: 0.6;
+      transition: all 0.3s ease;
+    }
   </style>
   <script>
     // no dynamic scripts yet; static render of last 10 supplies
@@ -142,6 +192,14 @@
           <button id="loadMoreBtn" class="btn btn-outline-secondary btn-sm">Загрузить ещё</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Индикатор загрузки -->
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Обновление данных о поставках...</div>
     </div>
   </div>
 
@@ -315,11 +373,42 @@ function renderChunk(count){
 
 async function refresh(){
   const btn = document.getElementById('refreshBtn');
-  btn.disabled = true; btn.textContent = 'Обновляем...';
+  const overlay = document.getElementById('loadingOverlay');
+  const table = document.getElementById('supTable');
+  
+  // Показываем индикатор загрузки
+  btn.disabled = true; 
+  btn.textContent = 'Обновляем...';
+  if (overlay) overlay.style.display = 'flex';
+  if (table) table.classList.add('table-blurred');
+  
   try{
-    const res = await fetch('/api/fbw/supplies');
+    // Добавляем таймаут для запроса
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 секунд таймаут
+    
+    const res = await fetch('/api/fbw/supplies', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error('Требуется авторизация. Пожалуйста, войдите в систему.');
+      }
+      throw new Error(`Ошибка сервера: ${res.status}`);
+    }
+    
     const data = await res.json();
-    if(!res.ok) throw new Error(data.error||'Ошибка обновления');
+    if (data.error) {
+      throw new Error(data.error);
+    }
     supAll = data.items||[];
     rendered = 0;
     const tbody = document.getElementById('supBody');
@@ -335,8 +424,18 @@ async function refresh(){
         if (cell && cell.textContent.trim() === '-') __enqueuePkgRow(tr);
       });
     }catch(_){}
-  }catch(e){ console.error(e); }
-  finally{ btn.disabled = false; btn.textContent = 'Обновить'; }
+  }catch(e){ 
+    console.error('Ошибка обновления:', e);
+    // Показываем пользователю ошибку
+    alert(`Ошибка обновления данных: ${e.message}`);
+  }
+  finally{ 
+    btn.disabled = false; 
+    btn.textContent = 'Обновить';
+    // Скрываем индикатор загрузки
+    if (overlay) overlay.style.display = 'none';
+    if (table) table.classList.remove('table-blurred');
+  }
 }
 
 document.getElementById('refreshBtn')?.addEventListener('click', refresh);
@@ -347,9 +446,45 @@ document.getElementById('loadMoreBtn')?.addEventListener('click', ()=>{
   // чтобы избежать пропусков при рассинхроне локального массива
   // Ask server for next page without calling WB API again if possible (server decides)
   const btn = document.getElementById('loadMoreBtn');
-  btn.disabled = true; btn.textContent = 'Загружаем...';
+  const overlay = document.getElementById('loadingOverlay');
+  const table = document.getElementById('supTable');
+  
+  btn.disabled = true; 
+  btn.textContent = 'Загружаем...';
+  
+  // Показываем индикатор загрузки для дополнительных данных
+  if (overlay) {
+    overlay.querySelector('.loading-text').textContent = 'Загрузка дополнительных данных...';
+    overlay.style.display = 'flex';
+  }
+  if (table) table.classList.add('table-blurred');
+  
   const nextOffset = rendered;
-  fetch(`/api/fbw/supplies?offset=${nextOffset}&limit=5`).then(r=>r.json()).then(data=>{
+  
+  // Добавляем таймаут для запроса
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 секунд таймаут
+  
+  fetch(`/api/fbw/supplies?offset=${nextOffset}&limit=5`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    signal: controller.signal
+  }).then(r=>{
+    clearTimeout(timeoutId);
+    if (!r.ok) {
+      if (r.status === 401) {
+        throw new Error('Требуется авторизация. Пожалуйста, войдите в систему.');
+      }
+      throw new Error(`Ошибка сервера: ${r.status}`);
+    }
+    return r.json();
+  }).then(data=>{
+    if (data.error) {
+      throw new Error(data.error);
+    }
     const items = data.items||[];
     // Добавляем в общий массив и отрисовываем ровно полученную порцию
     supAll = supAll.concat(items);
@@ -357,7 +492,20 @@ document.getElementById('loadMoreBtn')?.addEventListener('click', ()=>{
     try{ recomputeStats(); }catch(_){}
     // Если сервер вернул пусто — дальше блокируем кнопку
     if (items.length === 0) btn.disabled = true;
-  }).catch(console.error).finally(()=>{ btn.disabled = false; btn.textContent = 'Загрузить ещё'; });
+  }).catch(e=>{ 
+    console.error('Ошибка загрузки дополнительных данных:', e);
+    alert(`Ошибка загрузки данных: ${e.message}`);
+  }).finally(()=>{ 
+    clearTimeout(timeoutId);
+    btn.disabled = false; 
+    btn.textContent = 'Загрузить ещё';
+    // Скрываем индикатор загрузки
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.querySelector('.loading-text').textContent = 'Обновление данных о поставках...';
+    }
+    if (table) table.classList.remove('table-blurred');
+  });
 });
 
 // Toggle details and lazy-load
@@ -514,7 +662,19 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
     const moreBtn = document.getElementById('loadMoreBtn');
     if (moreBtn) moreBtn.disabled = false;
     // Асинхронно подгружаем полный список (до 50) для кнопки "Загрузить ещё"
-    fetch('/api/fbw/supplies?cached=1').then(r=>r.json()).then(data=>{
+    fetch('/api/fbw/supplies?cached=1', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    }).then(r=>{
+      if (!r.ok) {
+        console.warn('Не удалось загрузить кэшированные данные:', r.status);
+        return { items: [] };
+      }
+      return r.json();
+    }).then(data=>{
       if (data && Array.isArray(data.items)) {
         supAll = data.items;
         if (moreBtn) moreBtn.disabled = false; // всегда активна, даже если в кэше только 10

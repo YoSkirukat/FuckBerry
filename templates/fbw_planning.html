@@ -1988,10 +1988,13 @@
             
             const allInputs = Array.from(document.querySelectorAll('.editable-cell input[data-field="toSupply"]'));
             const currentIndex = allInputs.indexOf(this);
-            const nextIndex = (currentIndex + 1) % allInputs.length;
             
-            allInputs[nextIndex].focus();
-            allInputs[nextIndex].select();
+            // Переходим к следующему input полю только если это не последняя ячейка
+            if (currentIndex < allInputs.length - 1) {
+              allInputs[currentIndex + 1].focus();
+              allInputs[currentIndex + 1].select();
+            }
+            // На последней ячейке остаемся на месте
           }
         });
       });
