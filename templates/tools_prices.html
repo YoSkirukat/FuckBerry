@@ -1027,6 +1027,8 @@
         { key: 'idx', label: '#', selector: 'th:nth-child(1), td:nth-child(1)', exportKey: 'index' },
         { key: 'photo', label: 'Фото', selector: 'th:nth-child(2), td:nth-child(2)', exportKey: 'photo' },
         { key: 'name', label: 'Наименование', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'name' },
+        { key: 'nm_id', label: 'Артикул WB', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'nm_id' },
+        { key: 'barcode', label: 'Баркод', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'barcode' },
         { key: 'purchase', label: 'Закупочная цена', selector: 'th:nth-child(4), td:nth-child(4)', exportKey: 'purchase' },
         { key: 'price_before', label: 'Цена до скидки', selector: 'th:nth-child(5), td:nth-child(5)', exportKey: 'price_before' },
         { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(6), td:nth-child(6)', exportKey: 'price_discount' },
@@ -1352,8 +1354,17 @@
                   value = img ? img.src : '';
                   break;
                 case 'name':
-                  const nameCell = row.querySelector('td:nth-child(3)');
+                  // Извлекаем только название товара (первый div в 3-й колонке)
+                  const nameCell = row.querySelector('td:nth-child(3) div:first-child');
                   value = nameCell ? nameCell.textContent.trim() : '';
+                  break;
+                case 'nm_id':
+                  // Извлекаем nm_id из data-атрибута строки
+                  value = row.getAttribute('data-nm-id') || '';
+                  break;
+                case 'barcode':
+                  // Извлекаем barcode из data-атрибута строки
+                  value = row.getAttribute('data-barcode') || '';
                   break;
                 case 'purchase':
                   const purchaseInput = row.querySelector('.purchase-price');

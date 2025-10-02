@@ -2847,6 +2847,23 @@ def auto_update_worker():
 auto_update_thread = threading.Thread(target=auto_update_worker, daemon=True)
 auto_update_thread.start()
 
+# Context processor to add organization info to all templates
+@app.context_processor
+def inject_organization_info():
+    """Add organization information to all templates for navbar"""
+    if current_user.is_authenticated and current_user.wb_token:
+        try:
+            seller_info = fetch_seller_info(current_user.wb_token)
+            if seller_info:
+                organization_name = (seller_info.get('name') or 
+                                   seller_info.get('companyName') or 
+                                   seller_info.get('supplierName') or 
+                                   'Организация')
+                return {'organization_name': organization_name}
+        except Exception:
+            pass
+    return {'organization_name': 'Профиль'}
+
 @app.route("/", methods=["GET", "POST"]) 
 def root():
     if request.method == "POST":
@@ -8301,6 +8318,8 @@ def api_prices_export_excel():
             'index': '№',
             'photo': 'Фото',
             'name': 'Наименование',
+            'nm_id': 'Артикул WB',
+            'barcode': 'Баркод',
             'purchase': 'Закупочная цена',
             'price_before': 'Цена до скидки',
             'price_discount': 'Цена со скидки',
@@ -8342,6 +8361,8 @@ def api_prices_export_excel():
                         worksheet.write(row, col_index, value, number_style)
                     elif col_key in ['commission_rub', 'tax_rub', 'logistics_rub', 'storage_rub', 'receiving_rub', 'acquiring_rub', 'total_expenses', 'price_to_receive', 'profit_net', 'purchase', 'price_before', 'price_discount', 'price_wallet']:
                         worksheet.write(row, col_index, value, number_style)
+                    elif col_key in ['nm_id', 'barcode']:
+                        worksheet.write(row, col_index, str(value), text_style)
                     else:
                         worksheet.write(row, col_index, str(value), text_style)
                     col_index += 1
@@ -8351,6 +8372,8 @@ def api_prices_export_excel():
             'index': 1000,
             'photo': 1000,
             'name': 8000,
+            'nm_id': 2000,
+            'barcode': 2000,
             'purchase': 2000,
             'price_before': 2000,
             'price_discount': 2000,

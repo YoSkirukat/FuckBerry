@@ -200,10 +200,6 @@
       </ul>
       <ul class="navbar-nav ms-auto">
         {% if current_user.is_authenticated %}
-          {% if current_user.is_admin %}
-            <li class="nav-item"><a class="nav-link {% if request.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users">Пользователи</a></li>
-          {% endif %}
-          
           <!-- Notifications Bell -->
           <li class="nav-item dropdown d-none d-lg-block">
             <a class="nav-link position-relative" href="#" id="notificationsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -231,8 +227,19 @@
             </ul>
           </li>
           
-          <li class="nav-item"><a class="nav-link {% if request.path.startswith('/profile') %}active{% endif %}" href="/profile">{{ current_user.username }}</a></li>
-          <li class="nav-item"><a class="nav-link" href="/logout">Выйти</a></li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle {% if request.path.startswith('/profile') %}active{% endif %}" href="#" id="profileDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              {{ organization_name }}
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="profileDropdown">
+              <li><a class="dropdown-item {% if request.path.startswith('/profile') %}active{% endif %}" href="/profile">Настройки</a></li>
+              {% if current_user.is_admin %}
+              <li><a class="dropdown-item {% if request.path.startswith('/admin/users') %}active{% endif %}" href="/admin/users">Пользователи</a></li>
+              {% endif %}
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="/logout">Выйти</a></li>
+            </ul>
+          </li>
         {% else %}
           <li class="nav-item"><a class="nav-link {% if request.path.startswith('/login') %}active{% endif %}" href="/login">Войти</a></li>
         {% endif %}
