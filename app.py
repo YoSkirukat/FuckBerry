@@ -1075,10 +1075,25 @@ def get_orders_with_period_cache(
     collected_orders: list[dict[str, Any]] = []
 
     # Collect from cache first
+    def _cached_orders(entry: Dict[str, Any]) -> list[dict[str, Any]]:
+        """Backward-compatible extractor for orders list stored in a day cache entry.
+
+        Older cache versions could store daily rows under different keys.
+        Prefer the new key 'orders', but gracefully fall back to legacy ones.
+        """
+        if not isinstance(entry, dict):
+            return []
+        val = (
+            entry.get("orders")
+            or entry.get("orders_rows")
+            or entry.get("rows")
+            or entry.get("data")
+        )
+        return val if isinstance(val, list) else []
     for day in requested_days:
         entry = days_map.get(day)
         if entry and day not in days_to_fetch:
-            collected_orders.extend(entry.get("orders", []) or [])
+            collected_orders.extend(_cached_orders(entry))
 
     # Fetch missing days in one period request and split per day
     total_days = len(days_to_fetch)
@@ -1144,7 +1159,8 @@ def _update_period_cache_with_data(
     orders_by_day: Dict[str, list[dict[str, Any]]] = {}
     
     for order in orders:
-        order_date = order.get("Дата заказа", "")
+        # Rows produced by to_rows use key 'Дата'. Keep fallback for legacy 'Дата заказа'.
+        order_date = (order.get("Дата") or order.get("Дата заказа") or "")
         if order_date:
             day_key = _normalize_date_str(order_date)
             if day_key not in orders_by_day:
