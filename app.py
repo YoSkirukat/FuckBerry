@@ -19,6 +19,35 @@ import time
 import random
 import threading
 from collections import defaultdict
+
+# -----------------------
+# Long-running progress
+# -----------------------
+ORDERS_PROGRESS: dict[int, dict[str, object]] = {}
+
+def _set_orders_progress(user_id: int, total: int, done: int, key: str | None = None) -> None:
+    try:
+        current = ORDERS_PROGRESS.get(user_id) or {}
+        if key is not None and current.get("key") not in (None, key):
+            # New batch -> reset
+            current = {"total": 0, "done": 0}
+        prev_total = int(current.get("total", 0) or 0)
+        prev_done = int(current.get("done", 0) or 0)
+        new_total = max(prev_total, max(0, int(total)))
+        new_done = max(prev_done, max(0, int(done)))
+        ORDERS_PROGRESS[user_id] = {"key": key, "total": new_total, "done": new_done}
+    except Exception:
+        pass
+
+def _clear_orders_progress(user_id: int, key: str | None = None) -> None:
+    try:
+        cur = ORDERS_PROGRESS.get(user_id)
+        if cur is None:
+            return
+        if key is None or cur.get("key") == key:
+            del ORDERS_PROGRESS[user_id]
+    except Exception:
+        pass
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple
 
@@ -945,6 +974,195 @@ def save_fbw_supplies_cache(payload: Dict[str, Any]) -> None:
         pass
 
 
+# Orders per-day cache helpers (per user)
+def _orders_period_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"orders_period_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, f"orders_period_{_get_session_id()}.json")
+
+
+def load_orders_period_cache() -> Dict[str, Any] | None:
+    path = _orders_period_cache_path_for_user()
+    print(f"Загружаем кэш из файла: {path}")
+    if not os.path.isfile(path):
+        print("Файл кэша не найден")
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            days_count = len(data.get('days', {}))
+            print(f"Кэш загружен, дней в кэше: {days_count}")
+            return data
+    except Exception as e:
+        print(f"Ошибка загрузки кэша: {e}")
+        return None
+
+
+def save_orders_period_cache(payload: Dict[str, Any]) -> None:
+    path = _orders_period_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        print(f"Сохраняем кэш в файл: {path}")
+        print(f"Количество дней для сохранения: {len(enriched.get('days', {}))}")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+        print("Кэш успешно сохранен")
+    except Exception as e:
+        print(f"Ошибка сохранения кэша: {e}")
+
+
+def _normalize_date_str(date_str: str) -> str:
+    try:
+        dt = parse_date(date_str)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return date_str
+
+
+def _daterange_inclusive(start_date: str, end_date: str) -> list[str]:
+    print(f"_daterange_inclusive: start_date='{start_date}', end_date='{end_date}'")
+    start_dt = parse_date(start_date)
+    end_dt = parse_date(end_date)
+    print(f"_daterange_inclusive: start_dt={start_dt}, end_dt={end_dt}")
+    days: list[str] = []
+    cur = start_dt
+    while cur <= end_dt:
+        days.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+    print(f"_daterange_inclusive: generated days={days}")
+    return days
+
+
+def get_orders_with_period_cache(
+    token: str,
+    date_from: str,
+    date_to: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return (orders, cache_meta). Uses per-day cache and fetches only missing days.
+
+    cache_meta contains info like {"used_cache_days": int, "fetched_days": int}
+    """
+    # Load existing cache structure
+    cache = load_orders_period_cache() or {}
+    days_map: Dict[str, Any] = cache.get("days") or {}
+
+    requested_days = _daterange_inclusive(date_from, date_to)
+    print(f"Запрошенные дни: {requested_days}")
+    print(f"Дни в кэше: {list(days_map.keys())}")
+
+    # Identify days to fetch: missing in cache or today (always refetch)
+    from datetime import datetime as _dt
+    today_iso = _dt.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
+    print(f"Сегодня: {today_iso}")
+    days_to_fetch: list[str] = []
+    for day in requested_days:
+        entry = days_map.get(day)
+        print(f"День {day}: {'есть в кэше' if entry else 'НЕТ в кэше'}")
+        if day == today_iso:
+            print(f"День {day} - сегодня, загружаем принудительно")
+            days_to_fetch.append(day)
+            continue
+        if entry is None:
+            print(f"День {day} - отсутствует в кэше, загружаем")
+            days_to_fetch.append(day)
+        else:
+            print(f"День {day} - используем из кэша")
+    
+    print(f"Дни для загрузки: {days_to_fetch}")
+
+    collected_orders: list[dict[str, Any]] = []
+
+    # Collect from cache first
+    for day in requested_days:
+        entry = days_map.get(day)
+        if entry and day not in days_to_fetch:
+            collected_orders.extend(entry.get("orders", []) or [])
+
+    # Fetch missing days in one period request and split per day
+    total_days = len(days_to_fetch)
+    done_days = 0
+    progress_key = f"{date_from}:{date_to}:{int(time.time())}"
+    if current_user and current_user.is_authenticated:
+        _set_orders_progress(current_user.id, total_days, done_days, key=progress_key)
+    if days_to_fetch:
+        try:
+            print(f"Единая загрузка заказов за период {date_from}..{date_to} для {len(days_to_fetch)} незакэшированных дней")
+            raw = fetch_orders_range(token, date_from, date_to)
+            all_rows = to_rows(raw, date_from, date_to)
+            # Group by day
+            by_day: Dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for r in all_rows:
+                d = str(r.get("Дата") or "")[:10]
+                if d:
+                    by_day[d].append(r)
+            # For each missing day, update cache and progress
+            for day in days_to_fetch:
+                fetched_orders = by_day.get(day, [])
+                days_map[day] = {
+                    "orders": fetched_orders,
+                    "updated_at": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S"),
+                }
+                collected_orders.extend(fetched_orders)
+                done_days += 1
+                if current_user and current_user.is_authenticated:
+                    _set_orders_progress(current_user.id, total_days, done_days, key=progress_key)
+        except Exception as e:
+            print(f"Ошибка единой загрузки заказов: {e}")
+            # Fallback: nothing added
+
+    # Persist cache file if any changes were made
+    if days_to_fetch:
+        print(f"Сохраняем кэш для дней: {days_to_fetch}")
+        cache["days"] = days_map
+        save_orders_period_cache(cache)
+        print(f"Кэш сохранен. Всего дней в кэше: {len(days_map)}")
+    else:
+        print("Нет изменений в кэше, не сохраняем")
+
+    if current_user and current_user.is_authenticated:
+        _clear_orders_progress(current_user.id, key=progress_key)
+
+    meta = {"used_cache_days": len(requested_days) - len(days_to_fetch), "fetched_days": len(days_to_fetch)}
+    return collected_orders, meta
+
+
+def _update_period_cache_with_data(
+    token: str,
+    date_from: str,
+    date_to: str,
+    orders: list[dict[str, Any]],
+) -> None:
+    """Принудительно обновляет кэш по дням с предоставленными данными"""
+    cache = load_orders_period_cache() or {}
+    days_map: Dict[str, Any] = cache.get("days") or {}
+    
+    requested_days = _daterange_inclusive(date_from, date_to)
+    
+    # Группируем данные по дням
+    orders_by_day: Dict[str, list[dict[str, Any]]] = {}
+    
+    for order in orders:
+        order_date = order.get("Дата заказа", "")
+        if order_date:
+            day_key = _normalize_date_str(order_date)
+            if day_key not in orders_by_day:
+                orders_by_day[day_key] = []
+            orders_by_day[day_key].append(order)
+    
+    # Обновляем кэш для каждого дня
+    for day in requested_days:
+        days_map[day] = {
+            "orders": orders_by_day.get(day, []),
+            "updated_at": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S"),
+        }
+    
+    # Сохраняем обновленный кэш
+    cache["days"] = days_map
+    save_orders_period_cache(cache)
+
+
 def _fbs_tasks_cache_path_for_user() -> str:
     if current_user.is_authenticated:
         return os.path.join(CACHE_DIR, f"fbs_tasks_user_{current_user.id}.json")
@@ -1116,7 +1334,16 @@ def _enforce_account_validity():
 
 
 def parse_date(date_str: str) -> datetime:
-    return datetime.strptime(date_str, "%Y-%m-%d")
+    """Parse date string in either YYYY-MM-DD or DD.MM.YYYY format"""
+    try:
+        # Try YYYY-MM-DD format first
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        try:
+            # Try DD.MM.YYYY format
+            return datetime.strptime(date_str, "%d.%m.%Y")
+        except ValueError:
+            raise ValueError(f"Unable to parse date '{date_str}'. Expected formats: YYYY-MM-DD or DD.MM.YYYY")
 
 
 def parse_wb_datetime(value: str) -> datetime | None:
@@ -1436,7 +1663,7 @@ def aggregate_daily(rows: List[Dict[str, Any]]):
     for r in rows:
         day = r.get("Дата")
         try:
-            price = float(r.get("Цена с учетом всех скидок") or 0)
+            price = float(r.get("Цена со скидкой продавца") or 0)
         except (TypeError, ValueError):
             price = 0.0
         count_by_day[day] += 1
@@ -1454,7 +1681,7 @@ def aggregate_daily_counts_and_revenue(rows: List[Dict[str, Any]]):
     for r in rows:
         day = r.get("Дата")
         try:
-            price = float(r.get("Цена с учетом всех скидок") or 0)
+            price = float(r.get("Цена со скидкой продавца") or 0)
         except (TypeError, ValueError):
             price = 0.0
         count_by_day[day] += 1
@@ -1497,6 +1724,18 @@ def aggregate_by_warehouse_dual(orders_rows: List[Dict[str, Any]], sales_rows: L
     summary.sort(key=lambda x: x["orders"], reverse=True)
     return summary
 
+def aggregate_by_warehouse_orders_only(orders_rows: List[Dict[str, Any]]):
+    orders_map: Dict[str, int] = defaultdict(int)
+    for r in orders_rows:
+        warehouse = r.get("Склад отгрузки") or "Не указан"
+        orders_map[warehouse] += 1
+    summary = []
+    for w in sorted(orders_map.keys()):
+        summary.append({"warehouse": w, "orders": orders_map.get(w, 0)})
+    # сортируем по заказам
+    summary.sort(key=lambda x: x["orders"], reverse=True)
+    return summary
+
 
 def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[Dict[str, Any]]:
     counts: Dict[str, int] = defaultdict(int)
@@ -1509,7 +1748,7 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
         product = str(product)
         counts[product] += 1
         try:
-            price = float(r.get("Цена с учетом всех скидок") or 0)
+            price = float(r.get("Цена со скидкой продавца") or 0)
         except (TypeError, ValueError):
             price = 0.0
         revenue_by_product[product] += price
@@ -1568,7 +1807,7 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         product = str(product)
         counts[product] += 1
         try:
-            price = float(r.get("Цена с учетом всех скидок") or 0)
+            price = float(r.get("Цена со скидкой продавца") or 0)
         except (TypeError, ValueError):
             price = 0.0
         revenue_by_product[product] += price
@@ -2924,17 +3163,11 @@ def index():
     orders = []
     total_orders = 0
     total_revenue = 0.0
-    # Sales
-    sales_rows = []
-    total_sales = 0
-    total_sales_revenue = 0.0
 
     # Chart series
     daily_labels: List[str] = []
     daily_orders_counts: List[int] = []
-    daily_sales_counts: List[int] = []
     daily_orders_revenue: List[float] = []
-    daily_sales_revenue: List[float] = []
 
     # Warehouses combined
     warehouse_summary_dual: List[Dict[str, Any]] = []
@@ -2949,10 +3182,8 @@ def index():
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
     include_orders = True
-    include_sales = True
     if request.method == "POST":
-        include_orders = request.form.get("include_orders") is not None
-        include_sales = request.form.get("include_sales") is not None
+        force_refresh = request.form.get("force_refresh") is not None
     date_from_fmt = format_dmy(date_from)
     date_to_fmt = format_dmy(date_to)
 
@@ -2961,6 +3192,7 @@ def index():
 
     # Если GET — пробуем показать последние результаты из кэша
     top_mode = "orders"
+    cache_info = None
     if request.method == "GET":
         cached = load_last_results()
         # Use cache only if it belongs to this user (by user_id) and user has token
@@ -2973,22 +3205,16 @@ def index():
             total_orders = cached.get("total_orders", 0)
             total_revenue = cached.get("total_revenue", 0.0)
             top_products = cached.get("top_products", [])
-            # sales & charts
-            sales_rows = cached.get("sales_rows", [])
-            total_sales = cached.get("total_sales", 0)
-            total_sales_revenue = cached.get("total_sales_revenue", 0.0)
+            # charts
             daily_labels = cached.get("daily_labels", [])
             daily_orders_counts = cached.get("daily_orders_counts", [])
-            daily_sales_counts = cached.get("daily_sales_counts", [])
             daily_orders_revenue = cached.get("daily_orders_revenue", [])
-            daily_sales_revenue = cached.get("daily_sales_revenue", [])
             warehouse_summary_dual = cached.get("warehouse_summary_dual", [])
             updated_at = cached.get("updated_at", "")
             # default mode when loading cache
             top_mode = cached.get("top_mode", "orders")
-            # restore include flags if present
-            include_orders = cached.get("include_orders", include_orders)
-            include_sales = cached.get("include_sales", include_sales)
+            # Add cache info for display
+            cache_info = {"used_cache_days": 0, "fetched_days": 0}  # Will be calculated if needed
 
     if request.method == "POST":
         if not token:
@@ -3007,48 +3233,35 @@ def index():
 
         if not error:
             try:
-                # Orders
-                if include_orders:
+                if force_refresh:
+                    # Принудительное обновление - загружаем все данные через API, игнорируя кэш
                     raw_orders = fetch_orders_range(token, date_from, date_to)
                     orders = to_rows(raw_orders, date_from, date_to)
                     total_orders = len(orders)
-                    total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+                    total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+                    # Обновляем кэш принудительно
+                    _update_period_cache_with_data(token, date_from, date_to, orders)
                 else:
-                    orders = []
-                    total_orders = 0
-                    total_revenue = 0.0
-                # Sales
-                if include_sales:
-                    raw_sales = fetch_sales_range(token, date_from, date_to)
-                    sales_rows = to_sales_rows(raw_sales, date_from, date_to)
-                    total_sales = len(sales_rows)
-                    total_sales_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in sales_rows), 2)
-                else:
-                    sales_rows = []
-                    total_sales = 0
-                    total_sales_revenue = 0.0
+                    # Обычное обновление - используем кэш по дням
+                    orders, _meta = get_orders_with_period_cache(
+                        token, date_from, date_to
+                    )
+                    total_orders = len(orders)
+                    total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+                    cache_info = _meta
 
                 # Aggregates for charts
-                o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders) if include_orders else ({}, {})
-                s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows) if include_sales else ({}, {})
-                daily_labels, daily_orders_counts, daily_sales_counts, daily_orders_revenue, daily_sales_revenue = build_union_series(
-                    o_counts_map, s_counts_map, o_rev_map, s_rev_map
-                )
+                o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
+                daily_labels = sorted(o_counts_map.keys())
+                daily_orders_counts = [o_counts_map.get(d, 0) for d in daily_labels]
+                daily_orders_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in daily_labels]
 
                 # Warehouses combined summary
-                warehouse_summary_dual = aggregate_by_warehouse_dual(orders, sales_rows)
+                warehouse_summary_dual = aggregate_by_warehouse_orders_only(orders)
 
                 # Top products (by orders)
-                # Top block uses orders by default; if orders disabled — use sales rows
                 top_mode = "orders"
-                if include_orders:
-                    top_products = aggregate_top_products(orders, limit=15)
-                elif include_sales:
-                    top_products = aggregate_top_products(sales_rows, limit=15)
-                    top_mode = "sales"
-                else:
-                    top_products = []
-                    top_mode = "orders"
+                top_products = aggregate_top_products(orders, limit=15)
 
                 # Сохраняем токен в профиле пользователя при наличии
                 if current_user.is_authenticated and token:
@@ -3066,19 +3279,12 @@ def index():
                     "orders": orders,
                     "total_orders": total_orders,
                     "total_revenue": total_revenue,
-                    "sales_rows": sales_rows,
-                    "total_sales": total_sales,
-                    "total_sales_revenue": total_sales_revenue,
                     "daily_labels": daily_labels,
                     "daily_orders_counts": daily_orders_counts,
-                    "daily_sales_counts": daily_sales_counts,
                     "daily_orders_revenue": daily_orders_revenue,
-                    "daily_sales_revenue": daily_sales_revenue,
                     "warehouse_summary_dual": warehouse_summary_dual,
                     "top_products": top_products,
                     "top_mode": top_mode,
-                    "include_orders": include_orders,
-                    "include_sales": include_sales,
                     "updated_at": updated_at,
                 })
             except requests.HTTPError as http_err:
@@ -3106,15 +3312,10 @@ def index():
         total_orders=total_orders,
         total_revenue=total_revenue,
         updated_at=updated_at,
-        # Sales KPIs
-        total_sales=total_sales,
-        total_sales_revenue=total_sales_revenue,
         # Charts
         daily_labels=daily_labels,
         daily_orders_counts=daily_orders_counts,
-        daily_sales_counts=daily_sales_counts,
         daily_orders_revenue=daily_orders_revenue,
-        daily_sales_revenue=daily_sales_revenue,
         # Warehouses dual
         warehouse_summary_dual=warehouse_summary_dual,
         # TOPs
@@ -3123,8 +3324,9 @@ def index():
         selected_warehouse=selected_warehouse,
         top_products_orders_filtered=top_products_orders_filtered,
         include_orders=include_orders,
-        include_sales=include_sales,
         top_mode=top_mode,
+        # Cache info
+        cache_info=cache_info,
     )
 @app.route("/fbw", methods=["GET"]) 
 @login_required
@@ -4237,82 +4439,70 @@ def api_orders_refresh():
         return jsonify({"error": "no_token"}), 401
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
+    print(f"API orders-refresh: получены даты date_from='{date_from}', date_to='{date_to}'")
     try:
         df = parse_date(date_from)
         dt = parse_date(date_to)
+        print(f"API orders-refresh: распарсенные даты df={df}, dt={dt}")
         if df > dt:
             date_from, date_to = date_to, date_from
-    except ValueError:
+            print(f"API orders-refresh: даты поменяны местами: date_from='{date_from}', date_to='{date_to}'")
+    except ValueError as e:
+        print(f"API orders-refresh: ошибка парсинга дат: {e}")
         return jsonify({"error": "bad_dates"}), 400
     try:
         # Orders
-        include_orders = request.form.get("include_orders") is not None
-        include_sales = request.form.get("include_sales") is not None
-        if include_orders:
+        force_refresh = request.form.get("force_refresh") is not None
+        
+        if force_refresh:
+            # Принудительное обновление - загружаем все данные через API, игнорируя кэш
             raw_orders = fetch_orders_range(token, date_from, date_to)
             orders = to_rows(raw_orders, date_from, date_to)
             total_orders = len(orders)
-            total_revenue = round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in orders), 2)
+            total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+            # Обновляем кэш принудительно
+            _update_period_cache_with_data(token, date_from, date_to, orders)
+            meta = {"used_cache_days": 0, "fetched_days": len(_daterange_inclusive(date_from, date_to))}
         else:
-            orders = []
-            total_orders = 0
-            total_revenue = 0.0
-        # Sales
-        if include_sales:
-            raw_sales = fetch_sales_range(token, date_from, date_to)
-            sales_rows = to_sales_rows(raw_sales, date_from, date_to)
-        else:
-            sales_rows = []
+            # Обычное обновление - используем кэш по дням
+            orders, meta = get_orders_with_period_cache(
+                token, date_from, date_to
+            )
+            total_orders = len(orders)
+            total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
         # Aggregates
-        o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders) if include_orders else ({}, {})
-        s_counts_map, s_rev_map = aggregate_daily_counts_and_revenue(sales_rows) if include_sales else ({}, {})
-        daily_labels, daily_orders_counts, daily_sales_counts, daily_orders_revenue, daily_sales_revenue = build_union_series(
-            o_counts_map, s_counts_map, o_rev_map, s_rev_map
-        )
+        o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
+        daily_labels = sorted(o_counts_map.keys())
+        daily_orders_counts = [o_counts_map.get(d, 0) for d in daily_labels]
+        daily_orders_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in daily_labels]
         # Warehouses and TOPs
-        warehouse_summary_dual = aggregate_by_warehouse_dual(orders, sales_rows)
-        if include_orders:
-            top_products = aggregate_top_products(orders, limit=15)
-            top_mode = "orders"
-        elif include_sales:
-            top_products = aggregate_top_products(sales_rows, limit=15)
-            top_mode = "sales"
-        else:
-            top_products = []
-            top_mode = "orders"
+        warehouse_summary_dual = aggregate_by_warehouse_orders_only(orders)
+        top_products = aggregate_top_products(orders, limit=15)
+        top_mode = "orders"
         warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders})
         top_products_orders_filtered = aggregate_top_products_orders(orders, None, limit=50)
         updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        # Save cache
+        # Save last results snapshot
         save_last_results({
             "date_from": date_from,
             "date_to": date_to,
             "orders": orders,
             "total_orders": total_orders,
             "total_revenue": total_revenue,
-            "sales_rows": sales_rows,
-            "total_sales": len(sales_rows),
-            "total_sales_revenue": round(sum(float(o.get("Цена с учетом всех скидок") or 0) for o in sales_rows), 2),
             "daily_labels": daily_labels,
             "daily_orders_counts": daily_orders_counts,
-            "daily_sales_counts": daily_sales_counts,
             "daily_orders_revenue": daily_orders_revenue,
-            "daily_sales_revenue": daily_sales_revenue,
             "warehouse_summary_dual": warehouse_summary_dual,
             "top_products": top_products,
             "top_mode": top_mode,
-            "include_orders": include_orders,
-            "include_sales": include_sales,
             "updated_at": updated_at,
         })
-        return jsonify({
+        resp = {
             "total_orders": total_orders,
             "total_revenue": total_revenue,
             "daily_labels": daily_labels,
             "daily_orders_counts": daily_orders_counts,
-            "daily_sales_counts": daily_sales_counts,
             "daily_orders_revenue": daily_orders_revenue,
-            "daily_sales_revenue": daily_sales_revenue,
             "warehouse_summary_dual": warehouse_summary_dual,
             "top_products": top_products,
             "warehouses": list(warehouses),
@@ -4321,7 +4511,12 @@ def api_orders_refresh():
             "date_from_fmt": format_dmy(date_from),
             "date_to_fmt": format_dmy(date_to),
             "top_mode": top_mode,
-        })
+        }
+        try:
+            resp["cache"] = {"used_cache_days": meta.get("used_cache_days", 0), "fetched_days": meta.get("fetched_days", 0)}
+        except Exception:
+            pass
+        return jsonify(resp)
     except requests.HTTPError as http_err:
         status = 502
         try:
@@ -4359,6 +4554,16 @@ def api_orders_refresh():
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
+
+@app.route("/api/orders-progress", methods=["GET"]) 
+@login_required
+def api_orders_progress():
+    try:
+        uid = current_user.id
+        prog = ORDERS_PROGRESS.get(uid) or {"total": 0, "done": 0}
+        return jsonify({"total": int(prog.get("total", 0)), "done": int(prog.get("done", 0))}), 200
+    except Exception as exc:
+        return jsonify({"total": 0, "done": 0, "error": str(exc)}), 200
 
 @app.route("/profile", methods=["GET"]) 
 @login_required
@@ -4640,7 +4845,7 @@ def report_sales_page():
         counts_total[prod] += 1
         by_wh[prod][wh] += 1
         try:
-            price = float(r.get("Цена с учетом всех скидок") or 0)
+            price = float(r.get("Цена со скидкой продавца") or 0)
         except (TypeError, ValueError):
             price = 0.0
         revenue_total[prod] += price
@@ -4796,6 +5001,406 @@ def report_sales_page():
         date_to_val=(request.args.get("date_to") or ""),
         matrix=matrix,
     )
+
+
+@app.route("/report/orders", methods=["GET"]) 
+@login_required
+def report_orders_page():
+    cached = load_last_results()
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    
+    # Обновляем остатки если нужно (если кэш устарел)
+    if token and current_user.is_authenticated:
+        update_stocks_if_needed(current_user.id, token, force_update=False)
+    
+    # Страница по умолчанию открывается пустой: без данных, пока пользователь не задаст период и не нажмёт Загрузить
+    if not request.args.get("date_from") and not request.args.get("date_to"):
+        return render_template(
+            "report_orders.html",
+            error=None,
+            items=[],
+            date_from_fmt="",
+            date_to_fmt="",
+            warehouse=None,
+            warehouses=[],
+            date_from_val="",
+            date_to_val="",
+        ), 200
+
+    # Accept date range from query params; fallback to cached
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    warehouse = request.args.get("warehouse") or None
+
+    if req_from and req_to and token:
+        # Prefer cache if it matches the requested period and belongs to the user
+        if (
+            cached
+            and current_user.is_authenticated
+            and cached.get("_user_id") == current_user.id
+            and cached.get("date_from") == req_from
+            and cached.get("date_to") == req_to
+        ):
+            orders = cached.get("orders", [])
+            try:
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            except Exception:
+                date_from_fmt = cached.get("date_from_fmt") or req_from
+                date_to_fmt = cached.get("date_to_fmt") or req_to
+        else:
+            # Fetch fresh orders only if cache doesn't match
+            try:
+                raw_orders = fetch_orders_range(token, req_from, req_to)
+                orders = to_rows(raw_orders, req_from, req_to)
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            except Exception as exc:
+                # Fallback to cache on error
+                orders = (cached or {}).get("orders", [])
+                date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
+                date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
+    else:
+        # Без явного периода не подставляем кэш — страница остаётся пустой
+        orders = []
+        date_from_fmt = ""
+        date_to_fmt = ""
+
+    warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
+    # Build matrix for client-side filtering (same as API)
+    counts_total: Dict[str, int] = defaultdict(int)
+    by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    revenue_total: Dict[str, float] = defaultdict(float)
+    by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
+    for r in (orders or []):
+        prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
+        wh = str(r.get("Склад отгрузки") or "Не указан")
+        counts_total[prod] += 1
+        by_wh[prod][wh] += 1
+        try:
+            price = float(r.get("Цена со скидкой продавца") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        revenue_total[prod] += price
+        by_wh_sum[prod][wh] += price
+        nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        if prod not in nm_by_product and nmv:
+            nm_by_product[prod] = nmv
+        barcode = r.get("Баркод")
+        if prod not in barcode_by_product and barcode:
+            barcode_by_product[prod] = barcode
+        supplier_article = r.get("Артикул продавца")
+        if prod not in supplier_article_by_product and supplier_article:
+            supplier_article_by_product[prod] = supplier_article
+    # build photo map from products cache
+    nm_to_photo: Dict[Any, Any] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            photo = it.get("photo") or it.get("img")
+            if nmv is not None and nmv not in nm_to_photo:
+                nm_to_photo[nmv] = photo
+    except Exception:
+        nm_to_photo = {}
+
+    # Load stocks data for current user - сохраняем остатки по складам
+    stocks_by_warehouse = {}
+    stocks_metadata = {}  # Дополнительная информация о товарах из остатков
+    try:
+        stocks_cached = load_stocks_cache()
+        if stocks_cached and stocks_cached.get("_user_id"):
+            items = stocks_cached.get("items", [])
+            for stock_item in items:
+                barcode = stock_item.get("barcode")
+                stock_warehouse = stock_item.get("warehouse", "")
+                qty = int(stock_item.get("qty", 0) or 0)
+                vendor_code = stock_item.get("vendor_code", "")
+                nm_id = stock_item.get("nm_id")
+                
+                if barcode:
+                    if barcode not in stocks_by_warehouse:
+                        stocks_by_warehouse[barcode] = {}
+                    if barcode not in stocks_metadata:
+                        stocks_metadata[barcode] = {
+                            "vendor_code": vendor_code,
+                            "nm_id": nm_id,
+                            "barcode": barcode
+                        }
+                    
+                    if stock_warehouse:
+                        stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
+    except Exception as e:
+        stocks_by_warehouse = {}
+        stocks_metadata = {}
+
+    def _build_items(target_wh: str | None, show_all: bool = False) -> List[Dict[str, Any]]:
+        items_local: List[Dict[str, Any]] = []
+        
+        # Get all products that have orders
+        all_products = set(counts_total.keys())
+        if show_all:
+            # Add ALL products from stocks metadata (including those with zero stock)
+            for barcode, metadata in stocks_metadata.items():
+                # Find product by barcode
+                found_in_orders = False
+                for prod, prod_barcode in barcode_by_product.items():
+                    if prod_barcode == barcode:
+                        all_products.add(prod)
+                        found_in_orders = True
+                        break
+                
+                # If barcode not found in orders, create a virtual product entry
+                if not found_in_orders:
+                    # Use vendor_code from stocks metadata
+                    virtual_prod = metadata["vendor_code"] or f"Товар с баркодом {barcode}"
+                    # Add to mappings
+                    barcode_by_product[virtual_prod] = barcode
+                    if metadata["nm_id"]:
+                        nm_by_product[virtual_prod] = metadata["nm_id"]
+                    if metadata["vendor_code"]:
+                        supplier_article_by_product[virtual_prod] = metadata["vendor_code"]
+                    all_products.add(virtual_prod)
+        
+        for prod in all_products:
+            qty = (by_wh.get(prod, {}).get(target_wh, 0) if target_wh else counts_total.get(prod, 0))
+            
+            # Include items with orders OR (if show_all) items with stocks
+            if qty > 0 or (show_all and prod in barcode_by_product):
+                s = (by_wh_sum.get(prod, {}).get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                # Calculate stock quantity for the target warehouse
+                barcode = barcode_by_product.get(prod)
+                stock_qty = 0
+                if barcode and barcode in stocks_by_warehouse:
+                    if target_wh:
+                        # If specific warehouse selected, sum only for that warehouse
+                        stock_qty = stocks_by_warehouse[barcode].get(target_wh, 0)
+                    else:
+                        # If no warehouse selected, sum across all warehouses
+                        stock_qty = sum(stocks_by_warehouse[barcode].values())
+                
+                # Get photo from cache
+                nm_id = nm_by_product.get(prod)
+                photo = nm_to_photo.get(nm_id) if nm_id else None
+                
+                items_local.append({
+                    "product": prod,
+                    "qty": qty,
+                    "sum": round(s, 2),
+                    "warehouse": target_wh or "Все склады",
+                    "stock_qty": stock_qty,
+                    "nm_id": nm_id,
+                    "barcode": barcode,
+                    "supplier_article": supplier_article_by_product.get(prod),
+                    "photo": photo,
+                })
+        
+        # Sort by quantity descending
+        items_local.sort(key=lambda x: x["qty"], reverse=True)
+        return items_local
+
+    # Build items for the selected warehouse
+    items = _build_items(warehouse, show_all=False)
+    
+    # Build matrix for client-side filtering
+    matrix = {
+        "counts_total": dict(counts_total),
+        "by_wh": {k: dict(v) for k, v in by_wh.items()},
+        "revenue_total": dict(revenue_total),
+        "by_wh_sum": {k: dict(v) for k, v in by_wh_sum.items()},
+        "nm_by_product": nm_by_product,
+        "barcode_by_product": barcode_by_product,
+        "supplier_article_by_product": supplier_article_by_product,
+        "stocks_by_warehouse": stocks_by_warehouse,
+        "stocks_metadata": stocks_metadata,
+    }
+
+    return render_template(
+        "report_orders.html",
+        error=None,
+        items=items,
+        date_from_fmt=date_from_fmt,
+        date_to_fmt=date_to_fmt,
+        warehouse=warehouse,
+        warehouses=warehouses,
+        date_from_val=(request.args.get("date_from") or ""),
+        date_to_val=(request.args.get("date_to") or ""),
+        matrix=matrix,
+    )
+
+
+@app.route("/api/report/orders", methods=["GET"]) 
+@login_required
+def api_report_orders():
+    cached = load_last_results()
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    
+    # Обновляем остатки если нужно (если кэш устарел)
+    if token and current_user.is_authenticated:
+        update_stocks_if_needed(current_user.id, token, force_update=False)
+    
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    warehouse = (request.args.get("warehouse") or "").strip() or None
+    try:
+        if req_from and req_to and token:
+            if (
+                cached
+                and current_user.is_authenticated
+                and cached.get("_user_id") == current_user.id
+                and cached.get("date_from") == req_from
+                and cached.get("date_to") == req_to
+            ):
+                orders = cached.get("orders", [])
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            else:
+                raw_orders = fetch_orders_range(token, req_from, req_to)
+                orders = to_rows(raw_orders, req_from, req_to)
+                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+        else:
+            orders = (cached or {}).get("orders", [])
+            date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
+            date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
+        # Build matrix for local filtering on frontend
+        counts_total: Dict[str, int] = defaultdict(int)
+        by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        revenue_total: Dict[str, float] = defaultdict(float)
+        by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        nm_by_product: Dict[str, Any] = {}
+        barcode_by_product: Dict[str, Any] = {}
+        supplier_article_by_product: Dict[str, Any] = {}
+        warehouses = set()
+        for r in orders:
+            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
+            wh = str(r.get("Склад отгрузки") or "Не указан")
+            warehouses.add(wh)
+            counts_total[prod] += 1
+            by_wh[prod][wh] += 1
+            try:
+                price = float(r.get("Цена с учетом всех скидок") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            revenue_total[prod] += price
+            by_wh_sum[prod][wh] += price
+            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+            if prod not in nm_by_product and nmv:
+                nm_by_product[prod] = nmv
+            barcode = r.get("Баркод")
+            if prod not in barcode_by_product and barcode:
+                barcode_by_product[prod] = barcode
+            supplier_article = r.get("Артикул продавца")
+            if prod not in supplier_article_by_product and supplier_article:
+                supplier_article_by_product[prod] = supplier_article
+        # build photo map from products cache
+        nm_to_photo: Dict[Any, Any] = {}
+        try:
+            prod_cached = load_products_cache() or {}
+            for it in (prod_cached.get("items") or []):
+                nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+                photo = it.get("photo") or it.get("img")
+                if nmv is not None and nmv not in nm_to_photo:
+                    nm_to_photo[nmv] = photo
+        except Exception:
+            nm_to_photo = {}
+        # Load stocks data for current user
+        stocks_by_warehouse = {}
+        stocks_metadata = {}
+        try:
+            stocks_cached = load_stocks_cache()
+            if stocks_cached and stocks_cached.get("_user_id"):
+                items = stocks_cached.get("items", [])
+                for stock_item in items:
+                    barcode = stock_item.get("barcode")
+                    stock_warehouse = stock_item.get("warehouse", "")
+                    qty = int(stock_item.get("qty", 0) or 0)
+                    vendor_code = stock_item.get("vendor_code", "")
+                    nm_id = stock_item.get("nm_id")
+                    
+                    if barcode:
+                        if barcode not in stocks_by_warehouse:
+                            stocks_by_warehouse[barcode] = {}
+                        if barcode not in stocks_metadata:
+                            stocks_metadata[barcode] = {
+                                "vendor_code": vendor_code,
+                                "nm_id": nm_id,
+                                "barcode": barcode
+                            }
+                        
+                        if stock_warehouse:
+                            stocks_by_warehouse[barcode][stock_warehouse] = stocks_by_warehouse[barcode].get(stock_warehouse, 0) + qty
+        except Exception as e:
+            stocks_by_warehouse = {}
+            stocks_metadata = {}
+        def _build_items(target_wh: str | None, show_all: bool = False) -> List[Dict[str, Any]]:
+            items_local: List[Dict[str, Any]] = []
+            all_products = set(counts_total.keys())
+            if show_all:
+                for barcode, metadata in stocks_metadata.items():
+                    found_in_orders = False
+                    for prod, prod_barcode in barcode_by_product.items():
+                        if prod_barcode == barcode:
+                            all_products.add(prod)
+                            found_in_orders = True
+                            break
+                    if not found_in_orders:
+                        virtual_prod = metadata["vendor_code"] or f"Товар с баркодом {barcode}"
+                        barcode_by_product[virtual_prod] = barcode
+                        if metadata["nm_id"]:
+                            nm_by_product[virtual_prod] = metadata["nm_id"]
+                        if metadata["vendor_code"]:
+                            supplier_article_by_product[virtual_prod] = metadata["vendor_code"]
+                        all_products.add(virtual_prod)
+            for prod in all_products:
+                qty = (by_wh.get(prod, {}).get(target_wh, 0) if target_wh else counts_total.get(prod, 0))
+                if qty > 0 or (show_all and prod in barcode_by_product):
+                    s = (by_wh_sum.get(prod, {}).get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                    barcode = barcode_by_product.get(prod)
+                    stock_qty = 0
+                    if barcode and barcode in stocks_by_warehouse:
+                        if target_wh:
+                            stock_qty = stocks_by_warehouse[barcode].get(target_wh, 0)
+                        else:
+                            stock_qty = sum(stocks_by_warehouse[barcode].values())
+                    nm_id = nm_by_product.get(prod)
+                    photo = nm_to_photo.get(nm_id) if nm_id else None
+                    items_local.append({
+                        "product": prod,
+                        "qty": qty,
+                        "sum": round(s, 2),
+                        "warehouse": target_wh or "Все склады",
+                        "stock_qty": stock_qty,
+                        "nm_id": nm_id,
+                        "barcode": barcode,
+                        "supplier_article": supplier_article_by_product.get(prod),
+                        "photo": photo,
+                    })
+            items_local.sort(key=lambda x: x["qty"], reverse=True)
+            return items_local
+        items = _build_items(warehouse, show_all=False)
+        return jsonify({
+            "items": items,
+            "date_from_fmt": date_from_fmt,
+            "date_to_fmt": date_to_fmt,
+            "warehouses": sorted(warehouses),
+            "matrix": {
+                "counts_total": dict(counts_total),
+                "by_wh": {k: dict(v) for k, v in by_wh.items()},
+                "revenue_total": dict(revenue_total),
+                "by_wh_sum": {k: dict(v) for k, v in by_wh_sum.items()},
+                "nm_by_product": nm_by_product,
+                "barcode_by_product": barcode_by_product,
+                "supplier_article_by_product": supplier_article_by_product,
+                "stocks_by_warehouse": stocks_by_warehouse,
+                "stocks_metadata": stocks_metadata,
+            }
+        }), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
 
 
 @app.route("/api/report/sales", methods=["GET"]) 

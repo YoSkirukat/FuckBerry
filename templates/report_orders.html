@@ -1,0 +1,952 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Отчёт по заказам со складов</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    /* скрываем чёрные встроенные иконки календаря */
+    input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0; position: absolute; right: 10px; width: 1.2em; height: 1.2em; }
+    .thumb { width: 31px; height: 42px; object-fit: cover; cursor: zoom-in; display: inline-block; }
+    #imgPreview { display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none; }
+    #imgPreview img { max-width:420px; max-height:560px; display:block; }
+    
+    /* Стили для выпадающего календаря */
+    .calendar-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: white;
+      border: 1px solid #dee2e6;
+      border-radius: 0.375rem;
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+      z-index: 1050;
+      margin-top: 0.25rem;
+      width: 320px;
+      max-width: 90vw;
+    }
+    
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    
+    .calendar-nav {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      transition: background-color 0.15s ease-in-out;
+    }
+    
+    .calendar-nav:hover {
+      background-color: #e9ecef;
+    }
+    
+    .calendar-grid {
+      padding: 1rem;
+    }
+    
+    .calendar-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .calendar-weekday {
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: #6c757d;
+      padding: 0.5rem 0;
+    }
+    
+    .calendar-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+    }
+    
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+      transition: all 0.15s ease-in-out;
+      position: relative;
+    }
+    
+    .calendar-day:hover {
+      background-color: #e9ecef;
+    }
+    
+    .calendar-day.other-month {
+      color: #adb5bd;
+    }
+    
+    .calendar-day.today {
+      background-color: #fff3cd;
+      color: #856404;
+      font-weight: 600;
+    }
+    
+    .calendar-day.selected-start {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .calendar-day.selected-end {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .calendar-day.in-range {
+      background-color: #e7f1ff;
+      color: #0d6efd;
+    }
+    
+    .calendar-day.in-range:not(.selected-start):not(.selected-end) {
+      border-radius: 0;
+    }
+    
+    .calendar-day.selected-start.in-range {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    
+    .calendar-day.selected-end.in-range {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }
+    
+    .calendar-footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 1rem;
+      border-top: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    
+    .calendar-day.weekend {
+      color: #dc3545;
+    }
+    
+    .calendar-day.other-month.weekend {
+      color: #f5c6cb;
+    }
+    
+    /* Мобильное позиционирование календаря */
+    @media (max-width: 768px) {
+      .calendar-dropdown.mobile-centered {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        width: 90vw !important;
+        max-width: 400px !important;
+        z-index: 1060 !important;
+        margin: 0 !important;
+        box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.3) !important;
+      }
+      
+      .calendar-dropdown.mobile-centered .calendar-grid {
+        max-height: 60vh;
+        overflow-y: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container mt-3">
+    <h1 class="mb-3" style="font-size:1.6rem;">Отчёт по заказам со складов</h1>
+    {% if error %}
+      <div class="alert alert-warning">{{ error }}</div>
+    {% endif %}
+
+    
+    <form class="row g-3 mb-3" method="get" action="/report/orders">
+      <div class="col-sm-6 col-md-4">
+        <label class="form-label">Период отчета</label>
+        <div class="position-relative" style="position: relative !important;">
+          <input type="text" class="form-control" id="ordersDateRangeInput" placeholder="Выберите период" readonly style="cursor: pointer;" />
+          <input type="hidden" name="date_from" id="ordersDateFrom" value="{{ date_from_val or '' }}" />
+          <input type="hidden" name="date_to" id="ordersDateTo" value="{{ date_to_val or '' }}" />
+          <span class="position-absolute top-50 end-0 translate-middle-y me-3" style="cursor: pointer;" id="ordersDateRangeBtn">📅</span>
+          <div id="ordersDateRangeCalendar" class="calendar-dropdown" style="display: none;">
+            <div class="calendar-header">
+              <button type="button" class="calendar-nav" id="ordersPrevMonth">‹</button>
+              <span id="ordersCurrentMonthYear">Сентябрь 2025</span>
+              <button type="button" class="calendar-nav" id="ordersNextMonth">›</button>
+            </div>
+            <div class="calendar-grid" id="ordersCalendarGrid">
+              <!-- Календарь будет генерироваться JavaScript -->
+            </div>
+            <div class="calendar-footer">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="ordersResetDates">Сбросить</button>
+              <button type="button" class="btn btn-sm btn-primary" id="ordersApplyDates">Применить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-4">
+        <label class="form-label">Склад</label>
+        <select name="warehouse" id="rWarehouse" class="form-select" {% if not items or not items|length %}disabled{% endif %}>
+          <option value="" {% if not warehouse %}selected{% endif %}>Все склады</option>
+          {% for w in warehouses %}
+            <option value="{{ w }}" {% if warehouse == w %}selected{% endif %}>{{ w }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <button id="reportLoadBtn" class="btn btn-primary w-100" type="submit">Загрузить</button>
+      </div>
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <button id="exportExcelBtn" class="btn btn-success w-100" type="button" {% if not items or not items|length %}disabled{% endif %}>📊 Excel</button>
+      </div>
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="showAllProducts" name="show_all_products" disabled>
+          <label class="form-check-label" for="showAllProducts">
+            Показать весь товар
+            <i class="bi bi-info-circle" data-bs-toggle="tooltip" title="Отобразить весь товар на выбранном складе, в том числе который не продавался" style="margin-left: 5px; color: #6c757d;"></i>
+          </label>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-2 offset-md-6 d-flex align-items-end justify-content-end">
+        <small class="text-muted" id="stocksUpdateInfo" style="display: none;">
+          Остатки обновлены: <span id="stocksUpdatedAt">-</span>
+        </small>
+      </div>
+    </form>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="table-responsive" style="max-height: 70vh;">
+          <table class="table table-sm table-striped" id="reportTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th style="width:72px;">Фото</th>
+                <th>Товар</th>
+                <th id="repQtyHdr" class="text-end">
+                  <div>Кол-во итого:</div>
+                  <div><span id="repQtyVal">{{ ((items and (items | sum(attribute='qty'))) or 0) | num_space }}</span> шт.</div>
+                </th>
+                <th id="repSumHdr" class="text-end">
+                  <div>Сумма итого:</div>
+                  <div><span id="repSumVal">{{ ((items and (items | sum(attribute='sum'))) or 0) | money_ru }}</span> руб.</div>
+                </th>
+                <th class="text-end">
+                  <div>Текущий</div>
+                  <div>Остаток:</div>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="reportBody">
+              {% if items and items|length %}
+                {% for it in items %}
+                  <tr>
+                    <td>{{ loop.index }}</td>
+                    <td class="text-center">{% if it.photo %}<img class="thumb" src="{{ it.photo }}" data-src="{{ it.photo }}"/>{% else %}-{% endif %}</td>
+                    <td>
+                      <div>
+                        {% if it.nm_id %}
+                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                        {% else %}
+                          {{ it.product }}
+                        {% endif %}
+                      </div>
+                      {% if it.nm_id or it.barcode %}
+                        <div class="small text-muted mt-1">
+                          {% if it.nm_id %}Артикул WB: {{ it.nm_id }}{% endif %}
+                          {% if it.nm_id and it.barcode %} | {% endif %}
+                          {% if it.barcode %}Баркод: {{ it.barcode }}{% endif %}
+                        </div>
+                      {% endif %}
+                    </td>
+                    <td class="text-end">{{ it.qty | num_space }}</td>
+                    <td class="text-end">{{ (it.sum or 0) | money_ru }} руб.</td>
+                    <td class="text-end">{{ (it.stock_qty or 0) | num_space }} шт.</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="6" class="text-muted">Нет данных</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
+  <script>
+    // Календарь с выбором диапазона дат для страницы orders
+    class SalesDateRangeCalendar {
+      constructor() {
+        this.currentDate = new Date();
+        this.selectedStart = null;
+        this.selectedEnd = null;
+        this.isSelecting = false;
+        this.calendar = document.getElementById('ordersDateRangeCalendar');
+        this.input = document.getElementById('ordersDateRangeInput');
+        this.startInput = document.getElementById('ordersDateFrom');
+        this.endInput = document.getElementById('ordersDateTo');
+        this.btn = document.getElementById('ordersDateRangeBtn');
+        this.grid = document.getElementById('ordersCalendarGrid');
+        this.monthYear = document.getElementById('ordersCurrentMonthYear');
+        this.prevBtn = document.getElementById('ordersPrevMonth');
+        this.nextBtn = document.getElementById('ordersNextMonth');
+        this.resetBtn = document.getElementById('ordersResetDates');
+        this.applyBtn = document.getElementById('ordersApplyDates');
+        
+        this.months = [
+          'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+          'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+        ];
+        
+        this.weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+        
+        this.init();
+      }
+      
+      init() {
+        if (!this.calendar || !this.input || !this.btn) {
+          console.error('Не все элементы календаря orders найдены!');
+          return;
+        }
+        
+        // Загружаем сохраненные даты
+        this.loadSavedDates();
+        
+        // Обработчики событий
+        this.btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleCalendar();
+        });
+        this.input.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleCalendar();
+        });
+        this.prevBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.prevMonth();
+        });
+        this.nextBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.nextMonth();
+        });
+        this.resetBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.resetSelection();
+        });
+        this.applyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.applySelection();
+        });
+        
+        // Закрытие календаря при клике вне его
+        document.addEventListener('click', (e) => {
+          if (!this.calendar.contains(e.target) && 
+              !this.input.contains(e.target) && 
+              !this.btn.contains(e.target)) {
+            this.hideCalendar();
+          }
+        });
+        
+        // Перепозиционирование при изменении размера окна
+        window.addEventListener('resize', () => {
+          if (this.calendar.style.display === 'block') {
+            this.adjustPosition();
+          }
+        });
+        
+        this.renderCalendar();
+        
+        // Предотвращаем закрытие календаря при клике внутри него
+        this.calendar.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+      
+      loadSavedDates() {
+        const startVal = this.startInput.value;
+        const endVal = this.endInput.value;
+        
+        if (startVal) {
+          // Создаем дату в локальном часовом поясе
+          const [year, month, day] = startVal.split('-').map(Number);
+          this.selectedStart = new Date(year, month - 1, day);
+        }
+        if (endVal) {
+          // Создаем дату в локальном часовом поясе
+          const [year, month, day] = endVal.split('-').map(Number);
+          this.selectedEnd = new Date(year, month - 1, day);
+        }
+        
+        this.updateInputDisplay();
+      }
+      
+      toggleCalendar() {
+        if (this.calendar.style.display === 'none' || !this.calendar.style.display) {
+          this.showCalendar();
+        } else {
+          this.hideCalendar();
+        }
+      }
+      
+      showCalendar() {
+        this.calendar.style.display = 'block';
+        this.renderCalendar();
+        this.adjustPosition();
+      }
+      
+      adjustPosition() {
+        const rect = this.input.getBoundingClientRect();
+        const calendar = this.calendar;
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        const calendarHeight = 400; // Примерная высота календаря
+        
+        // Проверяем, является ли устройство мобильным
+        const isMobile = viewportWidth <= 768;
+        
+        if (isMobile) {
+          // На мобильных устройствах центрируем календарь
+          calendar.classList.add('mobile-centered');
+          calendar.style.position = 'fixed';
+          calendar.style.top = '50%';
+          calendar.style.left = '50%';
+          calendar.style.transform = 'translate(-50%, -50%)';
+          calendar.style.width = '90vw';
+          calendar.style.maxWidth = '400px';
+          calendar.style.zIndex = '1060';
+          calendar.style.margin = '0';
+          calendar.style.boxShadow = '0 0.5rem 2rem rgba(0, 0, 0, 0.3)';
+        } else {
+          // На десктопе используем обычное позиционирование
+          calendar.classList.remove('mobile-centered');
+          calendar.style.position = 'absolute';
+          calendar.style.transform = 'none';
+          calendar.style.zIndex = '1050';
+          calendar.style.boxShadow = '0 0.5rem 1rem rgba(0, 0, 0, 0.15)';
+          
+          // Если календарь не помещается снизу, показываем сверху
+          if (rect.bottom + calendarHeight > viewportHeight) {
+            calendar.style.top = 'auto';
+            calendar.style.bottom = '100%';
+            calendar.style.marginTop = '0';
+            calendar.style.marginBottom = '0.25rem';
+          } else {
+            calendar.style.top = '100%';
+            calendar.style.bottom = 'auto';
+            calendar.style.marginTop = '0.25rem';
+            calendar.style.marginBottom = '0';
+          }
+        }
+      }
+      
+      hideCalendar() {
+        this.calendar.style.display = 'none';
+      }
+      
+      prevMonth() {
+        this.currentDate.setMonth(this.currentDate.getMonth() - 1);
+        this.renderCalendar();
+      }
+      
+      nextMonth() {
+        this.currentDate.setMonth(this.currentDate.getMonth() + 1);
+        this.renderCalendar();
+      }
+      
+      renderCalendar() {
+        const year = this.currentDate.getFullYear();
+        const month = this.currentDate.getMonth();
+        
+        this.monthYear.textContent = `${this.months[month]} ${year}`;
+        
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - (firstDay.getDay() + 6) % 7);
+        
+        let html = '<div class="calendar-weekdays">';
+        this.weekdays.forEach(day => {
+          html += `<div class="calendar-weekday">${day}</div>`;
+        });
+        html += '</div><div class="calendar-days">';
+        
+        const today = new Date();
+        const currentDate = new Date(startDate);
+        const currentMonth = month; // Сохраняем значение месяца
+        
+        for (let i = 0; i < 42; i++) {
+          const isCurrentMonth = currentDate.getMonth() === currentMonth;
+          const isToday = currentDate.toDateString() === today.toDateString();
+          const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+          const isSelectedStart = this.selectedStart && currentDate.toDateString() === this.selectedStart.toDateString();
+          const isSelectedEnd = this.selectedEnd && currentDate.toDateString() === this.selectedEnd.toDateString();
+          const isInRange = this.isDateInRange(currentDate);
+          
+          let classes = 'calendar-day';
+          if (!isCurrentMonth) classes += ' other-month';
+          if (isToday) classes += ' today';
+          if (isWeekend) classes += ' weekend';
+          if (isSelectedStart) classes += ' selected-start';
+          if (isSelectedEnd) classes += ' selected-end';
+          if (isInRange) classes += ' in-range';
+          
+          // Создаем дату в локальном формате без UTC конвертации
+          const year = currentDate.getFullYear();
+          const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+          const day = String(currentDate.getDate()).padStart(2, '0');
+          const localDateStr = `${year}-${month}-${day}`;
+          html += `<div class="${classes}" data-date="${localDateStr}">${currentDate.getDate()}</div>`;
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        
+        html += '</div>';
+        this.grid.innerHTML = html;
+        
+        // Добавляем обработчики для дней
+        this.grid.querySelectorAll('.calendar-day').forEach(day => {
+          day.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.selectDate(day);
+          });
+        });
+      }
+      
+      selectDate(dayElement) {
+        const dateStr = dayElement.dataset.date;
+        
+        // Создаем дату в локальном часовом поясе
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const date = new Date(year, month - 1, day);
+        
+        if (!this.selectedStart || (this.selectedStart && this.selectedEnd)) {
+          // Начинаем новый выбор
+          this.selectedStart = date;
+          this.selectedEnd = null;
+          this.isSelecting = true;
+        } else if (this.selectedStart && !this.selectedEnd) {
+          // Завершаем выбор
+          if (date < this.selectedStart) {
+            this.selectedEnd = this.selectedStart;
+            this.selectedStart = date;
+          } else {
+            this.selectedEnd = date;
+          }
+          this.isSelecting = false;
+        }
+        
+        this.updateInputDisplay();
+        this.renderCalendar();
+      }
+      
+      isDateInRange(date) {
+        if (!this.selectedStart || !this.selectedEnd) return false;
+        return date >= this.selectedStart && date <= this.selectedEnd;
+      }
+      
+      updateInputDisplay() {
+        if (this.selectedStart && this.selectedEnd) {
+          const startStr = this.formatDate(this.selectedStart);
+          const endStr = this.formatDate(this.selectedEnd);
+          this.input.value = `${startStr} - ${endStr}`;
+        } else if (this.selectedStart) {
+          const startStr = this.formatDate(this.selectedStart);
+          this.input.value = `${startStr} - ...`;
+        } else {
+          this.input.value = '';
+        }
+      }
+      
+      formatDate(date) {
+        // Используем локальную дату, чтобы избежать проблем с часовыми поясами
+        const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const day = String(localDate.getDate()).padStart(2, '0');
+        const month = String(localDate.getMonth() + 1).padStart(2, '0');
+        const year = localDate.getFullYear();
+        return `${day}.${month}.${year}`;
+      }
+      
+      resetSelection() {
+        this.selectedStart = null;
+        this.selectedEnd = null;
+        this.isSelecting = false;
+        this.startInput.value = '';
+        this.endInput.value = '';
+        this.updateInputDisplay();
+        this.renderCalendar();
+      }
+      
+      applySelection() {
+        if (this.selectedStart) {
+          // Форматируем дату в ISO формате для скрытых полей
+          const year = this.selectedStart.getFullYear();
+          const month = String(this.selectedStart.getMonth() + 1).padStart(2, '0');
+          const day = String(this.selectedStart.getDate()).padStart(2, '0');
+          this.startInput.value = `${year}-${month}-${day}`;
+        }
+        if (this.selectedEnd) {
+          // Форматируем дату в ISO формате для скрытых полей
+          const year = this.selectedEnd.getFullYear();
+          const month = String(this.selectedEnd.getMonth() + 1).padStart(2, '0');
+          const day = String(this.selectedEnd.getDate()).padStart(2, '0');
+          this.endInput.value = `${year}-${month}-${day}`;
+        }
+        this.hideCalendar();
+        this.validateDates();
+      }
+      
+      validateDates() {
+        const df = this.startInput?.value || '';
+        const dt = this.endInput?.value || '';
+        
+        let ok = true; 
+        let msg = '';
+        
+        if (df && dt && df > dt) {
+          ok = false; 
+          msg = 'Дата окончания не может быть раньше даты начала.';
+        }
+        if (!df || !dt) {
+          ok = false; 
+          msg = 'Выберите период отчета.';
+        }
+        
+        return ok;
+      }
+    }
+    
+    // Инициализация календаря orders
+    let ordersDateRangeCalendar;
+    
+    // Hover preview like on /products
+    const preview = document.getElementById('imgPreview');
+    const previewImg = document.getElementById('imgPreviewImg');
+    function bindPreview(){
+      document.querySelectorAll('.thumb').forEach(img=>{
+        img.addEventListener('mouseover', ()=>{ const src = img.getAttribute('data-src') || img.getAttribute('src'); if(src){ previewImg.src = src; preview.style.display='block'; }});
+        img.addEventListener('mouseout', ()=>{ preview.style.display='none'; previewImg.src=''; });
+      });
+    }
+    // bind for server-rendered rows
+    bindPreview();
+    
+    // Старые календари заменены на новый единый календарь
+
+    // eslint-disable-next-line
+    let reportMatrix = {{ (matrix or []) | tojson | safe }}; // cached matrix for client-side filtering (server-side if уже есть)
+    async function reloadReport(){
+      const form = document.querySelector('form[action="/report/orders"]');
+      const btn = document.getElementById('reportLoadBtn');
+      if (!form || !btn) return;
+      try{
+        btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Загрузка...';
+        const params = new URLSearchParams(new FormData(form));
+        // При загрузке отчёта всегда запрашиваем агрегат по всем складам,
+        // а затем фильтруем локально при смене склада
+        params.set('warehouse', '');
+        console.log('DEBUG: reloadReport params:', params.toString());
+        const res = await fetch(`/api/report/orders?${params.toString()}`);
+        const data = await res.json();
+        console.log('DEBUG: reloadReport response:', data);
+        reportMatrix = data.matrix || reportMatrix || null;
+        const tbody = document.getElementById('reportBody');
+        tbody.innerHTML = '';
+        (data.items || []).forEach((it, idx) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>`;
+          tr.children[0].textContent = (idx + 1).toString();
+          const photoCell = tr.children[1];
+          if (it.photo) { photoCell.innerHTML = `<img class="thumb" src="${it.photo}" data-src="${it.photo}"/>`; }
+          else { photoCell.textContent = '-'; }
+          const cell = tr.children[2];
+          if (it.nm_id){
+            const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a);
+          } else { cell.textContent = it.product; }
+          if (it.nm_id || it.barcode) {
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'small text-muted mt-1';
+            let infoText = '';
+            if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+            if (it.nm_id && it.barcode) infoText += ' | ';
+            if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+            infoDiv.textContent = infoText;
+            cell.appendChild(infoDiv);
+          }
+          tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
+          tr.children[5].textContent = (it.stock_qty || 0).toLocaleString('ru-RU') + ' шт.';
+          tbody.appendChild(tr);
+        });
+        bindPreview();
+        const periodEl = document.getElementById('repPeriod');
+        if (periodEl) periodEl.textContent = `${data.date_from_fmt || ''} — ${data.date_to_fmt || ''}`;
+        const totalEl = document.getElementById('repTotal');
+        if (totalEl) totalEl.textContent = (data.total_qty || 0).toLocaleString('ru-RU');
+        const qtyVal = document.getElementById('repQtyVal'); if (qtyVal) qtyVal.textContent = (data.total_qty||0).toLocaleString('ru-RU');
+        const totalSum = (data.items||[]).reduce((s,x)=> s + (Number(x.sum)||0), 0);
+        const sumVal = document.getElementById('repSumVal'); if (sumVal) sumVal.textContent = (Number(totalSum)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        // populate and enable warehouse select
+        const whSel = document.getElementById('rWarehouse');
+        if (whSel){
+          const current = '';
+          whSel.innerHTML = '';
+          const optAll = document.createElement('option'); optAll.value=''; optAll.textContent = 'Все склады'; whSel.appendChild(optAll);
+          (data.warehouses || []).forEach(w => { const o = document.createElement('option'); o.value = w; o.textContent = w; whSel.appendChild(o); });
+          whSel.disabled = false;
+          whSel.value = current; // сброс на «Все склады»
+          if (whSel.selectedIndex < 0) whSel.selectedIndex = 0;
+        }
+        btn.textContent = prev; btn.disabled = false;
+        
+        // Активируем кнопку экспорта после загрузки данных
+        const exportBtn = document.getElementById('exportExcelBtn');
+        if (exportBtn) {
+          exportBtn.disabled = false;
+        }
+        
+        // Активируем галочку "Показать весь товар" после загрузки данных
+        const showAllCheckbox = document.getElementById('showAllProducts');
+        if (showAllCheckbox) {
+          showAllCheckbox.disabled = false;
+        }
+      } catch(err){
+        console.error(err);
+        btn.disabled = false;
+      }
+    }
+
+    const form = document.querySelector('form[action="/report/orders"]');
+    const btn = document.getElementById('reportLoadBtn');
+    if (form && btn){
+      form.addEventListener('submit', (e) => { e.preventDefault(); reloadReport(); });
+    }
+    
+    // Обработчик для чекбокса "Показать весь товар"
+    const showAllCheckbox = document.getElementById('showAllProducts');
+    if (showAllCheckbox) {
+      showAllCheckbox.addEventListener('change', () => {
+        console.log('DEBUG: showAllProducts checkbox changed:', showAllCheckbox.checked);
+        if (reportMatrix) {
+          // Если данные уже загружены, перезагружаем с новым параметром
+          reloadReport();
+        }
+      });
+    }
+    const whSel = document.getElementById('rWarehouse');
+    if (whSel){
+      whSel.addEventListener('change', () => {
+        // Только локальная фильтрация; если матрица не загружена ещё, ничего не делаем
+        if (!reportMatrix) return;
+        const tbody = document.getElementById('reportBody');
+        tbody.innerHTML = '';
+        const target = whSel.value || '';
+        const showAll = document.getElementById('showAllProducts')?.checked || false;
+        const items = reportMatrix.map(row => {
+          const bywh = row.by_wh || {};
+          const qty = target ? (bywh[target] || 0) : (row.total || 0);
+          const bywhSum = row.by_wh_sum || {};
+          const sum = target ? (bywhSum[target] || 0) : (row.total_sum || 0);
+          
+          // Calculate stock quantity for the target warehouse
+          let stock_qty = 0;
+          const bywhStock = row.by_wh_stock || {};
+          if (target) {
+            // If specific warehouse selected, sum only for that warehouse
+            for (const [wh_name, wh_qty] of Object.entries(bywhStock)) {
+              if (wh_name === target || 
+                  wh_name.includes(target) || 
+                  target.includes(wh_name)) {
+                stock_qty += wh_qty;
+              }
+            }
+          } else {
+            // If no warehouse selected, sum all warehouses
+            stock_qty = Object.values(bywhStock).reduce((a, b) => a + b, 0);
+          }
+          
+          return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo, stock_qty };
+        }).filter(it => {
+          // Show items with orders OR (if show_all) items with stocks
+          return (it.qty || 0) > 0 || (showAll && (it.stock_qty || 0) > 0);
+        }).sort((a,b) => {
+          // Sort by quantity first, then by stock quantity
+          const qtyA = a.qty || 0;
+          const qtyB = b.qty || 0;
+          if (qtyA !== qtyB) return qtyB - qtyA;
+          return (b.stock_qty || 0) - (a.stock_qty || 0);
+        });
+        items.forEach((it, idx) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>`;
+          tr.children[0].textContent = (idx + 1).toString();
+          const photoCell = tr.children[1]; photoCell.innerHTML = it.photo ? `<img class=\"thumb\" src=\"${it.photo}\" data-src=\"${it.photo}\"/>` : '-';
+          const cell = tr.children[2];
+          if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a); }
+          else { cell.textContent = it.product; }
+          if (it.nm_id || it.barcode) {
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'small text-muted mt-1';
+            let infoText = '';
+            if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+            if (it.nm_id && it.barcode) infoText += ' | ';
+            if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+            infoDiv.textContent = infoText;
+            cell.appendChild(infoDiv);
+          }
+          tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
+          tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
+          tr.children[5].textContent = (it.stock_qty || 0).toLocaleString('ru-RU') + ' шт.';
+          tbody.appendChild(tr);
+        });
+        bindPreview();
+        const totalEl = document.getElementById('repTotal');
+        const totalQty = items.reduce((s, x) => s + (x.qty||0), 0);
+        if (totalEl) totalEl.textContent = (totalQty || 0).toLocaleString('ru-RU');
+        const qtyVal2 = document.getElementById('repQtyVal'); if (qtyVal2) qtyVal2.textContent = (totalQty||0).toLocaleString('ru-RU');
+        const totalSum2 = items.reduce((s, x) => s + (Number(x.sum)||0), 0);
+        const sumVal2 = document.getElementById('repSumVal'); if (sumVal2) sumVal2.textContent = (Number(totalSum2)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      });
+    }
+    // Инициализация календаря orders при загрузке страницы
+    document.addEventListener('DOMContentLoaded', function() {
+      ordersDateRangeCalendar = new SalesDateRangeCalendar();
+    });
+    
+    // Автозагрузка данных при наличии дат: только если матрица не пришла с сервера
+    (function autoRun(){
+      const df = document.getElementById('ordersDateFrom')?.value;
+      const dt = document.getElementById('ordersDateTo')?.value;
+      if (df && dt && !reportMatrix){ reloadReport(); }
+    })();
+
+    // Функция экспорта в Excel
+    async function exportToExcel() {
+      const form = document.querySelector('form[action="/report/orders"]');
+      const btn = document.getElementById('exportExcelBtn');
+      if (!form || !btn) return;
+      
+      try {
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = 'Экспорт...';
+        
+        const params = new URLSearchParams(new FormData(form));
+        console.log('Экспорт: отправляем запрос с параметрами:', params.toString());
+        
+        const res = await fetch(`/api/report/orders/export?${params.toString()}`);
+        console.log('Экспорт: получен ответ', res.status, res.statusText);
+        
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          console.error('Экспорт: ошибка сервера', errorData);
+          throw new Error(errorData.error || `Ошибка сервера: ${res.status}`);
+        }
+        
+        // Получаем имя файла из заголовка Content-Disposition
+        const contentDisposition = res.headers.get('Content-Disposition');
+        console.log('Экспорт: Content-Disposition:', contentDisposition);
+        
+        let filename = 'report.xlsx';
+        if (contentDisposition) {
+          // Поддержка как старого формата, так и нового UTF-8 формата
+          const filenameMatch = contentDisposition.match(/filename\*?=([^;]+)/);
+          if (filenameMatch) {
+            filename = decodeURIComponent(filenameMatch[1].replace(/^UTF-8''/, ''));
+          }
+        }
+        console.log('Экспорт: имя файла:', filename);
+        
+        // Создаем blob и скачиваем файл
+        const blob = await res.blob();
+        console.log('Экспорт: размер файла:', blob.size, 'байт');
+        
+        if (blob.size === 0) {
+          throw new Error('Получен пустой файл');
+        }
+        
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        console.log('Экспорт: файл успешно скачан');
+        btn.textContent = prev;
+        btn.disabled = false;
+      } catch (err) {
+        console.error('Ошибка экспорта:', err);
+        alert('Ошибка при экспорте данных: ' + err.message);
+        btn.textContent = prev;
+        btn.disabled = false;
+      }
+    }
+
+    // Обработчик кнопки экспорта
+    const exportBtn = document.getElementById('exportExcelBtn');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', exportToExcel);
+    }
+
+    // Функция для загрузки времени обновления остатков
+    async function loadStocksUpdateTime() {
+      try {
+        const res = await fetch('/api/stocks/update-time');
+        if (res.ok) {
+          const data = await res.json();
+          const updateInfo = document.getElementById('stocksUpdateInfo');
+          const updateTime = document.getElementById('stocksUpdatedAt');
+          if (updateInfo && updateTime && data.updated_at) {
+            updateTime.textContent = data.updated_at;
+            updateInfo.style.display = 'block';
+          }
+        }
+      } catch (err) {
+        console.log('Не удалось загрузить время обновления остатков:', err);
+      }
+    }
+
+    // Инициализация тултипов Bootstrap
+    function initTooltips() {
+      const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+      tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+      });
+    }
+
+    // Загружаем время обновления остатков при загрузке страницы
+    loadStocksUpdateTime();
+    
+    // Инициализируем тултипы при загрузке страницы
+    initTooltips();
+  </script>
+  {% include '_footer.html' %}
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+
