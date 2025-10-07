@@ -207,6 +207,7 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{o
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # Настройки сессии для стабильной работы авторизации
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24 часа
+app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
 app.config["SESSION_COOKIE_SECURE"] = False  # Для разработки
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -8166,6 +8167,7 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        remember_flag = request.form.get("remember") in ("on", "true", "1")
         user = User.query.filter_by(username=username).first()
         # Authentication and account state checks
         if not user or user.password != password:
@@ -8178,7 +8180,11 @@ def login():
             return render_template("login.html", error="Учётная запись ещё не активна")
         if user.valid_to and today > user.valid_to:
             return render_template("login.html", error="Срок действия вашей подписки истек")
-        login_user(user)
+        # Учитываем параметр "Запомнить меня":
+        # - включаем постоянную сессию для продления cookie приложения
+        # - активируем remember для Flask-Login, чтобы браузер сохранял токен на 30 дней
+        session.permanent = bool(remember_flag)
+        login_user(user, remember=bool(remember_flag))
         return redirect(request.args.get("next") or url_for("index"))
     return render_template("login.html")
 
