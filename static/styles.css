@@ -24,4 +24,9 @@ a {
       max-width: 100% !important;
   }
 }
+@media (max-width: 480px) {
+  .login-box {
+    width: 100%;
+  }
+}
 /* Дополнительные глобальные стили можно добавить здесь */
