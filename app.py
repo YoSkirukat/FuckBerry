@@ -1599,7 +1599,7 @@ def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[Dict[str, Any]]:
-    """Преобразует данные заказов и фильтрует по реальной дате заказа (date), исключая отмененные."""
+    """Преобразует данные заказов и фильтрует по реальной дате заказа (date), включая отмененные."""
     start = parse_date(start_date).date()
     end = parse_date(end_date).date()
 
@@ -1613,10 +1613,10 @@ def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[
             continue
         if not (start <= d <= end):
             continue
-        # Фильтруем отмененные заказы
+        # Теперь включаем ВСЕ заказы, включая отмененные
         is_cancelled = sale.get("isCancel")
-        if is_cancelled is True or str(is_cancelled).lower() in ('true', '1', 'истина'):
-            continue
+        is_cancelled_bool = is_cancelled is True or str(is_cancelled).lower() in ('true', '1', 'истина')
+        
         rows.append({
             "Дата": date_str,
             "Дата и время обновления информации в сервисе": sale.get("lastChangeDate"),
@@ -1645,6 +1645,7 @@ def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[
             "ID стикера": sale.get("sticker"),
             "Номер заказа": sale.get("gNumber"),
             "Уникальный ID заказа": sale.get("srid"),
+            "is_cancelled": is_cancelled_bool,  # Добавляем флаг отмены для удобства
         })
     return rows
 
@@ -1694,16 +1695,27 @@ def aggregate_daily(rows: List[Dict[str, Any]]):
 
 def aggregate_daily_counts_and_revenue(rows: List[Dict[str, Any]]):
     count_by_day: Dict[str, int] = defaultdict(int)
+    cancelled_count_by_day: Dict[str, int] = defaultdict(int)
     revenue_by_day: Dict[str, float] = defaultdict(float)
     for r in rows:
         day = r.get("Дата")
-        try:
-            price = float(r.get("Цена со скидкой продавца") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
+        is_cancelled = r.get("is_cancelled", False)
+        
+        # Подсчитываем общее количество заказов
         count_by_day[day] += 1
-        revenue_by_day[day] += price
-    return count_by_day, revenue_by_day
+        
+        # Подсчитываем отмененные заказы отдельно
+        if is_cancelled:
+            cancelled_count_by_day[day] += 1
+        
+        # Выручку считаем только с активных заказов
+        if not is_cancelled:
+            try:
+                price = float(r.get("Цена со скидкой продавца") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            revenue_by_day[day] += price
+    return count_by_day, revenue_by_day, cancelled_count_by_day
 
 
 def build_union_series(orders_counts: Dict[str, int], sales_counts: Dict[str, int],
@@ -1744,6 +1756,9 @@ def aggregate_by_warehouse_dual(orders_rows: List[Dict[str, Any]], sales_rows: L
 def aggregate_by_warehouse_orders_only(orders_rows: List[Dict[str, Any]]):
     orders_map: Dict[str, int] = defaultdict(int)
     for r in orders_rows:
+        # Пропускаем отмененные заказы в статистике по складам
+        if r.get("is_cancelled", False):
+            continue
         warehouse = r.get("Склад отгрузки") or "Не указан"
         orders_map[warehouse] += 1
     summary = []
@@ -1761,6 +1776,9 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
     barcode_by_product: Dict[str, Any] = {}
     supplier_article_by_product: Dict[str, Any] = {}
     for r in rows:
+        # Пропускаем отмененные заказы в ТОП товаров
+        if r.get("is_cancelled", False):
+            continue
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
         product = str(product)
         counts[product] += 1
@@ -1818,6 +1836,9 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     barcode_by_product: Dict[str, Any] = {}
     supplier_article_by_product: Dict[str, Any] = {}
     for r in rows:
+        # Пропускаем отмененные заказы в ТОП товаров
+        if r.get("is_cancelled", False):
+            continue
         if warehouse and (r.get("Склад отгрузки") or "Не указан") != warehouse:
             continue
         product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
@@ -3179,11 +3200,14 @@ def index():
     # Orders
     orders = []
     total_orders = 0
+    total_active_orders = 0
+    total_cancelled_orders = 0
     total_revenue = 0.0
 
     # Chart series
     daily_labels: List[str] = []
     daily_orders_counts: List[int] = []
+    daily_orders_cancelled_counts: List[int] = []
     daily_orders_revenue: List[float] = []
 
     # Warehouses combined
@@ -3220,11 +3244,14 @@ def index():
             date_to_fmt = format_dmy(date_to)
             orders = cached.get("orders", [])
             total_orders = cached.get("total_orders", 0)
+            total_active_orders = cached.get("total_active_orders", 0)
+            total_cancelled_orders = cached.get("total_cancelled_orders", 0)
             total_revenue = cached.get("total_revenue", 0.0)
             top_products = cached.get("top_products", [])
             # charts
             daily_labels = cached.get("daily_labels", [])
             daily_orders_counts = cached.get("daily_orders_counts", [])
+            daily_orders_cancelled_counts = cached.get("daily_orders_cancelled_counts", [])
             daily_orders_revenue = cached.get("daily_orders_revenue", [])
             warehouse_summary_dual = cached.get("warehouse_summary_dual", [])
             updated_at = cached.get("updated_at", "")
@@ -3232,6 +3259,16 @@ def index():
             top_mode = cached.get("top_mode", "orders")
             # Add cache info for display
             cache_info = {"used_cache_days": 0, "fetched_days": 0}  # Will be calculated if needed
+            
+            # Fallback: если в кэше нет новых данных, рассчитываем их из orders
+            if total_active_orders == 0 and total_cancelled_orders == 0 and orders:
+                total_active_orders = len([o for o in orders if not o.get("is_cancelled", False)])
+                total_cancelled_orders = len([o for o in orders if o.get("is_cancelled", False)])
+            
+            # Fallback: если в кэше нет данных об отмененных заказах для графиков, рассчитываем их
+            if not daily_orders_cancelled_counts and orders:
+                _, _, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(orders)
+                daily_orders_cancelled_counts = [o_cancelled_counts_map.get(d, 0) for d in daily_labels]
 
     if request.method == "POST":
         if not token:
@@ -3255,7 +3292,9 @@ def index():
                     raw_orders = fetch_orders_range(token, date_from, date_to)
                     orders = to_rows(raw_orders, date_from, date_to)
                     total_orders = len(orders)
-                    total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+                    total_active_orders = len([o for o in orders if not o.get("is_cancelled", False)])
+                    total_cancelled_orders = len([o for o in orders if o.get("is_cancelled", False)])
+                    total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders if not o.get("is_cancelled", False)), 2)
                     # Обновляем кэш принудительно
                     _update_period_cache_with_data(token, date_from, date_to, orders)
                 else:
@@ -3264,13 +3303,16 @@ def index():
                         token, date_from, date_to
                     )
                     total_orders = len(orders)
-                    total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+                    total_active_orders = len([o for o in orders if not o.get("is_cancelled", False)])
+                    total_cancelled_orders = len([o for o in orders if o.get("is_cancelled", False)])
+                    total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders if not o.get("is_cancelled", False)), 2)
                     cache_info = _meta
 
                 # Aggregates for charts
-                o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
+                o_counts_map, o_rev_map, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(orders)
                 daily_labels = sorted(o_counts_map.keys())
                 daily_orders_counts = [o_counts_map.get(d, 0) for d in daily_labels]
+                daily_orders_cancelled_counts = [o_cancelled_counts_map.get(d, 0) for d in daily_labels]
                 daily_orders_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in daily_labels]
 
                 # Warehouses combined summary
@@ -3295,9 +3337,12 @@ def index():
                     "date_to": date_to,
                     "orders": orders,
                     "total_orders": total_orders,
+                    "total_active_orders": total_active_orders,
+                    "total_cancelled_orders": total_cancelled_orders,
                     "total_revenue": total_revenue,
                     "daily_labels": daily_labels,
                     "daily_orders_counts": daily_orders_counts,
+                    "daily_orders_cancelled_counts": daily_orders_cancelled_counts,
                     "daily_orders_revenue": daily_orders_revenue,
                     "warehouse_summary_dual": warehouse_summary_dual,
                     "top_products": top_products,
@@ -3327,11 +3372,14 @@ def index():
         orders=orders,
         # KPIs
         total_orders=total_orders,
+        total_active_orders=total_active_orders,
+        total_cancelled_orders=total_cancelled_orders,
         total_revenue=total_revenue,
         updated_at=updated_at,
         # Charts
         daily_labels=daily_labels,
         daily_orders_counts=daily_orders_counts,
+        daily_orders_cancelled_counts=daily_orders_cancelled_counts,
         daily_orders_revenue=daily_orders_revenue,
         # Warehouses dual
         warehouse_summary_dual=warehouse_summary_dual,
@@ -4476,7 +4524,9 @@ def api_orders_refresh():
             raw_orders = fetch_orders_range(token, date_from, date_to)
             orders = to_rows(raw_orders, date_from, date_to)
             total_orders = len(orders)
-            total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+            total_active_orders = len([o for o in orders if not o.get("is_cancelled", False)])
+            total_cancelled_orders = len([o for o in orders if o.get("is_cancelled", False)])
+            total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders if not o.get("is_cancelled", False)), 2)
             # Обновляем кэш принудительно
             _update_period_cache_with_data(token, date_from, date_to, orders)
             meta = {"used_cache_days": 0, "fetched_days": len(_daterange_inclusive(date_from, date_to))}
@@ -4486,11 +4536,14 @@ def api_orders_refresh():
                 token, date_from, date_to
             )
             total_orders = len(orders)
-            total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders), 2)
+            total_active_orders = len([o for o in orders if not o.get("is_cancelled", False)])
+            total_cancelled_orders = len([o for o in orders if o.get("is_cancelled", False)])
+            total_revenue = round(sum(float(o.get("Цена со скидкой продавца") or 0) for o in orders if not o.get("is_cancelled", False)), 2)
         # Aggregates
-        o_counts_map, o_rev_map = aggregate_daily_counts_and_revenue(orders)
+        o_counts_map, o_rev_map, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(orders)
         daily_labels = sorted(o_counts_map.keys())
         daily_orders_counts = [o_counts_map.get(d, 0) for d in daily_labels]
+        daily_orders_cancelled_counts = [o_cancelled_counts_map.get(d, 0) for d in daily_labels]
         daily_orders_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in daily_labels]
         # Warehouses and TOPs
         warehouse_summary_dual = aggregate_by_warehouse_orders_only(orders)
@@ -4505,9 +4558,12 @@ def api_orders_refresh():
             "date_to": date_to,
             "orders": orders,
             "total_orders": total_orders,
+            "total_active_orders": total_active_orders,
+            "total_cancelled_orders": total_cancelled_orders,
             "total_revenue": total_revenue,
             "daily_labels": daily_labels,
             "daily_orders_counts": daily_orders_counts,
+            "daily_orders_cancelled_counts": daily_orders_cancelled_counts,
             "daily_orders_revenue": daily_orders_revenue,
             "warehouse_summary_dual": warehouse_summary_dual,
             "top_products": top_products,
@@ -4516,9 +4572,12 @@ def api_orders_refresh():
         })
         resp = {
             "total_orders": total_orders,
+            "total_active_orders": total_active_orders,
+            "total_cancelled_orders": total_cancelled_orders,
             "total_revenue": total_revenue,
             "daily_labels": daily_labels,
             "daily_orders_counts": daily_orders_counts,
+            "daily_orders_cancelled_counts": daily_orders_cancelled_counts,
             "daily_orders_revenue": daily_orders_revenue,
             "warehouse_summary_dual": warehouse_summary_dual,
             "top_products": top_products,
