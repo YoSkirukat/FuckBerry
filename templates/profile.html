@@ -290,10 +290,18 @@
               <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
           `;
-          // Перезагружаем страницу через 5 секунд для обновления информации
-          setTimeout(() => {
-            window.location.reload();
-          }, 5000);
+          // Запускаем мониторинг статуса обновления
+          monitorCacheStatus('supplies');
+        } else if (response.status === 409) {
+          // Кэш уже обновляется
+          messageDiv.innerHTML = `
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+              <strong>Внимание!</strong> ${result.error}
+              <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+          `;
+          // Запускаем мониторинг статуса обновления
+          monitorCacheStatus('supplies');
         } else {
           messageDiv.innerHTML = `
             <div class="alert alert-danger alert-dismissible fade show" role="alert">
@@ -329,7 +337,13 @@
         const j = await r.json();
         if(r.ok && j.success){
           msg.innerHTML = `<div class="alert alert-info alert-dismissible fade show" role="alert">${j.message}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
-          setTimeout(()=>window.location.reload(), 5000);
+          // Запускаем мониторинг статуса обновления
+          monitorCacheStatus('orders');
+        } else if (r.status === 409) {
+          // Кэш уже обновляется
+          msg.innerHTML = `<div class="alert alert-warning alert-dismissible fade show" role="alert">Внимание: ${j.error}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+          // Запускаем мониторинг статуса обновления
+          monitorCacheStatus('orders');
         } else {
           msg.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert">Ошибка: ${j.error || 'Неизвестная ошибка'}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
         }
@@ -338,6 +352,45 @@
       } finally {
         button.disabled=false; spinner.classList.add('d-none'); buttonText.textContent='Обновить кэш заказов вручную';
       }
+    }
+
+    // Функция мониторинга статуса обновления кэша
+    async function monitorCacheStatus(cacheType) {
+      const maxAttempts = 60; // Максимум 5 минут (60 * 5 секунд)
+      let attempts = 0;
+      
+      const checkStatus = async () => {
+        try {
+          const response = await fetch('/api/cache/status');
+          const status = await response.json();
+          
+          const isUpdating = cacheType === 'supplies' ? 
+            status.supplies_cache_updating : 
+            status.orders_cache_updating;
+          
+          if (!isUpdating) {
+            // Обновление завершено, перезагружаем страницу
+            window.location.reload();
+            return;
+          }
+          
+          attempts++;
+          if (attempts < maxAttempts) {
+            // Продолжаем мониторинг через 5 секунд
+            setTimeout(checkStatus, 5000);
+          } else {
+            // Таймаут - перезагружаем страницу
+            window.location.reload();
+          }
+        } catch (error) {
+          console.error('Ошибка мониторинга статуса кэша:', error);
+          // В случае ошибки перезагружаем страницу через 30 секунд
+          setTimeout(() => window.location.reload(), 30000);
+        }
+      };
+      
+      // Начинаем мониторинг через 5 секунд
+      setTimeout(checkStatus, 5000);
     }
   </script>
 </body>

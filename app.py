@@ -351,6 +351,10 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 if not os.path.isdir(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Флаги для предотвращения одновременного обновления кэша
+_supplies_cache_updating = False
+_orders_cache_updating = False
+
 FBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/new"
 FBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders"
 FBS_ORDERS_STATUS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/status"
@@ -992,10 +996,21 @@ def load_fbw_supplies_detailed_cache() -> Dict[str, Any] | None:
     path = _fbw_supplies_detailed_cache_path_for_user()
     if not os.path.isfile(path):
         return None
+    
+    # Проверяем размер файла - если больше 50MB, не загружаем
+    try:
+        file_size = os.path.getsize(path)
+        if file_size > 50 * 1024 * 1024:  # 50MB
+            print(f"Файл кэша поставок слишком большой ({file_size / 1024 / 1024:.1f}MB), пропускаем загрузку")
+            return None
+    except Exception:
+        pass
+    
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка загрузки кэша поставок: {e}")
         return None
 
 
@@ -1099,8 +1114,10 @@ def build_supplies_detailed_cache(token: str, user_id: int = None) -> Dict[str, 
 
 
 # -------------------- Orders warm cache (6 months) --------------------
-def _orders_cache_meta_path_for_user() -> str:
-    if current_user.is_authenticated:
+def _orders_cache_meta_path_for_user(user_id: int = None) -> str:
+    if user_id:
+        return os.path.join(CACHE_DIR, f"orders_warm_meta_user_{user_id}.json")
+    elif current_user.is_authenticated:
         return os.path.join(CACHE_DIR, f"orders_warm_meta_user_{current_user.id}.json")
     return os.path.join(CACHE_DIR, "orders_warm_meta_anon.json")
 
@@ -1109,18 +1126,31 @@ def load_orders_cache_meta() -> Dict[str, Any] | None:
     path = _orders_cache_meta_path_for_user()
     if not os.path.isfile(path):
         return None
+    
+    # Проверяем размер файла - если больше 10MB, не загружаем
+    try:
+        file_size = os.path.getsize(path)
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            print(f"Файл метаданных кэша заказов слишком большой ({file_size / 1024 / 1024:.1f}MB), пропускаем загрузку")
+            return None
+    except Exception:
+        pass
+    
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка загрузки метаданных кэша заказов: {e}")
         return None
 
 
-def save_orders_cache_meta(payload: Dict[str, Any]) -> None:
-    path = _orders_cache_meta_path_for_user()
+def save_orders_cache_meta(payload: Dict[str, Any], user_id: int = None) -> None:
+    path = _orders_cache_meta_path_for_user(user_id)
     try:
         enriched = dict(payload)
-        if current_user.is_authenticated:
+        if user_id:
+            enriched["_user_id"] = user_id
+        elif current_user.is_authenticated:
             enriched["_user_id"] = current_user.id
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False, indent=2)
@@ -1143,14 +1173,14 @@ def is_orders_cache_fresh() -> bool:
         return False
 
 
-def build_orders_warm_cache(token: str) -> Dict[str, Any]:
+def build_orders_warm_cache(token: str, user_id: int = None) -> Dict[str, Any]:
     """Warm up per-day orders cache for last 6 months in one go."""
     from_date = (datetime.now(MOSCOW_TZ).date() - timedelta(days=180)).strftime("%Y-%m-%d")
     to_date = datetime.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
     # Fetch all rows in range and persist into per-day cache
     raw = fetch_orders_range(token, from_date, to_date)
     rows = to_rows(raw, from_date, to_date)
-    _update_period_cache_with_data(token, from_date, to_date, rows)
+    _update_period_cache_with_data(token, from_date, to_date, rows, user_id)
     meta = {
         "last_updated": datetime.now(MOSCOW_TZ).isoformat(),
         "date_from": from_date,
@@ -1162,14 +1192,16 @@ def build_orders_warm_cache(token: str) -> Dict[str, Any]:
 
 
 # Orders per-day cache helpers (per user)
-def _orders_period_cache_path_for_user() -> str:
-    if current_user.is_authenticated:
+def _orders_period_cache_path_for_user(user_id: int = None) -> str:
+    if user_id:
+        return os.path.join(CACHE_DIR, f"orders_period_user_{user_id}.json")
+    elif current_user.is_authenticated:
         return os.path.join(CACHE_DIR, f"orders_period_user_{current_user.id}.json")
     return os.path.join(CACHE_DIR, f"orders_period_{_get_session_id()}.json")
 
 
-def load_orders_period_cache() -> Dict[str, Any] | None:
-    path = _orders_period_cache_path_for_user()
+def load_orders_period_cache(user_id: int = None) -> Dict[str, Any] | None:
+    path = _orders_period_cache_path_for_user(user_id)
     print(f"Загружаем кэш из файла: {path}")
     if not os.path.isfile(path):
         print("Файл кэша не найден")
@@ -1185,11 +1217,13 @@ def load_orders_period_cache() -> Dict[str, Any] | None:
         return None
 
 
-def save_orders_period_cache(payload: Dict[str, Any]) -> None:
-    path = _orders_period_cache_path_for_user()
+def save_orders_period_cache(payload: Dict[str, Any], user_id: int = None) -> None:
+    path = _orders_period_cache_path_for_user(user_id)
     try:
         enriched = dict(payload)
-        if current_user.is_authenticated:
+        if user_id:
+            enriched["_user_id"] = user_id
+        elif current_user.is_authenticated:
             enriched["_user_id"] = current_user.id
         print(f"Сохраняем кэш в файл: {path}")
         print(f"Количество дней для сохранения: {len(enriched.get('days', {}))}")
@@ -1335,9 +1369,10 @@ def _update_period_cache_with_data(
     date_from: str,
     date_to: str,
     orders: list[dict[str, Any]],
+    user_id: int = None,
 ) -> None:
     """Принудительно обновляет кэш по дням с предоставленными данными"""
-    cache = load_orders_period_cache() or {}
+    cache = load_orders_period_cache(user_id) or {}
     days_map: Dict[str, Any] = cache.get("days") or {}
     
     requested_days = _daterange_inclusive(date_from, date_to)
@@ -1363,7 +1398,7 @@ def _update_period_cache_with_data(
     
     # Сохраняем обновленный кэш
     cache["days"] = days_map
-    save_orders_period_cache(cache)
+    save_orders_period_cache(cache, user_id)
 
 
 def _fbs_tasks_cache_path_for_user() -> str:
@@ -4686,20 +4721,37 @@ def api_fbw_supply_details(supply_id: str):
 @login_required
 def api_refresh_supplies_cache():
     """Ручное обновление кэша поставок"""
+    global _supplies_cache_updating
+    
+    # Проверяем, не идет ли уже обновление
+    if _supplies_cache_updating:
+        return jsonify({
+            "error": "Кэш поставок уже обновляется. Пожалуйста, подождите завершения текущего процесса."
+        }), 409
+    
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
         return jsonify({"error": "no_token"}), 401
     
     try:
+        # Устанавливаем флаг блокировки
+        _supplies_cache_updating = True
+        
         # Запускаем обновление кэша в фоновом потоке
         import threading
+        user_id = current_user.id  # Сохраняем user_id до создания потока
+        
         def build_cache_background():
+            global _supplies_cache_updating
             try:
-                cache_data = build_supplies_detailed_cache(token, current_user.id)
+                cache_data = build_supplies_detailed_cache(token, user_id)
                 save_fbw_supplies_detailed_cache(cache_data)
-                print(f"Кэш поставок успешно обновлен для пользователя {current_user.id}")
+                print(f"Кэш поставок успешно обновлен для пользователя {user_id}")
             except Exception as e:
                 print(f"Ошибка при обновлении кэша поставок: {e}")
+            finally:
+                # Сбрасываем флаг блокировки
+                _supplies_cache_updating = False
         
         thread = threading.Thread(target=build_cache_background)
         thread.daemon = True
@@ -4712,25 +4764,44 @@ def api_refresh_supplies_cache():
             "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         })
     except Exception as exc:
+        _supplies_cache_updating = False  # Сбрасываем флаг в случае ошибки
         return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/orders/refresh-cache", methods=["POST"]) 
 @login_required
 def api_refresh_orders_cache():
+    global _orders_cache_updating
+    
+    # Проверяем, не идет ли уже обновление
+    if _orders_cache_updating:
+        return jsonify({
+            "error": "Кэш заказов уже обновляется. Пожалуйста, подождите завершения текущего процесса."
+        }), 409
+    
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
         return jsonify({"error": "no_token"}), 401
+    
     try:
+        # Устанавливаем флаг блокировки
+        _orders_cache_updating = True
+        
         # Запускаем обновление кэша в фоновом потоке
         import threading
+        user_id = current_user.id  # Сохраняем user_id до создания потока
+        
         def build_orders_cache_background():
+            global _orders_cache_updating
             try:
-                meta = build_orders_warm_cache(token)
-                save_orders_cache_meta(meta)
-                print(f"Кэш заказов успешно обновлен для пользователя {current_user.id}")
+                meta = build_orders_warm_cache(token, user_id)
+                save_orders_cache_meta(meta, user_id)
+                print(f"Кэш заказов успешно обновлен для пользователя {user_id}")
             except Exception as e:
                 print(f"Ошибка при обновлении кэша заказов: {e}")
+            finally:
+                # Сбрасываем флаг блокировки
+                _orders_cache_updating = False
         
         thread = threading.Thread(target=build_orders_cache_background)
         thread.daemon = True
@@ -4743,7 +4814,18 @@ def api_refresh_orders_cache():
             "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         })
     except Exception as exc:
+        _orders_cache_updating = False  # Сбрасываем флаг в случае ошибки
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/cache/status", methods=["GET"])
+@login_required
+def api_cache_status():
+    """Проверка статуса обновления кэша"""
+    return jsonify({
+        "supplies_cache_updating": _supplies_cache_updating,
+        "orders_cache_updating": _orders_cache_updating
+    })
 
 
 @app.route("/api/fbw/supplies/<supply_id>/package-count", methods=["GET"]) 
@@ -4938,27 +5020,37 @@ def profile():
             seller_info = fetch_seller_info(token)
             token_info = decode_token_info(token)
             
-            # Информация о кэше поставок
-            supplies_cache = load_fbw_supplies_detailed_cache()
-            if supplies_cache:
-                supplies_cache_info = {
-                    "last_updated": supplies_cache.get("last_updated"),
-                    "total_supplies": supplies_cache.get("total_supplies_processed", 0),
-                    "is_fresh": is_supplies_cache_fresh(),
-                    "cache_version": supplies_cache.get("cache_version", "1.0")
-                }
-            # Информация о кэше заказов
-            orders_meta = load_orders_cache_meta()
+            # Информация о кэше поставок (безопасная загрузка)
+            supplies_cache_info = None
+            try:
+                supplies_cache = load_fbw_supplies_detailed_cache()
+                if supplies_cache:
+                    supplies_cache_info = {
+                        "last_updated": supplies_cache.get("last_updated"),
+                        "total_supplies": supplies_cache.get("total_supplies_processed", 0),
+                        "is_fresh": is_supplies_cache_fresh(),
+                        "cache_version": supplies_cache.get("cache_version", "1.0")
+                    }
+            except Exception as e:
+                print(f"Ошибка загрузки кэша поставок: {e}")
+                supplies_cache_info = None
+            
+            # Информация о кэше заказов (безопасная загрузка)
             orders_cache_info = None
-            if orders_meta:
-                orders_cache_info = {
-                    "last_updated": orders_meta.get("last_updated"),
-                    "date_from": orders_meta.get("date_from"),
-                    "date_to": orders_meta.get("date_to"),
-                    "total_orders_cached": orders_meta.get("total_orders_cached", 0),
-                    "is_fresh": is_orders_cache_fresh(),
-                    "cache_version": orders_meta.get("cache_version", "1.0")
-                }
+            try:
+                orders_meta = load_orders_cache_meta()
+                if orders_meta:
+                    orders_cache_info = {
+                        "last_updated": orders_meta.get("last_updated"),
+                        "date_from": orders_meta.get("date_from"),
+                        "date_to": orders_meta.get("date_to"),
+                        "total_orders_cached": orders_meta.get("total_orders_cached", 0),
+                        "is_fresh": is_orders_cache_fresh(),
+                        "cache_version": orders_meta.get("cache_version", "1.0")
+                    }
+            except Exception as e:
+                print(f"Ошибка загрузки кэша заказов: {e}")
+                orders_cache_info = None
         except Exception:
             seller_info = None
             token_info = None
