@@ -22,6 +22,7 @@ import uuid
 import time
 import random
 import threading
+import logging
 from collections import defaultdict
 
 # -----------------------
@@ -209,6 +210,17 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", f"sqlite:///{os.path.join(os.path.dirname(__file__), 'app.db')}")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()  # Вывод в консоль
+    ]
+)
+logger = logging.getLogger(__name__)
 # Настройки сессии для стабильной работы авторизации
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400  # 24 часа
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
@@ -351,9 +363,9 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
 if not os.path.isdir(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Флаги для предотвращения одновременного обновления кэша
-_supplies_cache_updating = False
-_orders_cache_updating = False
+# Флаги для предотвращения одновременного обновления кэша (по пользователям)
+_supplies_cache_updating: dict[int, bool] = {}
+_orders_cache_updating: dict[int, bool] = {}
 
 FBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/new"
 FBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders"
@@ -986,8 +998,10 @@ def save_fbw_supplies_cache(payload: Dict[str, Any]) -> None:
 
 
 # Расширенный кэш поставок с товарами (для быстрой аналитики)
-def _fbw_supplies_detailed_cache_path_for_user() -> str:
-    if current_user.is_authenticated:
+def _fbw_supplies_detailed_cache_path_for_user(user_id: int = None) -> str:
+    if user_id:
+        return os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{user_id}.json")
+    elif current_user.is_authenticated:
         return os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{current_user.id}.json")
     return os.path.join(CACHE_DIR, "fbw_supplies_detailed_anon.json")
 
@@ -1014,11 +1028,13 @@ def load_fbw_supplies_detailed_cache() -> Dict[str, Any] | None:
         return None
 
 
-def save_fbw_supplies_detailed_cache(payload: Dict[str, Any]) -> None:
-    path = _fbw_supplies_detailed_cache_path_for_user()
+def save_fbw_supplies_detailed_cache(payload: Dict[str, Any], user_id: int = None) -> None:
+    path = _fbw_supplies_detailed_cache_path_for_user(user_id)
     try:
         enriched = dict(payload)
-        if current_user.is_authenticated:
+        if user_id:
+            enriched["_user_id"] = user_id
+        elif current_user.is_authenticated:
             enriched["_user_id"] = current_user.id
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False, indent=2)
@@ -1046,7 +1062,7 @@ def is_supplies_cache_fresh() -> bool:
 
 def build_supplies_detailed_cache(token: str, user_id: int = None) -> Dict[str, Any]:
     """Строит детальный кэш поставок с товарами за последние 6 месяцев"""
-    print(f"Строим детальный кэш поставок для пользователя {user_id}...")
+    logger.info(f"Строим детальный кэш поставок для пользователя {user_id}...")
     
     # Получаем поставки за 6 месяцев
     supplies_list = fetch_fbw_supplies_list(token, days_back=180)
@@ -4723,8 +4739,10 @@ def api_refresh_supplies_cache():
     """Ручное обновление кэша поставок"""
     global _supplies_cache_updating
     
-    # Проверяем, не идет ли уже обновление
-    if _supplies_cache_updating:
+    user_id = current_user.id
+    
+    # Проверяем, не идет ли уже обновление для этого пользователя
+    if _supplies_cache_updating.get(user_id, False):
         return jsonify({
             "error": "Кэш поставок уже обновляется. Пожалуйста, подождите завершения текущего процесса."
         }), 409
@@ -4734,24 +4752,23 @@ def api_refresh_supplies_cache():
         return jsonify({"error": "no_token"}), 401
     
     try:
-        # Устанавливаем флаг блокировки
-        _supplies_cache_updating = True
+        # Устанавливаем флаг блокировки для этого пользователя
+        _supplies_cache_updating[user_id] = True
         
         # Запускаем обновление кэша в фоновом потоке
         import threading
-        user_id = current_user.id  # Сохраняем user_id до создания потока
         
         def build_cache_background():
             global _supplies_cache_updating
             try:
                 cache_data = build_supplies_detailed_cache(token, user_id)
-                save_fbw_supplies_detailed_cache(cache_data)
+                save_fbw_supplies_detailed_cache(cache_data, user_id)
                 print(f"Кэш поставок успешно обновлен для пользователя {user_id}")
             except Exception as e:
                 print(f"Ошибка при обновлении кэша поставок: {e}")
             finally:
-                # Сбрасываем флаг блокировки
-                _supplies_cache_updating = False
+                # Сбрасываем флаг блокировки для этого пользователя
+                _supplies_cache_updating[user_id] = False
         
         thread = threading.Thread(target=build_cache_background)
         thread.daemon = True
@@ -4764,7 +4781,7 @@ def api_refresh_supplies_cache():
             "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         })
     except Exception as exc:
-        _supplies_cache_updating = False  # Сбрасываем флаг в случае ошибки
+        _supplies_cache_updating[user_id] = False  # Сбрасываем флаг в случае ошибки
         return jsonify({"error": str(exc)}), 500
 
 
@@ -4773,8 +4790,10 @@ def api_refresh_supplies_cache():
 def api_refresh_orders_cache():
     global _orders_cache_updating
     
-    # Проверяем, не идет ли уже обновление
-    if _orders_cache_updating:
+    user_id = current_user.id
+    
+    # Проверяем, не идет ли уже обновление для этого пользователя
+    if _orders_cache_updating.get(user_id, False):
         return jsonify({
             "error": "Кэш заказов уже обновляется. Пожалуйста, подождите завершения текущего процесса."
         }), 409
@@ -4784,12 +4803,11 @@ def api_refresh_orders_cache():
         return jsonify({"error": "no_token"}), 401
     
     try:
-        # Устанавливаем флаг блокировки
-        _orders_cache_updating = True
+        # Устанавливаем флаг блокировки для этого пользователя
+        _orders_cache_updating[user_id] = True
         
         # Запускаем обновление кэша в фоновом потоке
         import threading
-        user_id = current_user.id  # Сохраняем user_id до создания потока
         
         def build_orders_cache_background():
             global _orders_cache_updating
@@ -4800,8 +4818,8 @@ def api_refresh_orders_cache():
             except Exception as e:
                 print(f"Ошибка при обновлении кэша заказов: {e}")
             finally:
-                # Сбрасываем флаг блокировки
-                _orders_cache_updating = False
+                # Сбрасываем флаг блокировки для этого пользователя
+                _orders_cache_updating[user_id] = False
         
         thread = threading.Thread(target=build_orders_cache_background)
         thread.daemon = True
@@ -4814,7 +4832,7 @@ def api_refresh_orders_cache():
             "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         })
     except Exception as exc:
-        _orders_cache_updating = False  # Сбрасываем флаг в случае ошибки
+        _orders_cache_updating[user_id] = False  # Сбрасываем флаг в случае ошибки
         return jsonify({"error": str(exc)}), 500
 
 
@@ -4822,9 +4840,10 @@ def api_refresh_orders_cache():
 @login_required
 def api_cache_status():
     """Проверка статуса обновления кэша"""
+    user_id = current_user.id
     return jsonify({
-        "supplies_cache_updating": _supplies_cache_updating,
-        "orders_cache_updating": _orders_cache_updating
+        "supplies_cache_updating": _supplies_cache_updating.get(user_id, False),
+        "orders_cache_updating": _orders_cache_updating.get(user_id, False)
     })
 
 
