@@ -1,0 +1,939 @@
+{% set page_title = 'Аналитика товара' %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ page_title }}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    .thumb { width: 120px; height: 160px; object-fit: cover; border-radius: 6px; cursor: zoom-in; }
+    .chart-container { position: relative; height: 260px; }
+    .kpi-main { font-weight: 600; }
+    .calendar-dropdown { position: absolute; z-index: 1050; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: .5rem; box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15); }
+    #imgPreview { display: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 1060; padding: 4px; background: #fff; border: 1px solid rgba(0,0,0,.15); box-shadow: 0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none; }
+    #imgPreviewImg { max-width: 420px; max-height: 560px; display: block; }
+    
+    /* Стили для индикатора загрузки */
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      z-index: 9999;
+      display: none;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .loading-content {
+      text-align: center;
+      background: white;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+    
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #007bff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+      color: #666;
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+    
+    .content-blurred {
+      filter: blur(1px);
+      opacity: 0.6;
+      transition: all 0.3s ease;
+    }
+    
+    /* Стили для выпадающего календаря */
+    .calendar-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      z-index: 1050;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+      min-width: 300px;
+      max-width: 90vw;
+    }
+    
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    
+    .calendar-nav {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      color: #6c757d;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      transition: background-color 0.15s ease-in-out;
+    }
+    
+    .calendar-nav:hover {
+      background-color: #e9ecef;
+    }
+    
+    .calendar-grid {
+      padding: 1rem;
+    }
+    
+    .calendar-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .calendar-weekday {
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: #6c757d;
+      padding: 0.5rem 0;
+    }
+    
+    .calendar-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+    }
+    
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+      transition: background-color 0.15s ease-in-out;
+      position: relative;
+    }
+    
+    .calendar-day:hover {
+      background-color: #e9ecef;
+    }
+    
+    .calendar-day.other-month {
+      color: #adb5bd;
+    }
+    
+    .calendar-day.today {
+      background-color: #fff3cd;
+      color: #856404;
+      font-weight: 600;
+    }
+    
+    .calendar-day.selected-start {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .calendar-day.selected-end {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .calendar-day.in-range {
+      background-color: #e7f1ff;
+      color: #0d6efd;
+    }
+    
+    .calendar-day.in-range:not(.selected-start):not(.selected-end) {
+      border-radius: 0;
+    }
+    
+    .calendar-day.selected-start.in-range {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    
+    .calendar-day.selected-end.in-range {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }
+    
+    .calendar-footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 1rem;
+      border-top: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    
+    .calendar-day.weekend {
+      color: #dc3545;
+    }
+    
+    .calendar-day.other-month.weekend {
+      color: #f5c6cb;
+    }
+    
+    /* Мобильное позиционирование календаря */
+    @media (max-width: 768px) {
+      .calendar-dropdown.mobile-centered {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        width: 90vw !important;
+        max-width: 400px !important;
+        z-index: 1060 !important;
+        margin: 0 !important;
+        box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.3) !important;
+      }
+      
+      .calendar-dropdown.mobile-centered .calendar-grid {
+        max-height: 60vh;
+        overflow-y: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+
+  <div class="container mt-3">
+    <div class="d-flex align-items-center justify-content-between mb-4">
+      <h1 class="mb-0">Аналитика товара</h1>
+      <div class="d-flex align-items-center gap-2">
+        <form id="productForm" class="d-flex align-items-center gap-2">
+          <div class="position-relative">
+            <input type="text" class="form-control" id="productDateRangeInput" placeholder="Выберите период" readonly style="cursor:pointer; width: 225px;" />
+            <input type="hidden" name="date_from" id="productDateFrom" value="{{ date_from }}" />
+            <input type="hidden" name="date_to" id="productDateTo" value="{{ date_to }}" />
+            <span class="position-absolute top-50 end-0 translate-middle-y me-3" style="cursor:pointer;" id="productDateRangeBtn">📅</span>
+            <div id="productDateRangeCalendar" class="calendar-dropdown" style="display:none;">
+              <div class="calendar-header d-flex align-items-center justify-content-between mb-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="productPrevMonth">‹</button>
+                <span id="productCurrentMonthYear">Месяц</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="productNextMonth">›</button>
+              </div>
+              <div class="calendar-grid" id="productCalendarGrid"></div>
+              <div class="calendar-footer mt-2 d-flex justify-content-between">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="productResetDates">Сбросить</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Первый ряд: Информация о товаре -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-12">
+        <div class="card h-100"><div class="card-body d-flex gap-3">
+          <div>
+            {% if photo %}
+              <img class="thumb" src="{{ photo }}" alt="Фото товара" data-src="{{ photo }}" />
+            {% else %}
+              <div class="thumb bg-light d-flex align-items-center justify-content-center">—</div>
+            {% endif %}
+          </div>
+          <div class="flex-grow-1">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <h2 class="mb-0" id="productNameTitle">{{ product_name or 'Товар' }}</h2>
+              <a href="https://www.wildberries.ru/catalog/{{ nm_id }}/detail.aspx" target="_blank" rel="noopener" class="text-muted" title="Открыть на WB">
+                <i class="fas fa-external-link-alt"></i>
+              </a>
+            </div>
+            <div class="mb-2">Артикул продавца: <strong><span id="productSupplierArticle">{{ supplier_article or '—' }}</span></strong></div>
+            <div class="mb-2">Артикул WB: <strong>{{ nm_id }}</strong></div>
+            <div class="mb-2">Баркод: <strong><span id="productBarcode">{{ barcode or '—' }}</span></strong></div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- Второй ряд: Показатели и графики -->
+    <div class="row g-3 mb-4">
+      <div class="col-12 col-md-3 col-lg-2">
+        <div class="card h-100"><div class="card-body">
+          <h6 class="mb-3">Показатели</h6>
+          <div class="kpi">
+            <div class="kpi-main">🛍 Всего заказов: <span id="kpiTotal">0</span> шт.</div>
+            <div class="kpi-detail">✅ Успешные: <span id="kpiActive">0</span> шт.</div>
+            <div class="kpi-detail">❎ Отмененные: <span id="kpiCancelled">0</span> шт.</div>
+            <div class="kpi-detail">💲 Выручка: <span id="kpiRevenue">0</span> руб.</div>
+            <div class="kpi-detail">📦 Остатки на складах (FBW): <span id="kpiStock">0</span> шт.</div>
+            <div class="kpi-detail">📊 Средние продажи в день: <span id="kpiAvgDaily">0</span> шт.</div>
+          </div>
+        </div></div>
+      </div>
+      <div class="col-12 col-md-9 col-lg-5">
+        <div class="card h-100"><div class="card-body">
+          <h6 class="mb-3">Количество заказов по дням</h6>
+          <div class="chart-container"><canvas id="productCountChart"></canvas></div>
+        </div></div>
+      </div>
+      <div class="col-12 col-lg-5">
+        <div class="card h-100"><div class="card-body">
+          <h6 class="mb-3">Выручка по дням</h6>
+          <div class="chart-container"><canvas id="productRevenueChart"></canvas></div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- Третий ряд: Динамика остатков, Продажи vs Остатки по складам, Изменение цены -->
+    <div class="row g-3">
+      <div class="col-12 col-lg-4">
+        <div class="card h-100"><div class="card-body">
+          <h6 class="mb-3">Динамика остатков</h6>
+          <div class="chart-container" style="height: 360px;"><canvas id="productStockChart"></canvas></div>
+        </div></div>
+      </div>
+      <div class="col-12 col-lg-4">
+        <div class="card h-100"><div class="card-body">
+          <h6 class="mb-3">Продажи за период и текущие остатки по складам</h6>
+          <div class="chart-container" style="height: 360px;"><canvas id="productWarehouseSalesStockChart"></canvas></div>
+        </div></div>
+      </div>
+      <div class="col-12 col-lg-4">
+        <div class="card h-100"><div class="card-body">
+          <h6 class="mb-3">Изменение цены</h6>
+          <div class="chart-container" style="height: 360px;"><canvas id="productPriceChart"></canvas></div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
+
+  <!-- Индикатор загрузки -->
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Загрузка данных...</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script>
+    // Полноценный календарь (адаптирован от orders)
+    class ProductDateRangeCalendar {
+      constructor() {
+        this.currentDate = new Date();
+        this.selectedStart = null;
+        this.selectedEnd = null;
+        this.isSelecting = false;
+        this.calendar = document.getElementById('productDateRangeCalendar');
+        this.input = document.getElementById('productDateRangeInput');
+        this.startInput = document.getElementById('productDateFrom');
+        this.endInput = document.getElementById('productDateTo');
+        this.btn = document.getElementById('productDateRangeBtn');
+        this.grid = document.getElementById('productCalendarGrid');
+        this.monthYear = document.getElementById('productCurrentMonthYear');
+        this.prevBtn = document.getElementById('productPrevMonth');
+        this.nextBtn = document.getElementById('productNextMonth');
+        this.resetBtn = document.getElementById('productResetDates');
+        
+        this.months = [
+          'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+          'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+        ];
+        
+        this.weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+        
+        this.init();
+      }
+      
+      init() {
+        if (!this.calendar || !this.input || !this.btn) {
+          console.error('Не все элементы календаря product найдены!');
+          return;
+        }
+        
+        // Загружаем сохраненные даты
+        this.loadSavedDates();
+        
+        // Обработчики событий
+        this.btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleCalendar();
+        });
+        this.input.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleCalendar();
+        });
+        this.prevBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.prevMonth();
+        });
+        this.nextBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.nextMonth();
+        });
+        this.resetBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.resetSelection();
+        });
+
+        // Прокрутка колесом мыши для переключения месяцев
+        if (this.calendar) {
+          this.calendar.addEventListener('wheel', (e) => {
+            try { e.preventDefault(); } catch(_) {}
+            e.stopPropagation();
+            const delta = e.deltaY || 0;
+            if (delta > 0) {
+              this.nextMonth();
+            } else if (delta < 0) {
+              this.prevMonth();
+            }
+          }, { passive: false });
+        }
+        
+        // Закрытие календаря при клике вне его
+        document.addEventListener('click', (e) => {
+          if (!this.calendar.contains(e.target) && 
+              !this.input.contains(e.target) && 
+              !this.btn.contains(e.target)) {
+            this.hideCalendar();
+          }
+        });
+        
+        // Перепозиционирование при изменении размера окна
+        window.addEventListener('resize', () => {
+          if (this.calendar.style.display === 'block') {
+            this.adjustPosition();
+          }
+        });
+        
+        this.renderCalendar();
+        
+        // Предотвращаем закрытие календаря при клике внутри него
+        this.calendar.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+      
+      loadSavedDates() {
+        const startVal = this.startInput.value;
+        const endVal = this.endInput.value;
+        
+        if (startVal) {
+          const [year, month, day] = startVal.split('-').map(Number);
+          this.selectedStart = new Date(year, month - 1, day);
+        }
+        if (endVal) {
+          const [year, month, day] = endVal.split('-').map(Number);
+          this.selectedEnd = new Date(year, month - 1, day);
+        }
+        
+        this.updateInputDisplay();
+      }
+      
+      toggleCalendar() {
+        if (this.calendar.style.display === 'none' || !this.calendar.style.display) {
+          this.showCalendar();
+        } else {
+          this.hideCalendar();
+        }
+      }
+      
+      showCalendar() {
+        this.calendar.style.display = 'block';
+        this.renderCalendar();
+        this.adjustPosition();
+      }
+      
+      adjustPosition() {
+        const rect = this.input.getBoundingClientRect();
+        const calendar = this.calendar;
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        const calendarHeight = 400;
+        const calendarWidth = 300;
+        
+        const isMobile = viewportWidth <= 768;
+        
+        if (isMobile) {
+          calendar.classList.add('mobile-centered');
+          calendar.style.position = 'fixed';
+          calendar.style.top = '50%';
+          calendar.style.left = '50%';
+          calendar.style.transform = 'translate(-50%, -50%)';
+          calendar.style.width = '90vw';
+          calendar.style.maxWidth = '400px';
+          calendar.style.zIndex = '1060';
+          calendar.style.margin = '0';
+          calendar.style.boxShadow = '0 0.5rem 2rem rgba(0, 0, 0, 0.3)';
+        } else {
+          calendar.classList.remove('mobile-centered');
+          calendar.style.position = 'fixed';
+          calendar.style.transform = 'none';
+          calendar.style.zIndex = '1060';
+          calendar.style.boxShadow = '0 0.5rem 1rem rgba(0, 0, 0, 0.15)';
+          calendar.style.width = '300px';
+          
+          // Вычисляем оптимальную позицию
+          let left = rect.left;
+          let top = rect.bottom + 5;
+          
+          // Проверяем, помещается ли календарь справа
+          if (left + calendarWidth > viewportWidth) {
+            left = viewportWidth - calendarWidth - 10; // 10px отступ от края
+          }
+          
+          // Проверяем, помещается ли календарь снизу
+          if (top + calendarHeight > viewportHeight) {
+            top = rect.top - calendarHeight - 5; // Показываем сверху
+          }
+          
+          // Если и сверху не помещается, центрируем по вертикали
+          if (top < 10) {
+            top = Math.max(10, (viewportHeight - calendarHeight) / 2);
+          }
+          
+          // Если и по горизонтали не помещается, центрируем
+          if (left < 10) {
+            left = Math.max(10, (viewportWidth - calendarWidth) / 2);
+          }
+          
+          calendar.style.left = `${left}px`;
+          calendar.style.top = `${top}px`;
+        }
+      }
+      
+      hideCalendar() {
+        this.calendar.style.display = 'none';
+      }
+      
+      prevMonth() {
+        this.currentDate.setMonth(this.currentDate.getMonth() - 1);
+        this.renderCalendar();
+      }
+      
+      nextMonth() {
+        this.currentDate.setMonth(this.currentDate.getMonth() + 1);
+        this.renderCalendar();
+      }
+      
+      renderCalendar() {
+        const year = this.currentDate.getFullYear();
+        const month = this.currentDate.getMonth();
+        
+        this.monthYear.textContent = `${this.months[month]} ${year}`;
+        
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - (firstDay.getDay() + 6) % 7);
+        
+        let html = '<div class="calendar-weekdays">';
+        this.weekdays.forEach(day => {
+          html += `<div class="calendar-weekday">${day}</div>`;
+        });
+        html += '</div><div class="calendar-days">';
+        
+        const today = new Date();
+        const currentDate = new Date(startDate);
+        const currentMonth = month;
+        
+        for (let i = 0; i < 42; i++) {
+          const isCurrentMonth = currentDate.getMonth() === currentMonth;
+          const isToday = currentDate.toDateString() === today.toDateString();
+          const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+          const isSelectedStart = this.selectedStart && currentDate.toDateString() === this.selectedStart.toDateString();
+          const isSelectedEnd = this.selectedEnd && currentDate.toDateString() === this.selectedEnd.toDateString();
+          const isInRange = this.isDateInRange(currentDate);
+          
+          let classes = 'calendar-day';
+          if (!isCurrentMonth) classes += ' other-month';
+          if (isToday) classes += ' today';
+          if (isWeekend) classes += ' weekend';
+          if (isSelectedStart) classes += ' selected-start';
+          if (isSelectedEnd) classes += ' selected-end';
+          if (isInRange) classes += ' in-range';
+          
+          const year = currentDate.getFullYear();
+          const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+          const day = String(currentDate.getDate()).padStart(2, '0');
+          const localDateStr = `${year}-${month}-${day}`;
+          html += `<div class="${classes}" data-date="${localDateStr}">${currentDate.getDate()}</div>`;
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        
+        html += '</div>';
+        this.grid.innerHTML = html;
+        
+        // Добавляем обработчики для дней
+        this.grid.querySelectorAll('.calendar-day').forEach(day => {
+          day.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.selectDate(day);
+          });
+        });
+      }
+      
+      selectDate(dayElement) {
+        const dateStr = dayElement.dataset.date;
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const date = new Date(year, month - 1, day);
+        
+        if (!this.selectedStart || (this.selectedStart && this.selectedEnd)) {
+          this.selectedStart = date;
+          this.selectedEnd = null;
+          this.isSelecting = true;
+        } else if (this.selectedStart && !this.selectedEnd) {
+          if (date < this.selectedStart) {
+            this.selectedEnd = this.selectedStart;
+            this.selectedStart = date;
+          } else {
+            this.selectedEnd = date;
+          }
+          this.isSelecting = false;
+          this.applySelection();
+        }
+        
+        this.updateInputDisplay();
+        this.renderCalendar();
+      }
+      
+      isDateInRange(date) {
+        if (!this.selectedStart || !this.selectedEnd) return false;
+        return date >= this.selectedStart && date <= this.selectedEnd;
+      }
+      
+      updateInputDisplay() {
+        if (this.selectedStart && this.selectedEnd) {
+          const startStr = this.formatDate(this.selectedStart);
+          const endStr = this.formatDate(this.selectedEnd);
+          this.input.value = `${startStr} - ${endStr}`;
+        } else if (this.selectedStart) {
+          const startStr = this.formatDate(this.selectedStart);
+          this.input.value = `${startStr} - ...`;
+        } else {
+          this.input.value = '';
+        }
+      }
+      
+      formatDate(date) {
+        const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+        const day = String(localDate.getDate()).padStart(2, '0');
+        const month = String(localDate.getMonth() + 1).padStart(2, '0');
+        const year = localDate.getFullYear();
+        return `${day}.${month}.${year}`;
+      }
+      
+      resetSelection() {
+        this.selectedStart = null;
+        this.selectedEnd = null;
+        this.isSelecting = false;
+        this.startInput.value = '';
+        this.endInput.value = '';
+        this.updateInputDisplay();
+        this.renderCalendar();
+      }
+      
+      applySelection() {
+        if (this.selectedStart) {
+          const year = this.selectedStart.getFullYear();
+          const month = String(this.selectedStart.getMonth() + 1).padStart(2, '0');
+          const day = String(this.selectedStart.getDate()).padStart(2, '0');
+          this.startInput.value = `${year}-${month}-${day}`;
+        }
+        if (this.selectedEnd) {
+          const year = this.selectedEnd.getFullYear();
+          const month = String(this.selectedEnd.getMonth() + 1).padStart(2, '0');
+          const day = String(this.selectedEnd.getDate()).padStart(2, '0');
+          this.endInput.value = `${year}-${month}-${day}`;
+        }
+        this.hideCalendar();
+        fetchData();
+      }
+    }
+
+    let chartCount, chartRevenue, chartStock, chartWhSalesStock, chartPrice;
+    function initCharts(labels, orders, cancelled, revenue, stock, income, priceHistory){
+      const ctx1=document.getElementById('productCountChart');
+      const ctx2=document.getElementById('productRevenueChart');
+      const ctx3=document.getElementById('productStockChart');
+      const ctx4=document.getElementById('productPriceChart');
+      if(chartCount) chartCount.destroy();
+      if(chartRevenue) chartRevenue.destroy();
+      if(chartStock) chartStock.destroy();
+      if(chartPrice) chartPrice.destroy();
+      chartCount=new Chart(ctx1,{type:'line',data:{labels,datasets:[
+        {label:'Заказы (все)', data:orders, borderColor:'rgba(54,162,235,1)', backgroundColor:'rgba(54,162,235,.1)', tension:.3},
+        {label:'Отмененные', data:cancelled, borderColor:'rgba(255,99,132,1)', backgroundColor:'rgba(255,99,132,.1)', tension:.3}
+      ]}, options:{responsive:true, maintainAspectRatio:false}});
+      chartRevenue=new Chart(ctx2,{type:'line',data:{labels,datasets:[
+        {label:'Выручка', data:revenue, borderColor:'rgba(75,192,192,1)', backgroundColor:'rgba(75,192,192,.1)', tension:.3}
+      ]}, options:{responsive:true, maintainAspectRatio:false}});
+      chartStock=new Chart(ctx3,{type:'line',data:{labels,datasets:[
+        {label:'Остатки', data:stock, borderColor:'rgba(255,159,64,1)', backgroundColor:'rgba(255,159,64,.1)', tension:.3, fill:true},
+        {label:'Приходы', data:income, borderColor:'rgba(34,197,94,1)', backgroundColor:'rgba(34,197,94,.1)', tension:.3, type:'bar', yAxisID:'y1'}
+      ]}, options:{responsive:true, maintainAspectRatio:false, scales:{
+        y:{beginAtZero:true, position:'left'},
+        y1:{beginAtZero:true, position:'right', grid:{drawOnChartArea:false}}
+      }}});
+      
+      // Инициализация графика изменения цены
+      console.log('Initializing price chart with data:', priceHistory);
+      if(priceHistory && priceHistory.length > 0){
+        const priceLabels = priceHistory.map(p => p.date || '');
+        const priceClientData = priceHistory.map(p => p.price_client || null);
+        const priceSellerData = priceHistory.map(p => p.price_seller || null);
+        
+        console.log('Price labels:', priceLabels);
+        console.log('Client price data:', priceClientData);
+        console.log('Seller price data:', priceSellerData);
+        
+        chartPrice = new Chart(ctx4, {
+          type: 'line',
+          data: {
+            labels: priceLabels,
+            datasets: [
+              {
+                label: 'Цена клиента',
+                data: priceClientData,
+                borderColor: 'rgba(153,102,255,1)',
+                backgroundColor: 'rgba(153,102,255,.1)',
+                tension: 0.3,
+                fill: false,
+                pointRadius: 6,
+                pointHoverRadius: 8,
+                spanGaps: false
+              },
+              {
+                label: 'Моя цена',
+                data: priceSellerData,
+                borderColor: 'rgba(255,99,132,1)',
+                backgroundColor: 'rgba(255,99,132,.1)',
+                tension: 0.3,
+                fill: false,
+                pointRadius: 6,
+                pointHoverRadius: 8,
+                spanGaps: false
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: function(context) {
+                    const datasetLabel = context.dataset.label;
+                    const value = context.parsed.y;
+                    if (value === null) return null;
+                    return datasetLabel + ': ' + value.toLocaleString('ru-RU') + ' руб.';
+                  }
+                }
+              }
+            },
+            scales: {
+              y: {
+                beginAtZero: false,
+                ticks: {
+                  callback: function(value) {
+                    return value.toLocaleString('ru-RU') + ' руб.';
+                  }
+                }
+              }
+            }
+          }
+        });
+      } else {
+        // Если нет данных о ценах, показываем информативный график
+        chartPrice = new Chart(ctx4, {
+          type: 'line',
+          data: {
+            labels: ['Данные о ценах недоступны'],
+            datasets: [{
+              label: 'Цена',
+              data: [0],
+              borderColor: 'rgba(200,200,200,1)',
+              backgroundColor: 'rgba(200,200,200,.1)',
+              tension: 0.3,
+              pointRadius: 0
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                display: false
+              }
+            },
+            scales: {
+              y: {
+                beginAtZero: true,
+                display: false
+              },
+              x: {
+                display: false
+              }
+            }
+          }
+        });
+      }
+    }
+
+    function initWarehouseSalesStockChart(rows){
+      const el = document.getElementById('productWarehouseSalesStockChart');
+      if(!el) return;
+      if(chartWhSalesStock) chartWhSalesStock.destroy();
+      const labels = (rows||[]).map(r=>r.warehouse||'-');
+      const sales = (rows||[]).map(r=>Number(r.orders||0));
+      const stocks = (rows||[]).map(r=>Number(r.stock||0));
+      // Легкий плагин для отрисовки чисел над столбцами
+      const barValueLabels = {
+        id: 'barValueLabels',
+        afterDatasetsDraw(chart){
+          const {ctx} = chart;
+          ctx.save();
+          ctx.font = getComputedStyle(el).font || '12px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          chart.data.datasets.forEach((ds, datasetIndex)=>{
+            const meta = chart.getDatasetMeta(datasetIndex);
+            meta.data.forEach((bar, index)=>{
+              const val = Number(ds.data[index]||0);
+              if (!isFinite(val)) return;
+              const x = bar.x;
+              const y = bar.y - 4;
+              ctx.fillStyle = '#333';
+              ctx.fillText(val.toLocaleString('ru-RU'), x, y);
+            });
+          });
+          ctx.restore();
+        }
+      };
+      chartWhSalesStock = new Chart(el, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Продажи', data: sales, backgroundColor: 'rgba(54,162,235,0.6)' },
+            { label: 'Остаток', data: stocks, backgroundColor: 'rgba(255,159,64,0.6)' }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'top' } },
+          scales: {
+            x: { stacked: false },
+            y: { beginAtZero: true }
+          }
+        },
+        plugins: [barValueLabels]
+      });
+    }
+
+    async function fetchData(force=false){
+      // Показываем индикатор загрузки и размываем контент
+      const overlay = document.getElementById('loadingOverlay');
+      const content = document.querySelector('.container');
+      const loadingText = overlay?.querySelector('.loading-text');
+      if (overlay) overlay.style.display = 'flex';
+      if (content) content.classList.add('content-blurred');
+      if (loadingText) loadingText.textContent = 'Загрузка данных...';
+      
+      try {
+        const dFrom=document.getElementById('productDateFrom').value;
+        const dTo=document.getElementById('productDateTo').value;
+        const url=new URL(window.location.origin+`/api/product/{{ nm_id }}`);
+        if(dFrom) url.searchParams.set('date_from', dFrom);
+        if(dTo) url.searchParams.set('date_to', dTo);
+        if(force) url.searchParams.set('force_refresh','1');
+        const r=await fetch(url.toString());
+        const j=await r.json();
+        console.log('API Response:', j); // Отладка
+        console.log('Price history data:', j.price_history); // Отладка для цен
+        if(!r.ok){ console.error('API Error:', j); return; }
+        document.getElementById('kpiTotal').textContent=(j.kpi.total_orders||0).toLocaleString('ru-RU');
+        document.getElementById('kpiActive').textContent=(j.kpi.total_active_orders||0).toLocaleString('ru-RU');
+        document.getElementById('kpiCancelled').textContent=(j.kpi.total_cancelled_orders||0).toLocaleString('ru-RU');
+        document.getElementById('kpiRevenue').textContent=(j.kpi.total_revenue||0).toLocaleString('ru-RU');
+        document.getElementById('kpiStock').textContent=(j.kpi.total_stock||0).toLocaleString('ru-RU');
+        document.getElementById('kpiAvgDaily').textContent=(j.kpi.avg_daily_sales||0).toLocaleString('ru-RU');
+        
+        // Обновляем информацию о товаре
+        if(j.product){
+          const productName = j.product.name||'Товар';
+          const supplierArticle = j.product.supplier_article||'—';
+          document.getElementById('productNameTitle').textContent=productName;
+          document.getElementById('productSupplierArticle').textContent=supplierArticle;
+          document.getElementById('productBarcode').textContent=j.product.barcode||'—';
+        }
+        
+        initCharts(j.series.labels||[], j.series.orders||[], j.series.cancelled||[], j.series.revenue||[], j.series.stock||[], j.series.income||[], j.price_history||[]);
+        initWarehouseSalesStockChart(j.warehouses_sales_vs_stock||[]);
+      } finally {
+        // Скрываем индикатор загрузки и убираем размытие
+        if (overlay) overlay.style.display = 'none';
+        if (content) content.classList.remove('content-blurred');
+      }
+    }
+
+    // Hover preview для фото товара (как на странице товаров)
+    const preview = document.getElementById('imgPreview');
+    const previewImg = document.getElementById('imgPreviewImg');
+    const thumb = document.querySelector('.thumb');
+    
+    if (thumb && preview && previewImg) {
+      thumb.addEventListener('mouseenter', () => {
+        const src = thumb.getAttribute('data-src') || thumb.src;
+        if (src && src !== '') {
+          previewImg.src = src;
+          preview.style.display = 'block';
+        }
+      });
+      
+      thumb.addEventListener('mouseleave', () => {
+        preview.style.display = 'none';
+      });
+    }
+
+    // Инициализация календаря product
+    let productDateRangeCalendar;
+    
+    window.addEventListener('DOMContentLoaded', () => {
+      productDateRangeCalendar = new ProductDateRangeCalendar();
+      // Если период передан, сразу загрузим данные
+      const hasPeriod = !!document.getElementById('productDateFrom').value && !!document.getElementById('productDateTo').value;
+      if(hasPeriod) fetchData(false);
+    });
+  </script>
+  {% include '_footer.html' %}
+</body>
+</html>
+
+

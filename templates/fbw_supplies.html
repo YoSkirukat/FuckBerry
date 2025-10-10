@@ -385,7 +385,7 @@ async function refresh(){
   try{
     // Добавляем таймаут для запроса
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 секунд таймаут
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 секунд таймаут
     
     const res = await fetch('/api/fbw/supplies', {
       method: 'GET',
@@ -426,8 +426,15 @@ async function refresh(){
     }catch(_){}
   }catch(e){ 
     console.error('Ошибка обновления:', e);
-    // Показываем пользователю ошибку
-    alert(`Ошибка обновления данных: ${e.message}`);
+    
+    // Различаем типы ошибок
+    if (e.name === 'AbortError') {
+      console.log('Запрос был прерван (таймаут)');
+      // Не показываем alert для AbortError, так как это может быть нормальным поведением
+    } else {
+      // Показываем пользователю ошибку только для реальных проблем
+      alert(`Ошибка обновления данных: ${e.message}`);
+    }
   }
   finally{ 
     btn.disabled = false; 
@@ -727,9 +734,42 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
 document.addEventListener('DOMContentLoaded', function() {
   // Небольшая задержка, чтобы страница полностью загрузилась
   setTimeout(() => {
-    refresh();
+    // Сначала пробуем загрузить кэшированные данные
+    loadCachedData();
   }, 500);
 });
+
+// Функция для загрузки кэшированных данных
+async function loadCachedData() {
+  try {
+    const res = await fetch('/api/fbw/supplies?cached=1', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      if (data.items && data.items.length > 0) {
+        supAll = data.items;
+        rendered = 0;
+        const tbody = document.getElementById('supBody');
+        tbody.innerHTML = '';
+        renderChunk(15);
+        document.getElementById('lastUpdated').textContent = data.updated_at || '';
+        try { recomputeStats(); } catch(_) {}
+        return; // Успешно загрузили кэшированные данные
+      }
+    }
+  } catch (e) {
+    console.log('Не удалось загрузить кэшированные данные:', e);
+  }
+  
+  // Если кэшированные данные недоступны, делаем полное обновление
+  refresh();
+}
 
 </script>
 </html>

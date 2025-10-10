@@ -185,7 +185,7 @@
             Отчёты
           </a>
           <ul class="dropdown-menu" aria-labelledby="repDropdown">
-            <li><a class="dropdown-item {% if request.path.startswith('/report/sales') %}active{% endif %}" href="/report/sales">Отчёт по заказам со складов</a></li>
+            <li><a class="dropdown-item {% if request.path.startswith('/report/orders') %}active{% endif %}" href="/report/orders">Отчёт по заказам со складов</a></li>
             <li><a class="dropdown-item {% if request.path.startswith('/report/finance') %}active{% endif %}" href="/report/finance">Финансовый отчёт</a></li>
             <li><a class="dropdown-item {% if request.path.startswith('/stocks') %}active{% endif %}" href="/stocks">Остатки на складах</a></li>
           </ul>

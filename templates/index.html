@@ -406,10 +406,11 @@
                       <td>
                         <div>
                         {% if it.nm_id %}
-                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                          <a href="/product/{{ it.nm_id }}?date_from={{ date_from }}&date_to={{ date_to }}" class="text-decoration-none">{{ it.product }}</a>
+                          <span class="ms-1 small"><a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener" class="text-muted" title="Открыть на WB"><i class="fas fa-external-link-alt"></i></a></span>
                         {% else %}
                           {{ it.product }}
-                          {% endif %}
+                        {% endif %}
                         </div>
                         {% if it.nm_id or it.barcode %}
                           <div class="small text-muted mt-1">
@@ -884,6 +885,8 @@
     const shortTopWarehouse = document.getElementById('shortTopWarehouse');
     async function reloadShortTop(){
       const wh = shortTopWarehouse ? (shortTopWarehouse.value || '') : '';
+      const dFrom = document.getElementById('ordersDateFrom').value;
+      const dTo = document.getElementById('ordersDateTo').value;
       const params = new URLSearchParams();
       if (wh) params.set('warehouse', wh);
       const res = await fetch(`/api/top-products-orders?${params.toString()}`);
@@ -932,7 +935,24 @@
         if (it.photo) { tdPhoto.innerHTML = `<img class=\"thumb\" src=\"${it.photo}\" data-src=\"${it.photo}\"/>`; } else { tdPhoto.textContent='-'; }
         // product
         const tdProd = document.createElement('td');
-        if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; tdProd.appendChild(a); }
+        if (it.nm_id){ 
+          const a = document.createElement('a'); 
+          a.href = `/product/${it.nm_id}?date_from=${dFrom}&date_to=${dTo}`; 
+          a.className = 'text-decoration-none';
+          a.textContent = it.product; 
+          tdProd.appendChild(a);
+          const span = document.createElement('span');
+          span.className = 'ms-1 small';
+          const wbLink = document.createElement('a');
+          wbLink.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
+          wbLink.target = '_blank';
+          wbLink.rel = 'noopener';
+          wbLink.className = 'text-muted';
+          wbLink.title = 'Открыть на WB';
+          wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
+          span.appendChild(wbLink);
+          tdProd.appendChild(span);
+        }
         else { tdProd.textContent = it.product; }
         if (it.nm_id || it.barcode) {
           const infoDiv = document.createElement('div');
@@ -1077,6 +1097,7 @@
       if (loadingText) loadingText.textContent = 'Загрузка данных...';
       
       const t0 = performance.now();
+      let progressTimer = null;
       try {
         const fd = new FormData();
         const dFrom = document.getElementById('ordersDateFrom').value;
@@ -1091,7 +1112,6 @@
         
         
         // Поллинг прогресса, чтобы показывать X из Y дней
-        let progressTimer = null;
         const pollProgress = async () => {
           try {
             const pr = await fetch('/api/orders-progress', { headers: { 'Accept': 'application/json' } });
@@ -1227,36 +1247,13 @@
             wtbody.appendChild(tr);
           }
         }
-        // TOP products (orders)
-        const topTBody = document.getElementById('ordersTopBody');
-        if (topTBody && Array.isArray(data.top_products_orders_filtered || data.top_products)) {
-          const source = Array.isArray(data.top_products_orders_filtered) ? data.top_products_orders_filtered : data.top_products;
-          topTBody.innerHTML = '';
-          if (source.length) {
-            for (const item of source) {
-              const product = item.product || (Array.isArray(item) ? item[0] : '');
-              const qty = item.qty ?? (Array.isArray(item) ? item[1] : 0);
-              const nm = item.nm_id || '';
-              const tr = document.createElement('tr');
-              const td1 = document.createElement('td');
-              if (nm) { const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`; a.target = '_blank'; a.rel='noopener'; a.textContent = product; td1.appendChild(a); }
-              else { td1.textContent = product; }
-              tr.appendChild(td1);
-              const td2 = document.createElement('td'); td2.className='text-end'; td2.textContent = (qty||0).toLocaleString('ru-RU'); tr.appendChild(td2);
-              topTBody.appendChild(tr);
-            }
-          } else {
-            const tr = document.createElement('tr');
-            const td = document.createElement('td'); td.colSpan=2; td.className='text-muted'; td.textContent='Нет данных'; tr.appendChild(td);
-            topTBody.appendChild(tr);
-          }
-        }
         // TOP short (right column)
         const topShortBody = document.getElementById('ordersTopShortBody');
-        if (topShortBody && Array.isArray(data.top_products)) {
+        if (topShortBody && Array.isArray(data.top_products_orders_filtered || data.top_products)) {
+          const source = Array.isArray(data.top_products_orders_filtered) ? data.top_products_orders_filtered : data.top_products;
           topShortBody.innerHTML = '';
-          if (data.top_products.length) {
-            for (const item of data.top_products) {
+          if (source.length) {
+            for (const item of source) {
               const product = item.product ?? (Array.isArray(item) ? item[0] : '');
               const qty = item.qty ?? (Array.isArray(item) ? item[1] : 0);
               const nm = item.nm_id || '';
@@ -1267,7 +1264,23 @@
               const tdPhoto = document.createElement('td'); tdPhoto.className='text-center';
               if (photo) { tdPhoto.innerHTML = `<img class=\"thumb\" src=\"${photo}\" data-src=\"${photo}\"/>`; } else { tdPhoto.textContent='-'; }
               const tdProd = document.createElement('td');
-              if (nm) { const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`; a.target = '_blank'; a.rel='noopener'; a.textContent = product; tdProd.appendChild(a); }
+              if (nm) { 
+                const a = document.createElement('a'); 
+                a.href = `/product/${nm}?date_from=${dFrom}&date_to=${dTo}`; 
+                a.textContent = product; 
+                tdProd.appendChild(a);
+                const span = document.createElement('span');
+                span.className = 'ms-1 small';
+                const wbLink = document.createElement('a');
+                wbLink.href = `https://www.wildberries.ru/catalog/${nm}/detail.aspx`;
+                wbLink.target = '_blank';
+                wbLink.rel = 'noopener';
+                wbLink.className = 'text-muted';
+                wbLink.title = 'Открыть на WB';
+                wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
+                span.appendChild(wbLink);
+                tdProd.appendChild(span);
+              }
               else { tdProd.textContent = product; }
               const tdQty = document.createElement('td'); tdQty.className='text-end'; tdQty.textContent = (qty||0).toLocaleString('ru-RU');
               const tdSum = document.createElement('td'); tdSum.className='text-end'; tdSum.textContent = (Number(sum)||0).toLocaleString('ru-RU') + ' руб.';
@@ -1362,7 +1375,7 @@
       try {
         const res = await fetch(`/api/top-products-orders?${params.toString()}`);
         const data = await res.json();
-        const tbody = document.getElementById('ordersTopBody');
+        const tbody = document.getElementById('ordersTopShortBody');
         if (!tbody) return;
         tbody.innerHTML = '';
         if (data.items && data.items.length) {

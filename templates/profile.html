@@ -144,6 +144,111 @@
       </div>
     </div>
 
+    <div class="row g-3 mt-3">
+      <div class="col-md-12">
+        <div class="card"><div class="card-body">
+          <h6 class="mb-3">Кэширование данных о поставках для аналитики товаров</h6>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="text-muted small">Статус кэша</div>
+              {% if supplies_cache_info %}
+                <div class="d-flex align-items-center gap-2">
+                  <span class="badge bg-{{ 'success' if supplies_cache_info.is_fresh else 'warning' }}">
+                    {{ 'Актуален' if supplies_cache_info.is_fresh else 'Устарел' }}
+                  </span>
+                  <span class="text-muted small">(обновляется автоматически раз в сутки)</span>
+                </div>
+              {% else %}
+                <div class="text-muted">Кэш не создан</div>
+              {% endif %}
+            </div>
+            <div class="col-md-6">
+              <div class="text-muted small">Последнее обновление</div>
+              {% if supplies_cache_info and supplies_cache_info.last_updated %}
+                <div>{{ supplies_cache_info.last_updated[:19].replace('T', ' ') }}</div>
+              {% else %}
+                <div class="text-muted">—</div>
+              {% endif %}
+            </div>
+            <div class="col-md-6">
+              <div class="text-muted small">Обработано поставок</div>
+              <div>{{ supplies_cache_info.total_supplies if supplies_cache_info else 0 }}</div>
+            </div>
+            <div class="col-md-6">
+              <div class="text-muted small">Версия кэша</div>
+              <div>{{ supplies_cache_info.cache_version if supplies_cache_info else '—' }}</div>
+            </div>
+            <div class="col-12">
+              <div class="d-flex gap-2 align-items-center">
+                <button class="btn btn-outline-primary" type="button" onclick="refreshSuppliesCache()">
+                  <span class="spinner-border spinner-border-sm d-none" id="cacheSpinner"></span>
+                  <span id="cacheButtonText">Обновить кэш вручную</span>
+                </button>
+                <div class="text-muted small">
+                  Кэш содержит данные о поставках за последние 6 месяцев для быстрой аналитики товаров
+                </div>
+              </div>
+              <div id="cacheMessage" class="mt-2"></div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="row g-3 mt-3">
+      <div class="col-md-12">
+        <div class="card"><div class="card-body">
+          <h6 class="mb-3">Кэширование данных о заказах (за 6 месяцев)</h6>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="text-muted small">Статус кэша</div>
+              {% set orders_meta = orders_cache_info %}
+              {% if orders_meta %}
+                <div class="d-flex align-items-center gap-2">
+                  <span class="badge bg-{{ 'success' if orders_meta.is_fresh else 'warning' }}">
+                    {{ 'Актуален' if orders_meta.is_fresh else 'Устарел' }}
+                  </span>
+                  <span class="text-muted small">(обновляется автоматически раз в сутки)</span>
+                </div>
+              {% else %}
+                <div class="text-muted">Кэш не создан</div>
+              {% endif %}
+            </div>
+            <div class="col-md-6">
+              <div class="text-muted small">Последнее обновление</div>
+              {% if orders_meta and orders_meta.last_updated %}
+                <div>{{ orders_meta.last_updated[:19].replace('T', ' ') }}</div>
+              {% else %}
+                <div class="text-muted">—</div>
+              {% endif %}
+            </div>
+            <div class="col-md-6">
+              <div class="text-muted small">Период кэша</div>
+              <div>
+                {{ orders_meta.date_from if orders_meta else '—' }} — {{ orders_meta.date_to if orders_meta else '—' }}
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="text-muted small">Заказов в кэше</div>
+              <div>{{ orders_meta.total_orders_cached if orders_meta else 0 }}</div>
+            </div>
+            <div class="col-12">
+              <div class="d-flex gap-2 align-items-center">
+                <button class="btn btn-outline-primary" type="button" onclick="refreshOrdersCache()">
+                  <span class="spinner-border spinner-border-sm d-none" id="ordersCacheSpinner"></span>
+                  <span id="ordersCacheButtonText">Обновить кэш заказов вручную</span>
+                </button>
+                <div class="text-muted small">
+                  Подогрев кэша ускоряет построение аналитики заказов и товаров
+                </div>
+              </div>
+              <div id="ordersCacheMessage" class="mt-2"></div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+
     <div class="card mt-4"><div class="card-body">
       <h6 class="mb-2">Срок действия учётной записи</h6>
       <div>Действует с: <strong>{{ valid_from or '-' }}</strong></div>
@@ -155,5 +260,85 @@
   </div>
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    async function refreshSuppliesCache() {
+      const button = document.querySelector('button[onclick="refreshSuppliesCache()"]');
+      const spinner = document.getElementById('cacheSpinner');
+      const buttonText = document.getElementById('cacheButtonText');
+      const messageDiv = document.getElementById('cacheMessage');
+      
+      // Показываем спиннер
+      button.disabled = true;
+      spinner.classList.remove('d-none');
+      buttonText.textContent = 'Обновление...';
+      messageDiv.innerHTML = '';
+      
+      try {
+        const response = await fetch('/api/supplies/refresh-cache', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+          messageDiv.innerHTML = `
+            <div class="alert alert-info alert-dismissible fade show" role="alert">
+              <strong>Запущено!</strong> ${result.message}
+              <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+          `;
+          // Перезагружаем страницу через 5 секунд для обновления информации
+          setTimeout(() => {
+            window.location.reload();
+          }, 5000);
+        } else {
+          messageDiv.innerHTML = `
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+              <strong>Ошибка!</strong> ${result.error || 'Неизвестная ошибка'}
+              <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+          `;
+        }
+      } catch (error) {
+        messageDiv.innerHTML = `
+          <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            <strong>Ошибка!</strong> Не удалось обновить кэш: ${error.message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+          </div>
+        `;
+      } finally {
+        // Скрываем спиннер
+        button.disabled = false;
+        spinner.classList.add('d-none');
+        buttonText.textContent = 'Обновить кэш вручную';
+      }
+    }
+  </script>
+  <script>
+    async function refreshOrdersCache(){
+      const button = document.querySelector('button[onclick="refreshOrdersCache()"]');
+      const spinner = document.getElementById('ordersCacheSpinner');
+      const buttonText = document.getElementById('ordersCacheButtonText');
+      const msg = document.getElementById('ordersCacheMessage');
+      button.disabled=true; spinner.classList.remove('d-none'); buttonText.textContent='Обновление...'; msg.innerHTML='';
+      try{
+        const r = await fetch('/api/orders/refresh-cache',{method:'POST', headers:{'Content-Type':'application/json'}});
+        const j = await r.json();
+        if(r.ok && j.success){
+          msg.innerHTML = `<div class="alert alert-info alert-dismissible fade show" role="alert">${j.message}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+          setTimeout(()=>window.location.reload(), 5000);
+        } else {
+          msg.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert">Ошибка: ${j.error || 'Неизвестная ошибка'}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+        }
+      } catch(e){
+        msg.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert">Ошибка: ${e.message}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
+      } finally {
+        button.disabled=false; spinner.classList.add('d-none'); buttonText.textContent='Обновить кэш заказов вручную';
+      }
+    }
+  </script>
 </body>
 </html> 

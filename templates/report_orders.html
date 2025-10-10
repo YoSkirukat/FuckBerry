@@ -7,6 +7,7 @@
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
   <link rel="stylesheet" href="/static/styles.css" />
   <style>
     /* скрываем чёрные встроенные иконки календаря */
@@ -151,6 +152,56 @@
       color: #f5c6cb;
     }
     
+    /* Стили для индикатора загрузки */
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      backdrop-filter: blur(2px);
+      z-index: 9999;
+      display: none;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .loading-content {
+      text-align: center;
+      background: white;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+    
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #007bff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+      color: #666;
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+    
+    .content-blurred {
+      filter: blur(1px);
+      opacity: 0.6;
+      transition: all 0.3s ease;
+    }
+    
     /* Мобильное позиционирование календаря */
     @media (max-width: 768px) {
       .calendar-dropdown.mobile-centered {
@@ -268,7 +319,8 @@
                     <td>
                       <div>
                         {% if it.nm_id %}
-                          <a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener">{{ it.product }}</a>
+                          <a href="/product/{{ it.nm_id }}?date_from={{ date_from_val }}&date_to={{ date_to_val }}" class="text-decoration-none">{{ it.product }}</a>
+                          <span class="ms-1 small"><a href="https://www.wildberries.ru/catalog/{{ it.nm_id }}/detail.aspx" target="_blank" rel="noopener" class="text-muted" title="Открыть на WB"><i class="fas fa-external-link-alt"></i></a></span>
                         {% else %}
                           {{ it.product }}
                         {% endif %}
@@ -662,6 +714,15 @@
       if (!form || !btn) return;
       try{
         btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Загрузка...';
+        
+        // Показываем индикатор загрузки и размываем контент
+        const overlay = document.getElementById('loadingOverlay');
+        const content = document.querySelector('.container');
+        const loadingText = overlay?.querySelector('.loading-text');
+        if (overlay) overlay.style.display = 'flex';
+        if (content) content.classList.add('content-blurred');
+        if (loadingText) loadingText.textContent = 'Загрузка данных...';
+        
         const params = new URLSearchParams(new FormData(form));
         // При загрузке отчёта всегда запрашиваем агрегат по всем складам,
         // а затем фильтруем локально при смене склада
@@ -673,6 +734,11 @@
         reportMatrix = data.matrix || reportMatrix || null;
         const tbody = document.getElementById('reportBody');
         tbody.innerHTML = '';
+        
+        // Получаем даты из формы для ссылок
+        const dateFrom = form.querySelector('input[name="date_from"]')?.value || '';
+        const dateTo = form.querySelector('input[name="date_to"]')?.value || '';
+        
         (data.items || []).forEach((it, idx) => {
           const tr = document.createElement('tr');
           tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>`;
@@ -682,7 +748,22 @@
           else { photoCell.textContent = '-'; }
           const cell = tr.children[2];
           if (it.nm_id){
-            const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a);
+            const a = document.createElement('a'); 
+            a.href = `/product/${it.nm_id}?date_from=${dateFrom}&date_to=${dateTo}`; 
+            a.className = 'text-decoration-none';
+            a.textContent = it.product; 
+            cell.appendChild(a);
+            const span = document.createElement('span');
+            span.className = 'ms-1 small';
+            const wbLink = document.createElement('a');
+            wbLink.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
+            wbLink.target = '_blank';
+            wbLink.rel = 'noopener';
+            wbLink.className = 'text-muted';
+            wbLink.title = 'Открыть на WB';
+            wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
+            span.appendChild(wbLink);
+            cell.appendChild(span);
           } else { cell.textContent = it.product; }
           if (it.nm_id || it.barcode) {
             const infoDiv = document.createElement('div');
@@ -705,8 +786,7 @@
         const totalEl = document.getElementById('repTotal');
         if (totalEl) totalEl.textContent = (data.total_qty || 0).toLocaleString('ru-RU');
         const qtyVal = document.getElementById('repQtyVal'); if (qtyVal) qtyVal.textContent = (data.total_qty||0).toLocaleString('ru-RU');
-        const totalSum = (data.items||[]).reduce((s,x)=> s + (Number(x.sum)||0), 0);
-        const sumVal = document.getElementById('repSumVal'); if (sumVal) sumVal.textContent = (Number(totalSum)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const sumVal = document.getElementById('repSumVal'); if (sumVal) sumVal.textContent = (Number(data.total_sum)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         // populate and enable warehouse select
         const whSel = document.getElementById('rWarehouse');
         if (whSel){
@@ -734,6 +814,12 @@
       } catch(err){
         console.error(err);
         btn.disabled = false;
+      } finally {
+        // Скрываем индикатор загрузки и убираем размытие
+        const overlay = document.getElementById('loadingOverlay');
+        const content = document.querySelector('.container');
+        if (overlay) overlay.style.display = 'none';
+        if (content) content.classList.remove('content-blurred');
       }
     }
 
@@ -748,10 +834,8 @@
     if (showAllCheckbox) {
       showAllCheckbox.addEventListener('change', () => {
         console.log('DEBUG: showAllProducts checkbox changed:', showAllCheckbox.checked);
-        if (reportMatrix) {
-          // Если данные уже загружены, перезагружаем с новым параметром
-          reloadReport();
-        }
+        // Всегда перезагружаем данные с сервера при изменении чекбокса
+        reloadReport();
       });
     }
     const whSel = document.getElementById('rWarehouse');
@@ -762,7 +846,11 @@
         const tbody = document.getElementById('reportBody');
         tbody.innerHTML = '';
         const target = whSel.value || '';
-        const showAll = document.getElementById('showAllProducts')?.checked || false;
+        
+        // Получаем даты из формы для ссылок
+        const dateFrom = form.querySelector('input[name="date_from"]')?.value || '';
+        const dateTo = form.querySelector('input[name="date_to"]')?.value || '';
+        
         const items = reportMatrix.map(row => {
           const bywh = row.by_wh || {};
           const qty = target ? (bywh[target] || 0) : (row.total || 0);
@@ -788,8 +876,8 @@
           
           return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo, stock_qty };
         }).filter(it => {
-          // Show items with orders OR (if show_all) items with stocks
-          return (it.qty || 0) > 0 || (showAll && (it.stock_qty || 0) > 0);
+          // Show only items with orders (local filtering doesn't handle show_all)
+          return (it.qty || 0) > 0;
         }).sort((a,b) => {
           // Sort by quantity first, then by stock quantity
           const qtyA = a.qty || 0;
@@ -803,7 +891,24 @@
           tr.children[0].textContent = (idx + 1).toString();
           const photoCell = tr.children[1]; photoCell.innerHTML = it.photo ? `<img class=\"thumb\" src=\"${it.photo}\" data-src=\"${it.photo}\"/>` : '-';
           const cell = tr.children[2];
-          if (it.nm_id){ const a = document.createElement('a'); a.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = it.product; cell.appendChild(a); }
+          if (it.nm_id){ 
+            const a = document.createElement('a'); 
+            a.href = `/product/${it.nm_id}?date_from=${dateFrom}&date_to=${dateTo}`; 
+            a.className = 'text-decoration-none';
+            a.textContent = it.product; 
+            cell.appendChild(a);
+            const span = document.createElement('span');
+            span.className = 'ms-1 small';
+            const wbLink = document.createElement('a');
+            wbLink.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
+            wbLink.target = '_blank';
+            wbLink.rel = 'noopener';
+            wbLink.className = 'text-muted';
+            wbLink.title = 'Открыть на WB';
+            wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
+            span.appendChild(wbLink);
+            cell.appendChild(span);
+          }
           else { cell.textContent = it.product; }
           if (it.nm_id || it.barcode) {
             const infoDiv = document.createElement('div');
@@ -944,6 +1049,14 @@
     // Инициализируем тултипы при загрузке страницы
     initTooltips();
   </script>
+  <!-- Индикатор загрузки -->
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Загрузка данных...</div>
+    </div>
+  </div>
+
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>

@@ -7,6 +7,10 @@ SUPPLIES_WAREHOUSES_URL = "https://supplies-api.wildberries.ru/api/v1/warehouses
 DISCOUNTS_PRICES_API_URL = "https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter"
 # Alternative prices API
 PRICES_API_URL = "https://marketplace-api.wildberries.ru/api/v2/list/goods/filter"
+# Product history API (including price history)
+PRODUCT_HISTORY_API_URL = "https://product-history.wildberries.ru/products/history"
+# Alternative product history API
+PRODUCT_HISTORY_API_URL_ALT = "https://product-history.wildberries.ru/products/history"
 # Commission API
 COMMISSION_API_URL = "https://common-api.wildberries.ru/api/v1/tariffs/commission"
 DIMENSIONS_API_URL = "https://content-api.wildberries.ru/content/v1/cards/list"
@@ -734,10 +738,12 @@ def _preload_package_counts(token: str, supplies: list[dict[str, Any]]) -> list[
     if not supplies_to_update:
         return supplies
     
-    # Обновляем количество коробок для найденных поставок
+    # Обновляем количество коробок для найденных поставок (ограничиваем количество запросов)
     updated_supplies = []
-    for supply in supplies:
-        if supply in supplies_to_update:
+    max_requests = 5  # Ограничиваем количество дополнительных API запросов
+    
+    for i, supply in enumerate(supplies):
+        if supply in supplies_to_update and i < max_requests:
             try:
                 supply_id = supply.get("supply_id") or supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
                 if supply_id:
@@ -973,6 +979,186 @@ def save_fbw_supplies_cache(payload: Dict[str, Any]) -> None:
             json.dump(enriched, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+# Расширенный кэш поставок с товарами (для быстрой аналитики)
+def _fbw_supplies_detailed_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "fbw_supplies_detailed_anon.json")
+
+
+def load_fbw_supplies_detailed_cache() -> Dict[str, Any] | None:
+    path = _fbw_supplies_detailed_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_fbw_supplies_detailed_cache(payload: Dict[str, Any]) -> None:
+    path = _fbw_supplies_detailed_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def is_supplies_cache_fresh() -> bool:
+    """Проверяет, свежий ли кэш поставок (обновлялся ли за последние 24 часа)"""
+    cached = load_fbw_supplies_detailed_cache()
+    if not cached:
+        return False
+    
+    last_update = cached.get("last_updated")
+    if not last_update:
+        return False
+    
+    try:
+        last_update_dt = datetime.fromisoformat(last_update)
+        now = datetime.now(MOSCOW_TZ)
+        return (now - last_update_dt).total_seconds() < 24 * 3600  # 24 часа
+    except Exception:
+        return False
+
+
+def build_supplies_detailed_cache(token: str, user_id: int = None) -> Dict[str, Any]:
+    """Строит детальный кэш поставок с товарами за последние 6 месяцев"""
+    print(f"Строим детальный кэш поставок для пользователя {user_id}...")
+    
+    # Получаем поставки за 6 месяцев
+    supplies_list = fetch_fbw_supplies_list(token, days_back=180)
+    print(f"Найдено {len(supplies_list)} поставок за 6 месяцев")
+    
+    supplies_detailed = {}
+    processed_count = 0
+    
+    for supply in supplies_list:
+        supply_id = supply.get("supplyID") or supply.get("id")
+        if not supply_id:
+            continue
+            
+        try:
+            # Получаем детали поставки
+            details = fetch_fbw_supply_details(token, supply_id)
+            if not details:
+                continue
+                
+            # Получаем товары из поставки
+            supply_goods = fetch_fbw_supply_goods(token, supply_id)
+            
+            # Формируем структуру данных
+            supply_date = details.get("supplyDate") or details.get("createDate")
+            if supply_date:
+                try:
+                    if isinstance(supply_date, str):
+                        if 'T' in supply_date:
+                            supply_dt = datetime.fromisoformat(supply_date.replace('Z', '+00:00'))
+                        else:
+                            supply_dt = datetime.strptime(supply_date, "%Y-%m-%d")
+                    else:
+                        supply_dt = supply_date
+                        
+                    supply_date_str = supply_dt.strftime("%Y-%m-%d")
+                    
+                    supplies_detailed[supply_date_str] = supplies_detailed.get(supply_date_str, {})
+                    
+                    for good in supply_goods:
+                        barcode = str(good.get("barcode", ""))
+                        qty = int(good.get("quantity", 0) or 0)
+                        if barcode and qty > 0:
+                            if barcode not in supplies_detailed[supply_date_str]:
+                                supplies_detailed[supply_date_str][barcode] = 0
+                            supplies_detailed[supply_date_str][barcode] += qty
+                            
+                except Exception:
+                    continue
+                    
+            processed_count += 1
+            if processed_count % 10 == 0:
+                print(f"Обработано {processed_count}/{len(supplies_list)} поставок...")
+                
+        except Exception:
+            continue
+    
+    print(f"Кэш построен: {len(supplies_detailed)} дней с поставками")
+    
+    return {
+        "supplies_by_date": supplies_detailed,
+        "last_updated": datetime.now(MOSCOW_TZ).isoformat(),
+        "total_supplies_processed": processed_count,
+        "cache_version": "1.0"
+    }
+
+
+# -------------------- Orders warm cache (6 months) --------------------
+def _orders_cache_meta_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"orders_warm_meta_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "orders_warm_meta_anon.json")
+
+
+def load_orders_cache_meta() -> Dict[str, Any] | None:
+    path = _orders_cache_meta_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_orders_cache_meta(payload: Dict[str, Any]) -> None:
+    path = _orders_cache_meta_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def is_orders_cache_fresh() -> bool:
+    meta = load_orders_cache_meta()
+    if not meta:
+        return False
+    last_updated = meta.get("last_updated")
+    if not last_updated:
+        return False
+    try:
+        last_dt = datetime.fromisoformat(last_updated)
+        now = datetime.now(MOSCOW_TZ)
+        return (now - last_dt).total_seconds() < 24 * 3600
+    except Exception:
+        return False
+
+
+def build_orders_warm_cache(token: str) -> Dict[str, Any]:
+    """Warm up per-day orders cache for last 6 months in one go."""
+    from_date = (datetime.now(MOSCOW_TZ).date() - timedelta(days=180)).strftime("%Y-%m-%d")
+    to_date = datetime.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
+    # Fetch all rows in range and persist into per-day cache
+    raw = fetch_orders_range(token, from_date, to_date)
+    rows = to_rows(raw, from_date, to_date)
+    _update_period_cache_with_data(token, from_date, to_date, rows)
+    meta = {
+        "last_updated": datetime.now(MOSCOW_TZ).isoformat(),
+        "date_from": from_date,
+        "date_to": to_date,
+        "total_orders_cached": len(rows),
+        "cache_version": "1.0"
+    }
+    return meta
 
 
 # Orders per-day cache helpers (per user)
@@ -3325,8 +3511,43 @@ def index():
                 # Сохраняем токен в профиле пользователя при наличии
                 if current_user.is_authenticated and token:
                     try:
+                        # Проверяем, изменился ли токен
+                        token_changed = current_user.wb_token != token
                         current_user.wb_token = token
                         db.session.commit()
+                        
+                        # Если токен изменился или кэш поставок устарел, строим новый кэш
+                        if token_changed or not is_supplies_cache_fresh():
+                            print(f"Токен изменился или кэш устарел, запускаем построение кэша поставок...")
+                            # Запускаем в фоне (не блокируем основной запрос)
+                            import threading
+                            def build_cache_background():
+                                try:
+                                    cache_data = build_supplies_detailed_cache(token, current_user.id)
+                                    save_fbw_supplies_detailed_cache(cache_data)
+                                    print(f"Кэш поставок успешно построен для пользователя {current_user.id}")
+                                except Exception as e:
+                                    print(f"Ошибка построения кэша поставок: {e}")
+                            
+                            thread = threading.Thread(target=build_cache_background)
+                            thread.daemon = True
+                            thread.start()
+
+                        # Если токен изменился или кэш заказов устарел, подогреем кэш заказов
+                        if token_changed or not is_orders_cache_fresh():
+                            print("Запускаем подогрев кэша заказов (6 месяцев)...")
+                            import threading
+                            def warm_orders_cache_bg():
+                                try:
+                                    meta = build_orders_warm_cache(token)
+                                    save_orders_cache_meta(meta)
+                                    print("Кэш заказов подогрет")
+                                except Exception as e:
+                                    print(f"Ошибка подогрева кэша заказов: {e}")
+                            t2 = threading.Thread(target=warm_orders_cache_bg)
+                            t2.daemon = True
+                            t2.start()
+                            
                     except Exception:
                         db.session.rollback()
                 updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -4461,6 +4682,70 @@ def api_fbw_supply_details(supply_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/supplies/refresh-cache", methods=["POST"]) 
+@login_required
+def api_refresh_supplies_cache():
+    """Ручное обновление кэша поставок"""
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    
+    try:
+        # Запускаем обновление кэша в фоновом потоке
+        import threading
+        def build_cache_background():
+            try:
+                cache_data = build_supplies_detailed_cache(token, current_user.id)
+                save_fbw_supplies_detailed_cache(cache_data)
+                print(f"Кэш поставок успешно обновлен для пользователя {current_user.id}")
+            except Exception as e:
+                print(f"Ошибка при обновлении кэша поставок: {e}")
+        
+        thread = threading.Thread(target=build_cache_background)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Обновление кэша поставок запущено в фоновом режиме. Это может занять несколько минут.",
+            "total_supplies": 0,  # Показываем 0, так как процесс еще идет
+            "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/orders/refresh-cache", methods=["POST"]) 
+@login_required
+def api_refresh_orders_cache():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    try:
+        # Запускаем обновление кэша в фоновом потоке
+        import threading
+        def build_orders_cache_background():
+            try:
+                meta = build_orders_warm_cache(token)
+                save_orders_cache_meta(meta)
+                print(f"Кэш заказов успешно обновлен для пользователя {current_user.id}")
+            except Exception as e:
+                print(f"Ошибка при обновлении кэша заказов: {e}")
+        
+        thread = threading.Thread(target=build_orders_cache_background)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Обновление кэша заказов запущено в фоновом режиме. Это может занять несколько минут.",
+            "total_orders": 0,  # Показываем 0, так как процесс еще идет
+            "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/fbw/supplies/<supply_id>/package-count", methods=["GET"]) 
 @login_required
 def api_fbw_supply_package_count(supply_id: str):
@@ -4646,14 +4931,39 @@ def api_orders_progress():
 def profile():
     seller_info: Dict[str, Any] | None = None
     token_info: Dict[str, Any] | None = None
+    supplies_cache_info: Dict[str, Any] | None = None
     token = current_user.wb_token or ""
     if token:
         try:
             seller_info = fetch_seller_info(token)
             token_info = decode_token_info(token)
+            
+            # Информация о кэше поставок
+            supplies_cache = load_fbw_supplies_detailed_cache()
+            if supplies_cache:
+                supplies_cache_info = {
+                    "last_updated": supplies_cache.get("last_updated"),
+                    "total_supplies": supplies_cache.get("total_supplies_processed", 0),
+                    "is_fresh": is_supplies_cache_fresh(),
+                    "cache_version": supplies_cache.get("cache_version", "1.0")
+                }
+            # Информация о кэше заказов
+            orders_meta = load_orders_cache_meta()
+            orders_cache_info = None
+            if orders_meta:
+                orders_cache_info = {
+                    "last_updated": orders_meta.get("last_updated"),
+                    "date_from": orders_meta.get("date_from"),
+                    "date_to": orders_meta.get("date_to"),
+                    "total_orders_cached": orders_meta.get("total_orders_cached", 0),
+                    "is_fresh": is_orders_cache_fresh(),
+                    "cache_version": orders_meta.get("cache_version", "1.0")
+                }
         except Exception:
             seller_info = None
             token_info = None
+            supplies_cache_info = None
+            orders_cache_info = None
     validity_status = None
     if current_user.valid_from or current_user.valid_to:
         today = datetime.now(MOSCOW_TZ).date()
@@ -4669,6 +4979,8 @@ def profile():
         token=token,
         seller_info=seller_info,
         token_info=token_info,
+        orders_cache_info=orders_cache_info,
+        supplies_cache_info=supplies_cache_info,
         valid_from=current_user.valid_from.strftime("%d.%m.%Y") if current_user.valid_from else None,
         valid_to=current_user.valid_to.strftime("%d.%m.%Y") if current_user.valid_to else None,
         validity_status=validity_status,
@@ -4916,6 +5228,9 @@ def report_sales_page():
     barcode_by_product: Dict[str, Any] = {}
     supplier_article_by_product: Dict[str, Any] = {}
     for r in (orders or []):
+        # Пропускаем отмененные заказы в отчете
+        if r.get("is_cancelled", False):
+            continue
         prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
         wh = str(r.get("Склад отгрузки") or "Не указан")
         counts_total[prod] += 1
@@ -5152,6 +5467,9 @@ def report_orders_page():
     barcode_by_product: Dict[str, Any] = {}
     supplier_article_by_product: Dict[str, Any] = {}
     for r in (orders or []):
+        # Пропускаем отмененные заказы в отчете
+        if r.get("is_cancelled", False):
+            continue
         prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
         wh = str(r.get("Склад отгрузки") or "Не указан")
         counts_total[prod] += 1
@@ -5281,6 +5599,10 @@ def report_orders_page():
     # Build items for the selected warehouse
     items = _build_items(warehouse, show_all=False)
     
+    # Вычисляем итоговые значения
+    total_qty = sum(item["qty"] for item in items)
+    total_sum = sum(item["sum"] for item in items)
+    
     # Build matrix for client-side filtering
     matrix = {
         "counts_total": dict(counts_total),
@@ -5304,6 +5626,8 @@ def report_orders_page():
         warehouses=warehouses,
         date_from_val=(request.args.get("date_from") or ""),
         date_to_val=(request.args.get("date_to") or ""),
+        total_qty=total_qty,
+        total_sum=total_sum,
         matrix=matrix,
     )
 
@@ -5352,13 +5676,16 @@ def api_report_orders():
         supplier_article_by_product: Dict[str, Any] = {}
         warehouses = set()
         for r in orders:
+            # Пропускаем отмененные заказы в отчете
+            if r.get("is_cancelled", False):
+                continue
             prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
             wh = str(r.get("Склад отгрузки") or "Не указан")
             warehouses.add(wh)
             counts_total[prod] += 1
             by_wh[prod][wh] += 1
             try:
-                price = float(r.get("Цена с учетом всех скидок") or 0)
+                price = float(r.get("Цена со скидкой продавца") or 0)
             except (TypeError, ValueError):
                 price = 0.0
             revenue_total[prod] += price
@@ -5457,12 +5784,20 @@ def api_report_orders():
                     })
             items_local.sort(key=lambda x: x["qty"], reverse=True)
             return items_local
-        items = _build_items(warehouse, show_all=False)
+        show_all = request.args.get("show_all_products") == "on"
+        items = _build_items(warehouse, show_all)
+        
+        # Вычисляем итоговые значения
+        total_qty = sum(item["qty"] for item in items)
+        total_sum = sum(item["sum"] for item in items)
+        
         return jsonify({
             "items": items,
             "date_from_fmt": date_from_fmt,
             "date_to_fmt": date_to_fmt,
             "warehouses": sorted(warehouses),
+            "total_qty": total_qty,
+            "total_sum": total_sum,
             "matrix": {
                 "counts_total": dict(counts_total),
                 "by_wh": {k: dict(v) for k, v in by_wh.items()},
@@ -5523,13 +5858,16 @@ def api_report_sales():
         supplier_article_by_product: Dict[str, Any] = {}
         warehouses = set()
         for r in orders:
+            # Пропускаем отмененные заказы в отчете
+            if r.get("is_cancelled", False):
+                continue
             prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
             wh = str(r.get("Склад отгрузки") or "Не указан")
             warehouses.add(wh)
             counts_total[prod] += 1
             by_wh[prod][wh] += 1
             try:
-                price = float(r.get("Цена с учетом всех скидок") or 0)
+                price = float(r.get("Цена со скидкой продавца") or 0)
             except (TypeError, ValueError):
                 price = 0.0
             revenue_total[prod] += price
@@ -5724,13 +6062,16 @@ def api_report_sales_export():
         warehouses = set()
         
         for r in orders:
+            # Пропускаем отмененные заказы в отчете
+            if r.get("is_cancelled", False):
+                continue
             prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
             wh = str(r.get("Склад отгрузки") or "Не указан")
             warehouses.add(wh)
             counts_total[prod] += 1
             by_wh[prod][wh] += 1
             try:
-                price = float(r.get("Цена с учетом всех скидок") or 0)
+                price = float(r.get("Цена со скидкой продавца") or 0)
             except (TypeError, ValueError):
                 price = 0.0
             revenue_total[prod] += price
@@ -7537,6 +7878,452 @@ def fetch_dimensions_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, 
         return {}
 
 
+# ----------------------------
+# Страницы и API: Аналитика товара
+# ----------------------------
+
+@app.route("/product/<int:nm_id>", methods=["GET"]) 
+@login_required
+def product_analytics_page(nm_id: int):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    # Период из query, может быть пустым при первом заходе
+    date_from = (request.args.get("date_from") or "").strip()
+    date_to = (request.args.get("date_to") or "").strip()
+
+    # Попробуем достать данные товара из кэша карточек для отрисовки шапки сразу
+    photo = None
+    supplier_article = None
+    barcode = None
+    product_name = None
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            if str(nmv) == str(nm_id):
+                photo = it.get("photo") or it.get("img")
+                supplier_article = it.get("supplier_article") or it.get("vendorCode") or it.get("vendor_code")
+                barcode = it.get("barcode")
+                product_name = it.get("name") or it.get("title") or it.get("subject") or "Без названия"
+                break
+    except Exception:
+        photo = None
+        supplier_article = None
+        barcode = None
+        product_name = None
+
+    # Форматированные даты для заголовков (могут быть пустыми)
+    try:
+        date_from_fmt = datetime.strptime(date_from, "%Y-%m-%d").strftime("%d.%m.%Y") if date_from else ""
+        date_to_fmt = datetime.strptime(date_to, "%Y-%m-%d").strftime("%d.%m.%Y") if date_to else ""
+    except Exception:
+        date_from_fmt = date_from
+        date_to_fmt = date_to
+
+    return render_template(
+        "product_analytics.html",
+        nm_id=nm_id,
+        photo=photo,
+        product_name=product_name,
+        supplier_article=supplier_article,
+        barcode=barcode,
+        date_from=date_from,
+        date_to=date_to,
+        date_from_fmt=date_from_fmt,
+        date_to_fmt=date_to_fmt,
+        token=token,
+    )
+
+
+@app.route("/api/product/<int:nm_id>", methods=["GET"]) 
+@login_required
+def api_product_analytics(nm_id: int):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "no_token"}), 400
+
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    force_refresh = (request.args.get("force_refresh") or "").strip() in ("1", "true", "True", "on")
+
+    if not req_from or not req_to:
+        return jsonify({"error": "bad_dates"}), 400
+
+    try:
+        if force_refresh:
+            raw_orders = fetch_orders_range(token, req_from, req_to)
+            orders = to_rows(raw_orders, req_from, req_to)
+            _update_period_cache_with_data(token, req_from, req_to, orders)
+            cache_info = {"used_cache_days": 0, "fetched_days": len(list(_daterange_inclusive(req_from, req_to)))}
+        else:
+            orders, cache_info = get_orders_with_period_cache(token, req_from, req_to)
+
+        # Фильтрация по nm_id - сначала собираем ВСЕ заказы по товару
+        all_product_orders = []
+        for r in orders:
+            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+            if str(nmv) == str(nm_id):
+                all_product_orders.append(r)
+
+        # Разделяем на активные и отмененные
+        total_orders = len(all_product_orders)
+        total_cancelled = len([r for r in all_product_orders if r.get("is_cancelled", False)])
+        total_active = total_orders - total_cancelled
+        
+        # Для остальных расчетов используем только активные заказы
+        filtered = [r for r in all_product_orders if not r.get("is_cancelled", False)]
+        total_revenue = round(sum(float(r.get("Цена со скидкой продавца") or 0) for r in filtered), 2)
+        
+        # Вычисляем средние продажи в день
+        try:
+            from datetime import datetime
+            date_from_dt = datetime.strptime(req_from, "%Y-%m-%d")
+            date_to_dt = datetime.strptime(req_to, "%Y-%m-%d")
+            days_count = (date_to_dt - date_from_dt).days + 1
+            avg_daily_sales = round(total_active / days_count, 1) if days_count > 0 else 0
+        except Exception:
+            avg_daily_sales = 0
+
+        # Серии графиков - используем все заказы для корректного отображения отмененных
+        o_counts_map, o_rev_map, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(all_product_orders)
+        labels = sorted(o_counts_map.keys())
+        series_orders = [o_counts_map.get(d, 0) for d in labels]
+        series_cancelled = [o_cancelled_counts_map.get(d, 0) for d in labels]
+        series_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in labels]
+        
+        # Склады (по активным заказам)
+        wh_summary = aggregate_by_warehouse_orders_only(filtered)
+
+        # Текущие остатки по складам для этого товара
+        # Собираем все возможные штрихкоды (SKU) для данного nm_id из кэша карточек
+        product_barcodes: set[str] = set()
+        try:
+            prod_cached_full = load_products_cache() or {}
+            for it in (prod_cached_full.get("items") or []):
+                nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+                if str(nmv) == str(nm_id):
+                    if it.get("barcode"):
+                        product_barcodes.add(str(it.get("barcode")))
+                    bars = it.get("barcodes") or []
+                    if isinstance(bars, list):
+                        for b in bars:
+                            if b:
+                                product_barcodes.add(str(b))
+                    sizes = it.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bl = s.get("skus") or s.get("barcodes")
+                            if isinstance(bl, list):
+                                for b in bl:
+                                    if b:
+                                        product_barcodes.add(str(b))
+                    break
+        except Exception:
+            pass
+
+        # Загружаем кэш остатков и агрегируем по складам только для штрихкодов этого товара
+        stock_by_warehouse: dict[str, int] = {}
+        try:
+            stocks_cached = load_stocks_cache() or {}
+            for stock_item in (stocks_cached.get("items") or []):
+                bc = str(stock_item.get("barcode") or "")
+                if not bc or (product_barcodes and bc not in product_barcodes):
+                    continue
+                wname = stock_item.get("warehouse", "") or ""
+                qty = int(stock_item.get("qty", 0) or 0)
+                if wname:
+                    stock_by_warehouse[wname] = stock_by_warehouse.get(wname, 0) + qty
+        except Exception:
+            stock_by_warehouse = {}
+
+        # Объединяем продажи и остатки по складам
+        warehouses_merged: list[dict[str, Any]] = []
+        seen_warehouses: set[str] = set()
+        for wh in (wh_summary or []):
+            wname = wh.get("warehouse") or ""
+            orders_count = int(wh.get("orders") or 0)
+            warehouses_merged.append({
+                "warehouse": wname,
+                "orders": orders_count,
+                "stock": int(stock_by_warehouse.get(wname, 0)),
+            })
+            seen_warehouses.add(wname)
+        # Добавляем склады, где есть только остатки
+        for wname, qty in stock_by_warehouse.items():
+            if wname not in seen_warehouses:
+                warehouses_merged.append({
+                    "warehouse": wname,
+                    "orders": 0,
+                    "stock": int(qty),
+                })
+        # Убираем склады без продаж и без остатков
+        warehouses_merged = [w for w in warehouses_merged if int(w.get("orders", 0)) > 0 or int(w.get("stock", 0)) > 0]
+        # Сортировка по продажам убыв., затем по остатку убыв.
+        warehouses_merged.sort(key=lambda x: (int(x.get("orders", 0)), int(x.get("stock", 0))), reverse=True)
+
+        # Динамика остатков с учетом реальных приходов (из кэша)
+        product_income_data = {}
+        try:
+            # Используем кэшированные данные о поставках
+            supplies_cache = load_fbw_supplies_detailed_cache()
+            if supplies_cache and supplies_cache.get("supplies_by_date"):
+                supplies_by_date = supplies_cache["supplies_by_date"]
+                
+                # Собираем приходы для данного товара
+                for date_str, barcodes_data in supplies_by_date.items():
+                    total_income = 0
+                    for barcode, qty in barcodes_data.items():
+                        if barcode in product_barcodes:
+                            total_income += qty
+                    
+                    if total_income > 0:
+                        product_income_data[date_str] = total_income
+                        
+        except Exception:
+            product_income_data = {}
+        
+        # Рассчитываем динамику остатков с учетом приходов и продаж
+        current_stock_total = sum(stock_by_warehouse.values()) if stock_by_warehouse else 0
+        series_stock = []
+        running_stock = current_stock_total
+        
+        # Идем по дням в обратном порядке
+        for day in reversed(labels):
+            daily_sales = o_counts_map.get(day, 0)
+            daily_income = product_income_data.get(day, 0)
+            
+            # Добавляем продажи к остатку (симулируем состояние до продаж)
+            running_stock += daily_sales
+            # Вычитаем приходы (симулируем состояние до прихода)
+            running_stock -= daily_income
+            
+            series_stock.append(max(0, running_stock))  # Остаток не может быть отрицательным
+        
+        # Разворачиваем массив обратно
+        series_stock.reverse()
+
+        # Информация о товаре - берем актуальные данные из кэша товаров
+        photo = None
+        product_name = None
+        supplier_article = None
+        barcode = None
+        try:
+            prod_cached = load_products_cache() or {}
+            for it in (prod_cached.get("items") or []):
+                nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+                if str(nmv) == str(nm_id):
+                    photo = it.get("photo") or it.get("img")
+                    product_name = it.get("name") or it.get("title") or it.get("subject") or "Без названия"
+                    supplier_article = it.get("supplier_article") or it.get("vendorCode") or it.get("vendor_code")
+                    barcode = it.get("barcode")
+                    break
+        except Exception:
+            photo = None
+            product_name = None
+            supplier_article = None
+            barcode = None
+
+        date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y") if req_from else ""
+        date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y") if req_to else ""
+
+        # Получаем историю изменений цены из данных заказов
+        price_history = []
+        try:
+            # Сначала попробуем получить текущую цену
+            prices_data = fetch_prices_data(token, [nm_id])
+            print(f"DEBUG: Prices data for nm_id {nm_id}: {prices_data}")
+            
+            # Создаем историю цен на основе данных заказов
+            # Средняя дневная цена = среднее по колонке "Цена с учетом всех скидок" за день
+            print(f"DEBUG: Building daily average prices from {len(filtered)} active orders")
+            print(f"DEBUG: Period: {req_from} to {req_to}")
+            print(f"DEBUG: Product nm_id: {nm_id}")
+            
+            # Проверим первые несколько заказов для отладки
+            for i, order in enumerate(filtered[:3]):
+                print(f"DEBUG: Sample order {i+1}: {order}")
+            
+            daily_sum_client: Dict[str, float] = {}  # Цена с учетом всех скидок (цена клиента)
+            daily_sum_seller: Dict[str, float] = {}  # Цена со скидкой продавца (моя цена)
+            daily_qty: Dict[str, int] = {}
+            
+            # Сначала собираем данные по дням с продажами
+            for i, order in enumerate(filtered):
+                # 1) Дата
+                order_date = (
+                    order.get("Дата")
+                    or order.get("Дата заказа")
+                    or order.get("Дата продажи")
+                    or order.get("sale_date")
+                    or order.get("date")
+                    or order.get("orderDate")
+                    or order.get("lastChangeDate")
+                )
+                if not order_date:
+                    continue
+                try:
+                    if isinstance(order_date, str):
+                        # берем только дату до 'T'
+                        date_str = str(order_date).split('T')[0].split()[0]
+                        parsed_date = None
+                        for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%Y/%m/%d"):
+                            try:
+                                parsed_date = datetime.strptime(date_str, fmt)
+                                break
+                            except Exception:
+                                continue
+                        if not parsed_date:
+                            # пробуем обрезать до первых 10 символов
+                            try:
+                                parsed_date = datetime.strptime(str(order_date)[:10], "%Y-%m-%d")
+                            except Exception:
+                                continue
+                    else:
+                        parsed_date = order_date
+                    date_key = parsed_date.strftime("%d.%m.%Y")
+                except Exception as date_err:
+                    print(f"DEBUG: date parse error: {order_date} -> {date_err}")
+                    continue
+
+                # 2) Цены (две разные цены)
+                price_all_discounts = (
+                    order.get("Цена с учетом всех скидок")
+                    or order.get("priceWithAllDiscounts")
+                    or order.get("retail_price")  # иногда приходит цена за единицу как retail_price
+                )
+                
+                price_seller_discount = (
+                    order.get("Цена со скидкой продавца")
+                    or order.get("priceWithSellerDiscount")
+                    or order.get("seller_price")
+                )
+
+                # если есть total 'retail_amount' и количество, вычислим цену
+                retail_amount = order.get("retail_amount") or order.get("sumWithAllDiscounts")
+
+                # количество единиц в заказе/продаже
+                qty_val_raw = order.get("quantity") or order.get("Кол-во") or order.get("qty") or order.get("sale_qty") or 1
+                
+                print(f"DEBUG: Order {i+1} - Date: {order_date}, Client price: {price_all_discounts}, Seller price: {price_seller_discount}, Qty: {qty_val_raw}")
+
+                qty_val = 1
+                try:
+                    qty_val = int(qty_val_raw) if qty_val_raw is not None else 1
+                except Exception:
+                    qty_val = 1
+
+                # Цена клиента (с учетом всех скидок)
+                price_client = None
+                try:
+                    if price_all_discounts is not None:
+                        price_client = float(price_all_discounts)
+                except Exception:
+                    price_client = None
+
+                if price_client is None and retail_amount is not None:
+                    try:
+                        amt = float(retail_amount)
+                        if qty_val > 0:
+                            price_client = amt / qty_val
+                    except Exception:
+                        pass
+
+                # Цена продавца (со скидкой продавца)
+                price_seller = None
+                try:
+                    if price_seller_discount is not None:
+                        price_seller = float(price_seller_discount)
+                except Exception:
+                    price_seller = None
+
+                if price_client is None and price_seller is None:
+                    # нет валидных цен — пропускаем
+                    continue
+
+                # Накапливаем суммы для обеих цен
+                if price_client is not None:
+                    daily_sum_client[date_key] = daily_sum_client.get(date_key, 0.0) + price_client * qty_val
+                if price_seller is not None:
+                    daily_sum_seller[date_key] = daily_sum_seller.get(date_key, 0.0) + price_seller * qty_val
+                
+                daily_qty[date_key] = daily_qty.get(date_key, 0) + qty_val
+            
+            print(f"DEBUG: Daily sums client: {daily_sum_client}")
+            print(f"DEBUG: Daily sums seller: {daily_sum_seller}")
+            print(f"DEBUG: Daily qty: {daily_qty}")
+            
+            # Создаем историю цен ТОЛЬКО для дней с реальными продажами (без протяжки)
+            all_dates = set(daily_sum_client.keys()) | set(daily_sum_seller.keys())
+            sorted_dates = sorted(all_dates, key=lambda x: datetime.strptime(x, "%d.%m.%Y"))
+            
+            for date_key in sorted_dates:
+                if daily_qty.get(date_key, 0) > 0:
+                    price_entry = {"date": date_key}
+                    
+                    # Средняя цена клиента
+                    if date_key in daily_sum_client:
+                        avg_price_client = round(daily_sum_client[date_key] / daily_qty[date_key], 2)
+                        price_entry["price_client"] = avg_price_client
+                        print(f"DEBUG: {date_key} - Client price: {avg_price_client} (qty {daily_qty[date_key]})")
+                    
+                    # Средняя цена продавца
+                    if date_key in daily_sum_seller:
+                        avg_price_seller = round(daily_sum_seller[date_key] / daily_qty[date_key], 2)
+                        price_entry["price_seller"] = avg_price_seller
+                        print(f"DEBUG: {date_key} - Seller price: {avg_price_seller} (qty {daily_qty[date_key]})")
+                    
+                    price_history.append(price_entry)
+                else:
+                    print(f"DEBUG: {date_key} - No quantity data, skipping")
+            
+            print(f"DEBUG: Extracted price history from orders: {price_history}")
+            
+            # НЕ создаем демонстрационные данные - используем только реальные данные из заказов
+            print(f"DEBUG: Final price history length: {len(price_history)}")
+            if len(price_history) == 0:
+                print("DEBUG: No price history found from orders - this might be normal if no sales in period")
+                        
+        except Exception as e:
+            print(f"Ошибка получения истории цен: {e}")
+            price_history = []
+
+        # НЕ создаем сплошной дневной ряд - показываем только дни с реальными продажами
+
+        return jsonify({
+            "kpi": {
+                "total_orders": total_orders,
+                "total_active_orders": total_active,
+                "total_cancelled_orders": total_cancelled,
+                "total_revenue": total_revenue,
+                "total_stock": current_stock_total,
+                "avg_daily_sales": avg_daily_sales,
+                "updated_at": cache_info.get("updated_at") if isinstance(cache_info, dict) else "",
+            },
+            "series": {
+                "labels": labels,
+                "orders": series_orders,
+                "cancelled": series_cancelled,
+                "revenue": series_revenue,
+                "stock": series_stock,
+                "income": [product_income_data.get(day, 0) for day in labels],
+            },
+            "warehouses": wh_summary,
+            "warehouses_sales_vs_stock": warehouses_merged,
+            "product": {
+                "nm_id": nm_id,
+                "name": product_name,
+                "supplier_article": supplier_article,
+                "barcode": barcode,
+                "photo": photo,
+            },
+            "date_from_fmt": date_from_fmt,
+            "date_to_fmt": date_to_fmt,
+            "cache_info": cache_info,
+            "price_history": price_history,
+        }), 200
+    except requests.HTTPError as http_err:
+        return jsonify({"error": f"api:{http_err.response.status_code}"}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
 def fetch_prices_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, Any]]:
     """Получает данные о ценах товаров через API Wildberries"""
     if not nm_ids:
@@ -7709,6 +8496,35 @@ def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
         return fetch_stocks_paginated(token)
     # Fallback to paginated flow
     return fetch_stocks_paginated(token)
+
+
+def fetch_product_price_history(token: str, nm_id: int) -> List[Dict[str, Any]]:
+    """Получает историю изменений цены товара через API Wildberries"""
+    if not token or not nm_id:
+        return []
+    
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        url = f"{PRODUCT_HISTORY_API_URL}/{nm_id}"
+        
+        response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # API возвращает массив объектов с историей изменений
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict) and 'data' in data:
+                return data['data']
+            else:
+                return [data] if data else []
+        else:
+            print(f"Ошибка получения истории цены для товара {nm_id}: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        print(f"Исключение при получении истории цены для товара {nm_id}: {e}")
+        return []
 
 
 def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
