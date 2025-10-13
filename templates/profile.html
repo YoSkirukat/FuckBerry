@@ -171,12 +171,17 @@
               {% endif %}
             </div>
             <div class="col-md-6">
-              <div class="text-muted small">Обработано поставок</div>
-              <div>{{ supplies_cache_info.total_supplies if supplies_cache_info else 0 }}</div>
+              <div class="text-muted small">Период кэша</div>
+              {% if supplies_cache_info and supplies_cache_info.cache_period_from and supplies_cache_info.cache_period_to %}
+                <div>{{ supplies_cache_info.cache_period_from }} — {{ supplies_cache_info.cache_period_to }}</div>
+              {% else %}
+                <div class="text-muted">—</div>
+              {% endif %}
+              
             </div>
             <div class="col-md-6">
-              <div class="text-muted small">Версия кэша</div>
-              <div>{{ supplies_cache_info.cache_version if supplies_cache_info else '—' }}</div>
+              <div class="text-muted small">Обработано поставок</div>
+              <div>{{ supplies_cache_info.total_supplies if supplies_cache_info else 0 }}</div>
             </div>
             <div class="col-12">
               <div class="d-flex gap-2 align-items-center">

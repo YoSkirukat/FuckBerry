@@ -57,7 +57,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple
 
 import requests
-from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory
+from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory, has_request_context
 import xlwt
 import jwt
 from io import BytesIO
@@ -80,6 +80,21 @@ from flask_login import (
 )
 
 APP_VERSION = "1.0.1"
+
+# --- Throttling for WB supplies API ---
+_last_supplies_api_call_ts: float = 0.0
+_SUPPLIES_API_MIN_INTERVAL_S: float = float(os.getenv("SUPPLIES_API_MIN_INTERVAL_S", "2.0"))
+
+def _supplies_api_throttle() -> None:
+    """Ensure at most ~30 req/min (min interval ~2s) across supplies endpoints."""
+    global _last_supplies_api_call_ts
+    if _SUPPLIES_API_MIN_INTERVAL_S <= 0:
+        return
+    now = time.time()
+    delta = now - _last_supplies_api_call_ts
+    if delta < _SUPPLIES_API_MIN_INTERVAL_S:
+        time.sleep(_SUPPLIES_API_MIN_INTERVAL_S - delta)
+    _last_supplies_api_call_ts = time.time()
 
 # -------------------- Кэш настроек маржи --------------------
 DEFAULT_MARGIN_SETTINGS = {
@@ -367,6 +382,9 @@ if not os.path.isdir(CACHE_DIR):
 _supplies_cache_updating: dict[int, bool] = {}
 _orders_cache_updating: dict[int, bool] = {}
 
+# Управление автопостроением кэша поставок: по умолчанию выключено
+SUPPLIES_CACHE_AUTO = os.getenv("SUPPLIES_CACHE_AUTO", "0") == "1"
+
 FBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/new"
 FBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders"
 FBS_ORDERS_STATUS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/status"
@@ -465,10 +483,12 @@ def fetch_fbw_supplies_list(token: str, days_back: int = 90) -> list[dict[str, A
     # Try Bearer first
     headers1 = {"Authorization": f"Bearer {token}"}
     try:
+        _supplies_api_throttle()
         resp = post_with_retry(FBW_SUPPLIES_LIST_URL, headers1, body)
         items = resp.json() or []
     except Exception:
         headers2 = {"Authorization": f"{token}"}
+        _supplies_api_throttle()
         resp = post_with_retry(FBW_SUPPLIES_LIST_URL, headers2, body)
         items = resp.json() or []
     # Sort by createDate desc
@@ -556,6 +576,7 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
             continue
             
         # Для остальных поставок получаем актуальные данные
+        _supplies_api_throttle()
         details = fetch_fbw_supply_details(token, supply_id)
         # Normalize fields; prefer details when available, fallback to list fields
         create_date = (details or {}).get("createDate") or it.get("createDate")
@@ -626,6 +647,7 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
             continue
             
         # Для остальных поставок получаем актуальные данные
+        _supplies_api_throttle()
         details = fetch_fbw_supply_details(token, supply_id)
         create_date = (details or {}).get("createDate") or it.get("createDate")
         supply_date = (details or {}).get("supplyDate") or it.get("supplyDate")
@@ -735,8 +757,6 @@ def _merge_package_counts(items: list[dict[str, Any]], cached_items: list[dict[s
         return merged
     except Exception:
         return items
-
-
 def _preload_package_counts(token: str, supplies: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Предварительно загружает количество коробок для поставок, которые еще не имеют этой информации.
@@ -998,16 +1018,21 @@ def save_fbw_supplies_cache(payload: Dict[str, Any]) -> None:
 
 
 # Расширенный кэш поставок с товарами (для быстрой аналитики)
-def _fbw_supplies_detailed_cache_path_for_user(user_id: int = None) -> str:
-    if user_id:
+def _fbw_supplies_detailed_cache_path_for_user(user_id: int | None = None) -> str:
+    if user_id is not None:
         return os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{user_id}.json")
-    elif current_user.is_authenticated:
-        return os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{current_user.id}.json")
+    # fallback без current_user в фоновых задачах
+    try:
+        if current_user and getattr(current_user, "is_authenticated", False):
+            return os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{current_user.id}.json")
+    except Exception:
+        pass
     return os.path.join(CACHE_DIR, "fbw_supplies_detailed_anon.json")
 
 
-def load_fbw_supplies_detailed_cache() -> Dict[str, Any] | None:
-    path = _fbw_supplies_detailed_cache_path_for_user()
+def load_fbw_supplies_detailed_cache(user_id: int | None = None) -> Dict[str, Any] | None:
+    """Безопасно загружает кэш поставок. Не зависит от current_user в фоновом потоке."""
+    path = _fbw_supplies_detailed_cache_path_for_user(user_id)
     if not os.path.isfile(path):
         return None
     
@@ -1060,32 +1085,72 @@ def is_supplies_cache_fresh() -> bool:
         return False
 
 
-def build_supplies_detailed_cache(token: str, user_id: int = None) -> Dict[str, Any]:
-    """Строит детальный кэш поставок с товарами за последние 6 месяцев"""
+def build_supplies_detailed_cache(
+    token: str,
+    user_id: int | None = None,
+    batch_size: int = 20,
+    pause_seconds: float = 1.0,
+    force_full: bool = False,
+    days_back: int | None = None,
+) -> Dict[str, Any]:
+    """Строит/обновляет детальный кэш поставок с товарами.
+
+    Поведение:
+    - Если кэша нет или force_full=True → загружаем за 6 месяцев (180 дней)
+    - Иначе (ежесуточное обслуживание) → обновляем только последние 10 дней
+    - Обработка идёт пакетами по batch_size с паузой pause_seconds между пакетами,
+      чтобы не ловить лимиты API.
+    """
     logger.info(f"Строим детальный кэш поставок для пользователя {user_id}...")
-    
-    # Получаем поставки за 6 месяцев
-    supplies_list = fetch_fbw_supplies_list(token, days_back=180)
-    print(f"Найдено {len(supplies_list)} поставок за 6 месяцев")
-    
-    supplies_detailed = {}
+
+    # Загружаем текущий кэш (если есть) для инкрементального обновления
+    existing_cache = None
+    try:
+        existing_cache = load_fbw_supplies_detailed_cache() or {}
+    except Exception:
+        existing_cache = None
+
+    supplies_by_date: Dict[str, Dict[str, int]] = (
+        (existing_cache.get("supplies_by_date") or {}) if existing_cache else {}
+    )
+
+    # Определяем глубину периода
+    if days_back is not None:
+        period_days = int(days_back)
+    else:
+        if force_full or not supplies_by_date:
+            period_days = 180
+        else:
+            period_days = 10
+
+    supplies_list = fetch_fbw_supplies_list(token, days_back=period_days)
+    total_supplies = len(supplies_list)
+    print(f"Найдено {total_supplies} поставок за {period_days} дней")
+
     processed_count = 0
-    
-    for supply in supplies_list:
+    last_api_call_ts = 0.0
+
+    for idx, supply in enumerate(supplies_list, start=1):
         supply_id = supply.get("supplyID") or supply.get("id")
         if not supply_id:
             continue
-            
+
         try:
-            # Получаем детали поставки
+            # Небольшая защита от слишком частых вызовов подряд
+            now = time.time()
+            if now - last_api_call_ts < 0.1:
+                time.sleep(0.1 - (now - last_api_call_ts))
+
             details = fetch_fbw_supply_details(token, supply_id)
+            last_api_call_ts = time.time()
             if not details:
                 continue
-                
-            # Получаем товары из поставки
+
+            # Между запросами выдерживаем очень короткую паузу
+            time.sleep(0.05)
             supply_goods = fetch_fbw_supply_goods(token, supply_id)
-            
-            # Формируем структуру данных
+            last_api_call_ts = time.time()
+
             supply_date = details.get("supplyDate") or details.get("createDate")
             if supply_date:
                 try:
@@ -1096,36 +1161,48 @@ def build_supplies_detailed_cache(token: str, user_id: int = None) -> Dict[str, 
                             supply_dt = datetime.strptime(supply_date, "%Y-%m-%d")
                     else:
                         supply_dt = supply_date
-                        
+
                     supply_date_str = supply_dt.strftime("%Y-%m-%d")
-                    
-                    supplies_detailed[supply_date_str] = supplies_detailed.get(supply_date_str, {})
-                    
+
+                    day_bucket = supplies_by_date.get(supply_date_str) or {}
                     for good in supply_goods:
-                        barcode = str(good.get("barcode", ""))
+                        barcode = str(good.get("barcode", "")).strip()
                         qty = int(good.get("quantity", 0) or 0)
-                        if barcode and qty > 0:
-                            if barcode not in supplies_detailed[supply_date_str]:
-                                supplies_detailed[supply_date_str][barcode] = 0
-                            supplies_detailed[supply_date_str][barcode] += qty
-                            
+                        if not barcode or qty <= 0:
+                            continue
+                        day_bucket[barcode] = day_bucket.get(barcode, 0) + qty
+                    supplies_by_date[supply_date_str] = day_bucket
+
                 except Exception:
-                    continue
-                    
+                    # Пропускаем специфичные проблемы парсинга
+                    pass
+
             processed_count += 1
             if processed_count % 10 == 0:
-                print(f"Обработано {processed_count}/{len(supplies_list)} поставок...")
-                
+                print(f"Обработано {processed_count}/{total_supplies} поставок...")
+
+            # Пакетная пауза, чтобы не ловить лимиты
+            if batch_size > 0 and (idx % batch_size == 0) and pause_seconds > 0:
+                time.sleep(pause_seconds)
+
         except Exception:
+            # Переходим к следующей поставке при любой частной ошибке
             continue
-    
-    print(f"Кэш построен: {len(supplies_detailed)} дней с поставками")
-    
+
+    # Финальный отчёт
+    if supplies_by_date:
+        try:
+            all_days = sorted(supplies_by_date.keys())
+            print(f"Кэш построен: {len(all_days)} дней с поставками (с {all_days[0]} по {all_days[-1]})")
+        except Exception:
+            print(f"Кэш построен: {len(supplies_by_date)} дней с поставками")
+    else:
+        print("Кэш построен: 0 дней с поставками")
+
     return {
-        "supplies_by_date": supplies_detailed,
+        "supplies_by_date": supplies_by_date,
         "last_updated": datetime.now(MOSCOW_TZ).isoformat(),
         "total_supplies_processed": processed_count,
-        "cache_version": "1.0"
     }
 
 
@@ -1471,8 +1548,6 @@ def load_last_results() -> Dict[str, Any] | None:
             return json.load(f)
     except Exception:
         return None
-
-
 def save_last_results(payload: Dict[str, Any]) -> None:
     path = _cache_path_for_user()
     try:
@@ -1617,7 +1692,7 @@ def parse_wb_datetime(value: str) -> datetime | None:
             return None
 
 
-def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 8, timeout_s: int = 60) -> requests.Response:
+def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 3, timeout_s: int = 30) -> requests.Response:
     last_exc: Exception | None = None
     last_resp: requests.Response | None = None
     for attempt in range(max_retries):
@@ -1648,7 +1723,7 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
     raise RuntimeError("Request failed after retries")
 
 
-def get_with_retry_json(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 8, timeout_s: int = 60) -> Any:
+def get_with_retry_json(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 3, timeout_s: int = 30) -> Any:
     resp = get_with_retry(url, headers, params, max_retries=max_retries, timeout_s=timeout_s)
     try:
         return resp.json()
@@ -1708,7 +1783,7 @@ def fetch_orders_range(token: str, start_date: str, end_date: str) -> List[Dict[
         if page_exceeds:
             break
         # Gentle delay between pages to avoid throttling
-        time.sleep(0.2)
+        time.sleep(0.1)
 
     return collected
 
@@ -1784,7 +1859,7 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
     while True:
         params = dict(params_base)
         params["rrdid"] = rrdid
-        data = get_with_retry_json(FIN_REPORT_URL, headers, params, max_retries=8, timeout_s=60)
+        data = get_with_retry_json(FIN_REPORT_URL, headers, params, max_retries=3, timeout_s=30)
         if not isinstance(data, list) or not data:
             break
         all_rows.extend(data)
@@ -1800,7 +1875,7 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
         except Exception:
             pass
         # Небольшая пауза между страницами (обычно не требуется, т.к. limit=100000 закрывает весь период одной страницей)
-        time.sleep(1.1)
+        time.sleep(0.5)
     return all_rows
 
 
@@ -2248,8 +2323,6 @@ def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
     if last_err:
         raise last_err
     return {}
-
-
 def fetch_fbs_latest_orders(token: str, want_count: int = 30, page_limit: int = 200, max_pages: int = 20) -> tuple[List[Dict[str, Any]], Any]:
     """Fetch multiple pages and return most recent `want_count` items by created time.
 
@@ -2657,7 +2730,7 @@ def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[di
             # Try with Bearer token first
             print(f"Making PUT request to: {url}")
             print(f"Headers: {headers1}")
-            resp = requests.put(url, headers=headers1, json=body, timeout=60)
+            resp = requests.put(url, headers=headers1, json=body, timeout=30)
             print(f"Response status: {resp.status_code}")
             if resp.status_code == 204:
                 print("Successfully updated with Bearer token")
@@ -2668,7 +2741,7 @@ def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[di
                 
                 # Try without Bearer token
                 print(f"Trying without Bearer token...")
-                resp2 = requests.put(url, headers=headers2, json=body, timeout=60)
+                resp2 = requests.put(url, headers=headers2, json=body, timeout=30)
                 print(f"Response status (no Bearer): {resp2.status_code}")
                 if resp2.status_code == 204:
                     print("Successfully updated without Bearer token")
@@ -3029,13 +3102,11 @@ def test_remote_file(url: str) -> Dict[str, Any]:
             "error": str(e),
             "accessible": False
         }
-
-
 def download_and_process_remote_file(url: str, user_id: int) -> Dict[str, Any]:
     """Download remote file and process it for stock updates"""
     try:
         # Download file
-        response = requests.get(url, timeout=60)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
         
         # Parse Excel file
@@ -3568,18 +3639,27 @@ def index():
                         db.session.commit()
                         
                         # Если токен изменился или кэш поставок устарел, строим новый кэш
-                        if token_changed or not is_supplies_cache_fresh():
-                            print(f"Токен изменился или кэш устарел, запускаем построение кэша поставок...")
+                        if SUPPLIES_CACHE_AUTO and (token_changed or not is_supplies_cache_fresh()):
+                            print(f"Токен изменился или кэш устарел, запускаем построение кэша поставок (auto={SUPPLIES_CACHE_AUTO})...")
                             # Запускаем в фоне (не блокируем основной запрос)
                             import threading
                             def build_cache_background():
                                 try:
-                                    cache_data = build_supplies_detailed_cache(token, current_user.id)
-                                    save_fbw_supplies_detailed_cache(cache_data)
+                                    # Если кэша нет — полная инициализация за 6 мес, иначе инкремент 10 дней
+                                    has_cache = bool(load_fbw_supplies_detailed_cache(current_user.id))
+                                    cache_data = build_supplies_detailed_cache(
+                                        token,
+                                        current_user.id,
+                                        batch_size=10,           # меньше пакет
+                                        pause_seconds=2.0,       # длиннее пауза
+                                        force_full=not has_cache,
+                                        days_back=(180 if not has_cache else 10),
+                                    )
+                                    save_fbw_supplies_detailed_cache(cache_data, current_user.id)
                                     print(f"Кэш поставок успешно построен для пользователя {current_user.id}")
                                 except Exception as e:
                                     print(f"Ошибка построения кэша поставок: {e}")
-                            
+
                             thread = threading.Thread(target=build_cache_background)
                             thread.daemon = True
                             thread.start()
@@ -3815,7 +3895,6 @@ def api_fbw_warehouses():
         return jsonify({"error": "api_error", "message": f"Ошибка API: {http_err.response.status_code}"}), 502
     except Exception as exc:
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
-
 @app.route("/api/fbw/planning/stocks", methods=["GET"])
 @login_required
 def api_fbw_planning_stocks():
@@ -4041,7 +4120,7 @@ def api_fbw_planning_orders():
             orders_url,
             headers=headers,
             params=orders_params,
-            timeout=60
+            timeout=30
         )
         
         if orders_response.status_code != 200:
@@ -4610,8 +4689,6 @@ def api_fbs_stock_auto_update_settings():
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-
-
 @app.route("/api/fbs-stock/auto-update/test", methods=["POST"])
 @login_required
 def api_fbs_stock_auto_update_test():
@@ -4752,16 +4829,32 @@ def api_refresh_supplies_cache():
         return jsonify({"error": "no_token"}), 401
     
     try:
+        # Если уже идёт обновление — не стартуем второе, сразу отвечаем
+        if _supplies_cache_updating.get(user_id):
+            return jsonify({
+                "success": True,
+                "message": "Обновление уже выполняется",
+                "in_progress": True,
+            })
+
         # Устанавливаем флаг блокировки для этого пользователя
         _supplies_cache_updating[user_id] = True
-        
+
         # Запускаем обновление кэша в фоновом потоке
         import threading
-        
+
         def build_cache_background():
             global _supplies_cache_updating
             try:
-                cache_data = build_supplies_detailed_cache(token, user_id)
+                has_cache = bool(load_fbw_supplies_detailed_cache(user_id))
+                cache_data = build_supplies_detailed_cache(
+                    token,
+                    user_id,
+                    batch_size=10,           # меньше пакет
+                    pause_seconds=2.0,       # длиннее пауза
+                    force_full=not has_cache,
+                    days_back=(180 if not has_cache else 10),
+                )
                 save_fbw_supplies_detailed_cache(cache_data, user_id)
                 print(f"Кэш поставок успешно обновлен для пользователя {user_id}")
             except Exception as e:
@@ -4769,16 +4862,19 @@ def api_refresh_supplies_cache():
             finally:
                 # Сбрасываем флаг блокировки для этого пользователя
                 _supplies_cache_updating[user_id] = False
-        
+
         thread = threading.Thread(target=build_cache_background)
         thread.daemon = True
         thread.start()
-        
+
+        # Сразу возвращаем предыдущие метаданные кэша, чтобы фронт мог работать
+        cached_meta = load_fbw_supplies_detailed_cache(user_id) or {}
         return jsonify({
             "success": True,
-            "message": "Обновление кэша поставок запущено в фоновом режиме. Это может занять несколько минут.",
-            "total_supplies": 0,  # Показываем 0, так как процесс еще идет
-            "last_updated": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+            "message": "Обновление кэша поставок запущено в фоне",
+            "in_progress": True,
+            "total_supplies": cached_meta.get("total_supplies_processed", 0),
+            "last_updated": cached_meta.get("last_updated"),
         })
     except Exception as exc:
         _supplies_cache_updating[user_id] = False  # Сбрасываем флаг в случае ошибки
@@ -5044,11 +5140,25 @@ def profile():
             try:
                 supplies_cache = load_fbw_supplies_detailed_cache()
                 if supplies_cache:
+                    # Определяем период кэша по ключам дней
+                    supplies_by_date = supplies_cache.get("supplies_by_date") or {}
+                    period_from = None
+                    period_to = None
+                    try:
+                        if supplies_by_date:
+                            keys = sorted(supplies_by_date.keys())
+                            period_from = keys[0]
+                            period_to = keys[-1]
+                    except Exception:
+                        pass
+
                     supplies_cache_info = {
                         "last_updated": supplies_cache.get("last_updated"),
                         "total_supplies": supplies_cache.get("total_supplies_processed", 0),
                         "is_fresh": is_supplies_cache_fresh(),
-                        "cache_version": supplies_cache.get("cache_version", "1.0")
+                        # заменяем cache_version на отображение периода кэша
+                        "cache_period_from": period_from,
+                        "cache_period_to": period_to,
                     }
             except Exception as e:
                 print(f"Ошибка загрузки кэша поставок: {e}")
@@ -5923,8 +6033,6 @@ def api_report_orders():
         }), 200
     except Exception as exc:
         return jsonify({"items": [], "error": str(exc)}), 200
-
-
 @app.route("/api/report/sales", methods=["GET"]) 
 @login_required
 def api_report_sales():
@@ -6702,8 +6810,6 @@ def fbs_page():
 
     # Не блокируем рендер страницы: текущие задания подтянем AJAX-ом
     return render_template("fbs.html", error=error, rows=rows, products_hint=products_hint, current_orders=[])
-
-
 @app.route("/fbs/export", methods=["POST"]) 
 @login_required
 def fbs_export():
@@ -7383,12 +7489,12 @@ def api_acceptance_coefficients():
         return jsonify({"error": str(exc)}), 500
 
 
-def post_with_retry(url: str, headers: Dict[str, str], json_body: Dict[str, Any], max_retries: int = 8) -> requests.Response:
+def post_with_retry(url: str, headers: Dict[str, str], json_body: Dict[str, Any], max_retries: int = 3) -> requests.Response:
     last_exc: Exception | None = None
     last_resp: requests.Response | None = None
     for attempt in range(max_retries):
         try:
-            resp = requests.post(url, headers=headers, json=json_body, timeout=60)
+            resp = requests.post(url, headers=headers, json=json_body, timeout=30)
             last_resp = resp
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry_after = resp.headers.get("Retry-After")
@@ -7486,8 +7592,6 @@ def fetch_all_cards(token: str, page_limit: int = 1000) -> List[Dict[str, Any]]:
         if len(cards) < page_limit:
             break
     return all_cards
-
-
 def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     try:
@@ -8043,8 +8147,6 @@ def product_analytics_page(nm_id: int):
         date_to_fmt=date_to_fmt,
         token=token,
     )
-
-
 @app.route("/api/product/<int:nm_id>", methods=["GET"]) 
 @login_required
 def api_product_analytics(nm_id: int):
@@ -8541,13 +8643,13 @@ def fetch_stocks_all(token: str) -> List[Dict[str, Any]]:
     # WB иногда отдаёт 502/504 — добавим несколько повторов и альтернативный заголовок
     try:
         # один запрос без агрессивных ретраев, чтобы не словить 429 по всплеску
-        resp = get_with_retry(STOCKS_API_URL, headers1, params={}, max_retries=1, timeout_s=60)
+        resp = get_with_retry(STOCKS_API_URL, headers1, params={}, max_retries=1, timeout_s=30)
         return resp.json()
     except requests.HTTPError as err:
         # если авторизация — попробуем без Bearer
         if err.response is not None and err.response.status_code in (401, 403):
             headers2 = {"Authorization": f"{token}"}
-            resp2 = get_with_retry(STOCKS_API_URL, headers2, params={}, max_retries=1, timeout_s=60)
+            resp2 = get_with_retry(STOCKS_API_URL, headers2, params={}, max_retries=1, timeout_s=30)
             return resp2.json()
         # 429 отдадим наверх без повторов — пусть фронт покажет таймер
         raise
@@ -8564,11 +8666,11 @@ def fetch_stocks_paginated(token: str, start_iso: str = "1970-01-01T00:00:00") -
             break
         params = {"dateFrom": cursor, "flag": 0}
         try:
-            resp = get_with_retry(STOCKS_API_URL, headers, params, max_retries=6, timeout_s=90)
+            resp = get_with_retry(STOCKS_API_URL, headers, params, max_retries=3, timeout_s=30)
         except requests.HTTPError as err:
             if err.response is not None and err.response.status_code in (401, 403):
                 alt_headers = {"Authorization": f"{token}"}
-                resp = get_with_retry(STOCKS_API_URL, alt_headers, params, max_retries=6, timeout_s=90)
+                resp = get_with_retry(STOCKS_API_URL, alt_headers, params, max_retries=3, timeout_s=30)
             else:
                 raise
         page = resp.json()
@@ -8587,7 +8689,7 @@ def fetch_stocks_paginated(token: str, start_iso: str = "1970-01-01T00:00:00") -
         if not last_lcd:
             break
         cursor = str(last_lcd)
-        time.sleep(0.25)
+        time.sleep(0.1)
     return collected
 
 
@@ -8837,8 +8939,6 @@ def api_stocks_refresh():
         return jsonify({"error": "http", "status": http_err.response.status_code}), 502
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-
-
 @app.route("/api/stocks/data", methods=["GET"]) 
 @login_required
 def api_stocks_data():
@@ -9627,8 +9727,6 @@ def api_notifications():
         })
     
     return jsonify({"notifications": result})
-
-
 @app.route("/api/notifications/<int:notification_id>/read", methods=["POST"])
 @login_required
 def api_mark_notification_read(notification_id: int):
