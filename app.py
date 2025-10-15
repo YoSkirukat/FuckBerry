@@ -1106,7 +1106,7 @@ def build_supplies_detailed_cache(
     # Загружаем текущий кэш (если есть) для инкрементального обновления
     existing_cache = None
     try:
-        existing_cache = load_fbw_supplies_detailed_cache() or {}
+        existing_cache = load_fbw_supplies_detailed_cache(user_id) or {}
     except Exception:
         existing_cache = None
 
@@ -1122,6 +1122,16 @@ def build_supplies_detailed_cache(
             period_days = 180
         else:
             period_days = 10
+
+    # При инкрементальном обновлении (10 дней) удаляем старые данные за этот период
+    # чтобы избежать дублирования при повторном обновлении
+    if period_days == 10 and supplies_by_date:
+        cutoff_date = (datetime.now(MOSCOW_TZ) - timedelta(days=10)).strftime("%Y-%m-%d")
+        # Удаляем данные за последние 10 дней из существующего кэша
+        keys_to_remove = [date for date in supplies_by_date.keys() if date >= cutoff_date]
+        for date in keys_to_remove:
+            del supplies_by_date[date]
+        print(f"Очищены данные за {len(keys_to_remove)} дней для инкрементального обновления")
 
     supplies_list = fetch_fbw_supplies_list(token, days_back=period_days)
     total_supplies = len(supplies_list)
