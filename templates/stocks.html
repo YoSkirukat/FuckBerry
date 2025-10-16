@@ -49,10 +49,11 @@
                   <th>Артикул продавца</th>
                   <th>Артикул WB</th>
                   <th>Баркод</th>
-                  <th class="text-end">Остаток (всего)</th>
+                  <th class="text-end">Остаток (на складе)</th>
+                  <th class="text-end">В пути</th>
                 </tr>
                 <tr>
-                  <th colspan="5"><input id="stocksSearch" type="search" class="form-control form-control-sm" placeholder="Поиск товара" /></th>
+                  <th colspan="6"><input id="stocksSearch" type="search" class="form-control form-control-sm" placeholder="Поиск товара" /></th>
                 </tr>
               </thead>
               <tbody>
@@ -63,16 +64,17 @@
                   <td>{{ p.nm_id or '' }}</td>
                   <td>{{ p.barcode or '' }}</td>
                   <td class="text-end">{{ p.total_qty or 0 }}</td>
+                  <td class="text-end">{{ p.total_in_transit or 0 }}</td>
                 </tr>
                 <tr class="collapse" id="prod-{{ loop.index }}">
                   <td></td>
                   <td colspan="3">
                     <div class="table-responsive">
                       <table class="table table-sm mb-0">
-                        <thead><tr><th>Склад</th><th class="text-end">Остаток</th></tr></thead>
+                        <thead><tr><th>Склад</th><th class="text-end">Остаток</th><th class="text-end">В пути</th></tr></thead>
                         <tbody>
                           {% for w in p.warehouses %}
-                          <tr><td>{{ w.warehouse }}</td><td class="text-end">{{ w.qty }}</td></tr>
+                          <tr><td>{{ w.warehouse }}</td><td class="text-end">{{ w.qty }}</td><td class="text-end">{{ w.in_transit or 0 }}</td></tr>
                           {% endfor %}
                         </tbody>
                       </table>
@@ -96,7 +98,8 @@
                 <tr>
                   <th style="width:56px;" class="text-center">#</th>
                   <th>Склад</th>
-                  <th class="text-end">Остаток (всего)</th>
+                  <th class="text-end">Остаток (на складе)</th>
+                  <th class="text-end">В пути</th>
                 </tr>
               </thead>
               <tbody>
@@ -105,16 +108,17 @@
                   <td class="text-center">{{ loop.index }}</td>
                   <td>{{ w.warehouse or '' }}</td>
                   <td class="text-end">{{ w.total_qty or 0 }}</td>
+                  <td class="text-end">{{ w.total_in_transit or 0 }}</td>
                 </tr>
                 <tr class="collapse" id="wh-{{ loop.index }}">
                   <td></td>
                   <td colspan="2">
                     <div class="table-responsive">
                       <table class="table table-sm mb-0">
-                        <thead><tr><th>Артикул продавца</th><th>Артикул WB</th><th>Баркод</th><th class="text-end">Остаток</th></tr></thead>
+                        <thead><tr><th>Артикул продавца</th><th>Артикул WB</th><th>Баркод</th><th class="text-end">Остаток</th><th class="text-end">В пути</th></tr></thead>
                         <tbody>
                           {% for p in w.products %}
-                          <tr><td>{{ p.vendor_code }}</td><td>{{ p.nm_id }}</td><td>{{ p.barcode }}</td><td class="text-end">{{ p.qty }}</td></tr>
+                          <tr><td>{{ p.vendor_code }}</td><td>{{ p.nm_id }}</td><td>{{ p.barcode }}</td><td class="text-end">{{ p.qty }}</td><td class="text-end">{{ p.in_transit or 0 }}</td></tr>
                           {% endfor %}
                         </tbody>
                       </table>
@@ -172,7 +176,10 @@
               const djson = await dres.json();
               if (dres.ok && djson) {
                 const total = document.querySelector('h1');
-                if (total && djson.total_qty_all != null) total.innerHTML = `Остатки на складах (${djson.total_qty_all} шт.)`;
+                if (total && djson.total_qty_all != null) {
+                  const inTransit = (djson.total_in_transit_all || 0).toLocaleString('ru-RU');
+                  total.innerHTML = `Остатки на складах (${(djson.total_qty_all||0).toLocaleString('ru-RU')} шт., в пути: ${inTransit})`;
+                }
                 // Перерисовка вкладки По товарам
                 const tbodyProd = document.querySelector('#byProductsTable tbody');
                 if (tbodyProd && Array.isArray(djson.products)) {
@@ -180,9 +187,9 @@
                   let idx=1;
                   for (const p of djson.products) {
                     const tr = document.createElement('tr'); tr.className='prod-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#prod-${idx}`); tr.style.cursor='pointer';
-                    tr.innerHTML = `<td class="text-center">${idx}</td><td>${p.vendor_code||''}</td><td>${p.nm_id||''}</td><td>${p.barcode||''}</td><td class="text-end">${(p.total_qty||0).toLocaleString('ru-RU')}</td>`;
+                    tr.innerHTML = `<td class=\"text-center\">${idx}</td><td>${p.vendor_code||''}</td><td>${p.nm_id||''}</td><td>${p.barcode||''}</td><td class=\"text-end\">${(p.total_qty||0).toLocaleString('ru-RU')}</td><td class=\"text-end\">${(p.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
                     const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `prod-${idx}`;
-                    trd.innerHTML = `<td></td><td colspan="4"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Склад</th><th class="text-end">Остаток</th></tr></thead><tbody>${(p.warehouses||[]).map(w=>`<tr><td>${w.warehouse}</td><td class='text-end'>${(w.qty||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></td>`;
+                    trd.innerHTML = `<td></td><td colspan=\"5\"><div class=\"table-responsive\"><table class=\"table table-sm mb-0\"><thead><tr><th>Склад</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(p.warehouses||[]).map(w=>`<tr><td>${w.warehouse}</td><td class='text-end'>${(w.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(w.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></td>`;
                     tbodyProd.appendChild(tr); tbodyProd.appendChild(trd); idx++;
                   }
                 }
@@ -193,9 +200,9 @@
                   let idx=1;
                   for (const w of djson.warehouses) {
                     const tr = document.createElement('tr'); tr.className='wh-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#wh-${idx}`); tr.style.cursor='pointer';
-                    tr.innerHTML = `<td class="text-center">${idx}</td><td>${w.warehouse||''}</td><td class="text-end">${(w.total_qty||0).toLocaleString('ru-RU')}</td>`;
+                    tr.innerHTML = `<td class=\"text-center\">${idx}</td><td>${w.warehouse||''}</td><td class=\"text-end\">${(w.total_qty||0).toLocaleString('ru-RU')}</td><td class=\"text-end\">${(w.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
                     const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `wh-${idx}`;
-                    trd.innerHTML = `<td></td><td colspan="2"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Артикул продавца</th><th>Артикул WB</th><th>Баркод</th><th class="text-end">Остаток</th></tr></thead><tbody>${(w.products||[]).map(p=>`<tr><td>${p.vendor_code||''}</td><td>${p.nm_id||''}</td><td>${p.barcode||''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></td>`;
+                    trd.innerHTML = `<td></td><td colspan=\"3\"><div class=\"table-responsive\"><table class=\"table table-sm mb-0\"><thead><tr><th>Артикул продавца</th><th>Артикул WB</th><th>Баркод</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(w.products||[]).map(p=>`<tr><td>${p.vendor_code||''}</td><td>${p.nm_id||''}</td><td>${p.barcode||''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></td>`;
                     tbodyWh.appendChild(tr); tbodyWh.appendChild(trd); idx++;
                   }
                 }
@@ -210,6 +217,9 @@
           }
         });
       }
+      
+      
+      
       const search = document.getElementById('stocksSearch');
       const tbody = document.querySelector('#byProductsTable tbody');
       if (search && tbody) {

@@ -615,8 +615,6 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
         supplies.append(supply_data)
 
     return supplies
-
-
 def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[str, Any]]:
     base_list = fetch_fbw_supplies_list(token)
     if offset < 0:
@@ -957,6 +955,41 @@ def save_stocks_cache(payload: Dict[str, Any]) -> None:
         pass
 
 
+def load_stocks_cache_for_user(user_id: int) -> Dict[str, Any] | None:
+    """Загружает кэш остатков для конкретного пользователя"""
+    path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def save_stocks_cache_for_user(user_id: int, payload: Dict[str, Any]) -> None:
+    """Сохраняет кэш остатков для конкретного пользователя"""
+    path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
+    try:
+        enriched = dict(payload)
+        enriched["_user_id"] = user_id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def clear_stocks_cache_for_user(user_id: int) -> None:
+    """Очищает кэш остатков для конкретного пользователя"""
+    path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"Cleared stocks cache for user {user_id}")
+    except Exception as e:
+        print(f"Error clearing stocks cache for user {user_id}: {e}")
+
+
 # FBS supplies cache helpers (per user)
 def _fbs_supplies_cache_path_for_user() -> str:
     if current_user.is_authenticated:
@@ -1259,8 +1292,6 @@ def save_orders_cache_meta(payload: Dict[str, Any], user_id: int = None) -> None
             json.dump(enriched, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
-
 def is_orders_cache_fresh() -> bool:
     meta = load_orders_cache_meta()
     if not meta:
@@ -1887,8 +1918,6 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
         # Небольшая пауза между страницами (обычно не требуется, т.к. limit=100000 закрывает весь период одной страницей)
         time.sleep(0.5)
     return all_rows
-
-
 def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Aggregate rows by product (nm_id + supplierArticle) to qty and revenue.
     Fields per docs: realize/prices/quantities. We'll use 'quantity' and 'retail_amount' if present.
@@ -2527,8 +2556,6 @@ def fetch_seller_info(token: str) -> Dict[str, Any] | None:
             return resp.json()
         except Exception:
             return None
-
-
 def decode_token_info(token: str) -> Dict[str, Any] | None:
     """Decode JWT token to extract creation and expiration information"""
     if not token:
@@ -2853,10 +2880,11 @@ def mark_all_notifications_as_read(user_id: int) -> int:
 
 def cleanup_old_notifications(days: int = 30) -> int:
     """Clean up notifications older than specified days"""
-    cutoff_date = datetime.now(MOSCOW_TZ) - timedelta(days=days)
-    count = Notification.query.filter(Notification.created_at < cutoff_date).delete()
-    db.session.commit()
-    return count
+    with app.app_context():
+        cutoff_date = datetime.now(MOSCOW_TZ) - timedelta(days=days)
+        count = Notification.query.filter(Notification.created_at < cutoff_date).delete()
+        db.session.commit()
+        return count
 
 
 def check_fbs_new_orders_for_notifications():
@@ -3021,6 +3049,14 @@ def start_notification_monitoring():
                 # Clean up old notifications every hour
                 if current_time.minute == 0:
                     cleanup_old_notifications()
+                
+                # Auto-refresh stocks every 30 minutes
+                if current_time.minute % 30 == 0:
+                    print(f"Triggering auto stocks refresh at {current_time.strftime('%H:%M:%S')}")
+                    try:
+                        auto_refresh_stocks_for_all_users()
+                    except Exception as e:
+                        print(f"Error in auto stocks refresh: {e}")
                     
             except Exception as e:
                 print(f"Error in monitoring loop: {e}")
@@ -3031,6 +3067,75 @@ def start_notification_monitoring():
     monitor_thread.start()
     _monitoring_started = True
     print("Notification monitoring started")
+
+
+def auto_refresh_stocks_for_all_users():
+    """Автоматически обновляет остатки для всех пользователей с токенами"""
+    try:
+        # Создаем контекст приложения для работы с базой данных
+        with app.app_context():
+            # User уже определен в этом файле
+            
+            # Получаем всех пользователей с токенами
+            try:
+                users_with_tokens = User.query.filter(User.wb_token.isnot(None), User.wb_token != '').all()
+            except Exception as e:
+                print(f"Error querying users: {e}")
+                return
+            
+            if not users_with_tokens:
+                print("No users with tokens found for auto stocks refresh")
+                return
+            
+            print(f"Auto-refreshing stocks for {len(users_with_tokens)} users")
+            
+            for i, user in enumerate(users_with_tokens):
+                try:
+                    # Проверяем, нужно ли обновлять кэш (если он устарел)
+                    cached = load_stocks_cache_for_user(user.id)
+                    should_refresh = True
+                    
+                    if cached and cached.get("_user_id") == user.id:
+                        updated_at = cached.get("updated_at")
+                        if updated_at:
+                            try:
+                                cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
+                                # Если остатки обновлялись менее 25 минут назад, пропускаем
+                                if (datetime.now() - cache_time).total_seconds() < 1500:  # 25 минут
+                                    should_refresh = False
+                                    print(f"Skipping auto-refresh for user {user.id} - cache is fresh")
+                            except Exception:
+                                pass
+                    
+                    if should_refresh:
+                        print(f"Auto-refreshing stocks for user {user.id}")
+                        
+                        # Добавляем задержку между запросами для избежания 429 ошибок
+                        if i > 0:
+                            time.sleep(2)  # 2 секунды между запросами
+                        
+                        raw = fetch_stocks_resilient(user.wb_token)
+                        items = normalize_stocks(raw)
+                        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                        save_stocks_cache_for_user(user.id, {"items": items, "updated_at": now_str})
+                        print(f"Auto-refresh completed for user {user.id}: {len(items)} items at {now_str}")
+                    
+                except requests.HTTPError as e:
+                    if e.response and e.response.status_code == 401:
+                        print(f"User {user.id}: Invalid token (401) - skipping")
+                    elif e.response and e.response.status_code == 429:
+                        print(f"User {user.id}: Rate limit exceeded (429) - will retry later")
+                    else:
+                        print(f"Error auto-refreshing stocks for user {user.id}: {e}")
+                    continue
+                except Exception as e:
+                    print(f"Error auto-refreshing stocks for user {user.id}: {e}")
+                    continue
+            
+            print("Auto stocks refresh cycle completed")
+        
+    except Exception as e:
+        print(f"Error in auto_refresh_stocks_for_all_users: {e}")
 
 
 def load_auto_update_settings() -> Dict[str, Any]:
@@ -3160,8 +3265,6 @@ def download_and_process_remote_file(url: str, user_id: int) -> Dict[str, Any]:
         
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-
 def get_reserved_quantities_from_fbs_tasks(user_id: int) -> Dict[str, int]:
     """Get reserved quantities from FBS tasks for each barcode"""
     print(f"=== GET_RESERVED_QUANTITIES_FROM_FBS_TASKS CALLED ===")
@@ -3804,8 +3907,6 @@ def fbw_planning_page():
         error=error,
         token=token
     )
-
-
 @app.route("/api/fbw/planning/products", methods=["GET"])
 @login_required
 def api_fbw_planning_products():
@@ -4307,7 +4408,6 @@ def api_fbw_planning_export_excel():
         import traceback
         traceback.print_exc()
         return jsonify({"error": f"Ошибка экспорта: {str(e)}"}), 500
-
 @app.route("/api/fbw/planning/supplies", methods=["GET"])
 @login_required
 def api_fbw_planning_supplies():
@@ -4457,7 +4557,8 @@ def api_fbw_planning_supplies():
     except Exception as e:
         return jsonify({"error": "server_error", "message": str(e)}), 500
 
-@app.route("/api/fbw/supplies", methods=["GET"]) 
+
+@app.route("/api/fbw/supplies", methods=["GET"])
 @login_required
 def api_fbw_supplies():
     # If cached=1, return cached items only (no API calls)
@@ -4951,8 +5052,6 @@ def api_cache_status():
         "supplies_cache_updating": _supplies_cache_updating.get(user_id, False),
         "orders_cache_updating": _orders_cache_updating.get(user_id, False)
     })
-
-
 @app.route("/api/fbw/supplies/<supply_id>/package-count", methods=["GET"]) 
 @login_required
 def api_fbw_supply_package_count(supply_id: str):
@@ -4987,7 +5086,6 @@ def api_fbw_supply_package_count(supply_id: str):
         return jsonify({"error": f"api_{http_err.response_status}"}), 500
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
-
 @app.route("/api/orders-refresh", methods=["POST"]) 
 @login_required
 def api_orders_refresh():
@@ -5623,8 +5721,6 @@ def report_sales_page():
         date_to_val=(request.args.get("date_to") or ""),
         matrix=matrix,
     )
-
-
 @app.route("/report/orders", methods=["GET"]) 
 @login_required
 def report_orders_page():
@@ -5861,8 +5957,6 @@ def report_orders_page():
         total_sum=total_sum,
         matrix=matrix,
     )
-
-
 @app.route("/api/report/orders", methods=["GET"]) 
 @login_required
 def api_report_orders():
@@ -6241,8 +6335,6 @@ def api_report_sales():
         }), 200
     except Exception as exc:
         return jsonify({"items": [], "error": str(exc)}), 200
-
-
 @app.route("/api/report/sales/export", methods=["GET"])
 @login_required
 def api_report_sales_export():
@@ -7078,8 +7170,6 @@ def _collect_fbs_orders_for_supplies(token: str, max_pages: int = 5, limit: int 
         cursor = next_cursor
         pages += 1
     return collected
-
-
 def _aggregate_fbs_supplies(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     groups: Dict[str, Dict[str, Any]] = {}
     for it in items:
@@ -7458,8 +7548,6 @@ def coefficients_page():
         generated_at=generated_at,
         period_label=period_label,
     )
-
-
 @app.route("/api/acceptance-coefficients", methods=["GET"]) 
 @login_required
 def api_acceptance_coefficients():
@@ -7677,8 +7765,6 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     except Exception:
         pass
     return items
-
-
 def update_cards_dimensions(token: str, updates: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Обновляет размеры и вес товаров через API Wildberries
@@ -8101,12 +8187,9 @@ def fetch_dimensions_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, 
         import traceback
         traceback.print_exc()
         return {}
-
-
 # ----------------------------
 # Страницы и API: Аналитика товара
 # ----------------------------
-
 @app.route("/product/<int:nm_id>", methods=["GET"]) 
 @login_required
 def product_analytics_page(nm_id: int):
@@ -8748,12 +8831,12 @@ def fetch_product_price_history(token: str, nm_id: int) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"Исключение при получении истории цены для товара {nm_id}: {e}")
         return []
-
-
 def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for r in rows or []:
-        qty_val = r.get("quantity") or r.get("qty") or r.get("inWayToClient") or 0
+        # On-hand stock per WB statistics API is in field 'quantity'.
+        # In-transit can be represented by 'inWayToClient' and possibly 'inWayFromClient'.
+        qty_val = r.get("quantity") or r.get("qty") or 0
         try:
             qty_int = int(qty_val)
         except Exception:
@@ -8761,16 +8844,34 @@ def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 qty_int = int(float(qty_val))
             except Exception:
                 qty_int = 0
+        # Collect in-transit (both directions if provided by API)
+        in_way_to_client = r.get("inWayToClient") or 0
+        in_way_from_client = r.get("inWayFromClient") or 0
+        try:
+            in_way_to_client = int(in_way_to_client)
+        except Exception:
+            try:
+                in_way_to_client = int(float(in_way_to_client))
+            except Exception:
+                in_way_to_client = 0
+        try:
+            in_way_from_client = int(in_way_from_client)
+        except Exception:
+            try:
+                in_way_from_client = int(float(in_way_from_client))
+            except Exception:
+                in_way_from_client = 0
+        in_transit_total = max(0, in_way_to_client + in_way_from_client)
         items.append({
             "vendor_code": r.get("supplierArticle") or r.get("vendorCode") or r.get("article"),
             "barcode": r.get("barcode") or r.get("skus") or r.get("sku"),
             "nm_id": r.get("nmId") or r.get("nmID") or r.get("nm") or None,
+            # Keep 'qty' as on-hand to not break existing aggregations that expect it
             "qty": qty_int,
+            "in_transit": in_transit_total,
             "warehouse": r.get("warehouseName") or r.get("warehouse") or r.get("warehouse_name"),
         })
     return items
-
-
 def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False) -> bool:
     """
     Обновляет остатки если нужно (если кэш устарел или принудительно)
@@ -8874,24 +8975,34 @@ def stocks_page():
             error = f"Ошибка: {exc}"
     # Aggregations
     total_qty_all = sum(int(it.get("qty", 0) or 0) for it in items)
+    total_in_transit_all = sum(int(it.get("in_transit", 0) or 0) for it in items)
     # by product
     prod_map: Dict[tuple, Dict[str, Any]] = {}
     for it in items:
         key = (it.get("vendor_code") or "", it.get("barcode") or "")
         rec = prod_map.get(key)
         if not rec:
-            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "warehouses": []}
+            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "total_in_transit": 0, "warehouses": []}
             prod_map[key] = rec
         rec["total_qty"] += int(it.get("qty", 0) or 0)
-        rec["warehouses"].append({"warehouse": it.get("warehouse"), "qty": int(it.get("qty", 0) or 0)})
-    # Collapse warehouses per product, filter zeroes, sort by qty desc
+        rec["total_in_transit"] += int(it.get("in_transit", 0) or 0)
+        rec["warehouses"].append({
+            "warehouse": it.get("warehouse"),
+            "qty": int(it.get("qty", 0) or 0),
+            "in_transit": int(it.get("in_transit", 0) or 0),
+        })
     for rec in prod_map.values():
         from collections import defaultdict as _dd
-        acc = _dd(int)
+        qty_acc = _dd(int)
+        transit_acc = _dd(int)
         for w in rec["warehouses"]:
             name = w.get("warehouse") or ""
-            acc[name] += int(w.get("qty", 0) or 0)
-        wh_list = [{"warehouse": name, "qty": qty} for name, qty in acc.items() if qty > 0]
+            qty_acc[name] += int(w.get("qty", 0) or 0)
+            transit_acc[name] += int(w.get("in_transit", 0) or 0)
+        wh_list = [
+            {"warehouse": name, "qty": qty, "in_transit": transit_acc.get(name, 0)}
+            for name, qty in qty_acc.items() if qty > 0 or transit_acc.get(name, 0) > 0
+        ]
         wh_list.sort(key=lambda x: (-x["qty"], x["warehouse"]))
         rec["warehouses"] = wh_list
     products_agg = sorted(prod_map.values(), key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
@@ -8901,15 +9012,18 @@ def stocks_page():
         w = it.get("warehouse") or ""
         rec = wh_map.get(w)
         if not rec:
-            rec = {"warehouse": w, "total_qty": 0, "products": []}
+            rec = {"warehouse": w, "total_qty": 0, "total_in_transit": 0, "products": []}
             wh_map[w] = rec
         qty_i = int(it.get("qty", 0) or 0)
+        in_transit_i = int(it.get("in_transit", 0) or 0)
         rec["total_qty"] += qty_i
+        rec["total_in_transit"] += in_transit_i
         rec["products"].append({
             "vendor_code": it.get("vendor_code"),
             "barcode": it.get("barcode"),
             "nm_id": it.get("nm_id"),
             "qty": qty_i,
+            "in_transit": in_transit_i,
         })
     for rec in wh_map.values():
         rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
@@ -8961,24 +9075,40 @@ def api_stocks_data():
         total_qty_all = sum(int((it.get("qty") or 0)) for it in items)
     except Exception:
         total_qty_all = 0
+    try:
+        total_in_transit_all = sum(int((it.get("in_transit") or 0)) for it in items)
+    except Exception:
+        total_in_transit_all = 0
     # by product (same shape as on page)
     prod_map: Dict[tuple, Dict[str, Any]] = {}
     for it in items:
         key = (it.get("vendor_code") or "", it.get("barcode") or "")
         rec = prod_map.get(key)
         if not rec:
-            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "warehouses": []}
+            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "total_in_transit": 0, "warehouses": []}
             prod_map[key] = rec
         qty_i = int(it.get("qty", 0) or 0)
         rec["total_qty"] += qty_i
-        rec["warehouses"].append({"warehouse": it.get("warehouse"), "qty": qty_i})
+        rec["total_in_transit"] += int(it.get("in_transit", 0) or 0)
+        rec["warehouses"].append({
+            "warehouse": it.get("warehouse"),
+            "qty": qty_i,
+            "in_transit": int(it.get("in_transit", 0) or 0),
+        })
     from collections import defaultdict as _dd
     products_agg = []
     for rec in prod_map.values():
-        acc = _dd(int)
+        qty_acc = _dd(int)
+        transit_acc = _dd(int)
         for w in rec["warehouses"]:
-            acc[w.get("warehouse") or ""] += int(w.get("qty", 0) or 0)
-        rec["warehouses"] = [{"warehouse": n, "qty": q} for n, q in acc.items() if q > 0]
+            name = w.get("warehouse") or ""
+            qty_acc[name] += int(w.get("qty", 0) or 0)
+            transit_acc[name] += int(w.get("in_transit", 0) or 0)
+        rec["total_in_transit"] = sum(transit_acc.values())
+        rec["warehouses"] = [
+            {"warehouse": name, "qty": qty, "in_transit": transit_acc.get(name, 0)}
+            for name, qty in qty_acc.items() if qty > 0 or transit_acc.get(name, 0) > 0
+        ]
         rec["warehouses"].sort(key=lambda x: (-x["qty"], x["warehouse"]))
         products_agg.append(rec)
     products_agg.sort(key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
@@ -8989,15 +9119,18 @@ def api_stocks_data():
         w = it.get("warehouse") or ""
         rec = wh_map.get(w)
         if not rec:
-            rec = {"warehouse": w, "total_qty": 0, "products": []}
+            rec = {"warehouse": w, "total_qty": 0, "total_in_transit": 0, "products": []}
             wh_map[w] = rec
         qty_i = int(it.get("qty", 0) or 0)
+        in_transit_i = int(it.get("in_transit", 0) or 0)
         rec["total_qty"] += qty_i
+        rec["total_in_transit"] += in_transit_i
         rec["products"].append({
             "vendor_code": it.get("vendor_code"),
             "nm_id": it.get("nm_id"),
             "barcode": it.get("barcode"),
             "qty": qty_i,
+            "in_transit": in_transit_i,
         })
     for rec in wh_map.values():
         rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
@@ -9008,6 +9141,7 @@ def api_stocks_data():
         "warehouses": warehouses_agg,
         "total_qty_all": total_qty_all,
         "updated_at": cached.get("updated_at"),
+        "total_in_transit_all": total_in_transit_all,
     })
 
 @app.route("/stocks/export", methods=["POST"]) 
@@ -9028,13 +9162,14 @@ def stocks_export():
         wb = Workbook()
         ws = wb.active
         ws.title = "stocks"
-        headers = ["Артикул продавца", "Баркод", "Остаток", "Склад"]
+        headers = ["Артикул продавца", "Баркод", "Остаток", "В пути", "Склад"]
         ws.append(headers)
         for it in items:
             ws.append([
                 it.get("vendor_code", ""),
                 it.get("barcode", ""),
                 it.get("qty", 0),
+                it.get("in_transit", 0),
                 it.get("warehouse", ""),
             ])
         output = io.BytesIO()
@@ -9307,8 +9442,6 @@ def admin_users():
     
     users = User.query.order_by(User.id.asc()).all()
     return render_template("admin_users.html", users=users, message=None)
-
-
 @app.route("/admin/users/create", methods=["POST"]) 
 @login_required
 def admin_users_create():
@@ -9352,8 +9485,6 @@ def admin_users_create():
         app.logger.exception("admin_users_create failed")
         flash(f"Ошибка создания пользователя: {exc}")
     return redirect(url_for("admin_users"))
-
-
 @app.route("/admin/users/<int:user_id>/block", methods=["POST"]) 
 @login_required
 def admin_users_block(user_id: int):
@@ -9388,8 +9519,6 @@ def admin_users_unblock(user_id: int):
             db.session.rollback()
             flash("Ошибка")
     return redirect(url_for("admin_users"))
-
-
 @app.route("/admin/users/<int:user_id>/reset", methods=["POST"]) 
 @login_required
 def admin_users_reset(user_id: int):
@@ -9931,8 +10060,6 @@ def tools_prices_page():
         error=error,
         token=token
     )
-
-
 @app.route("/api/prices/upload", methods=["POST"])
 @login_required
 def api_prices_upload():
@@ -9998,8 +10125,6 @@ def api_prices_upload():
         
     except Exception as e:
         return jsonify({"success": False, "error": f"Ошибка обработки файла: {str(e)}"}), 500
-
-
 @app.route("/api/prices/save", methods=["POST"])
 @login_required
 def api_prices_save():
