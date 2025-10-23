@@ -8676,15 +8676,26 @@ def fetch_prices_data(token: str, nm_ids: List[int]) -> Dict[int, Dict[str, Any]
                             price = first_size.get("price", 0)  # Базовая цена
                             discounted_price = first_size.get("discountedPrice", price)  # Цена со скидкой
                             
+                            # Логируем все доступные поля для анализа
+                            print(f"DEBUG: Все поля в first_size для товара {nm_id}: {list(first_size.keys())}")
+                            
                             if price > 0:
                                 club_discounted_price = first_size.get("clubDiscountedPrice", discounted_price)  # Цена со скидкой WB кошелька
+                                
+                                # Вычисляем скидку продавца как разность между базовой ценой и ценой со скидкой
+                                seller_discount_amount = price - discounted_price if price > discounted_price else 0
+                                
+                                # Вычисляем процент скидки продавца
+                                seller_discount_percent = (seller_discount_amount / price * 100) if price > 0 else 0
                                 
                                 prices_data[nm_id] = {
                                     "price": price,  # Цена до скидки
                                     "discount_price": discounted_price,  # Цена со скидкой
-                                    "club_discount_price": club_discounted_price  # Цена со скидкой WB кошелька
+                                    "club_discount_price": club_discounted_price,  # Цена со скидкой WB кошелька
+                                    "seller_discount_amount": round(seller_discount_amount, 2),  # Скидка продавца в рублях
+                                    "seller_discount_percent": round(seller_discount_percent, 2)  # Скидка продавца в процентах
                                 }
-                                print(f"Товар {nm_id}: цена до скидки {price}, цена со скидкой {discounted_price}, цена WB кошелька {club_discounted_price}")
+                                print(f"Товар {nm_id}: цена до скидки {price}, цена со скидкой {discounted_price}, цена WB кошелька {club_discounted_price}, скидка продавца {seller_discount_amount} руб. ({seller_discount_percent}%)")
                         else:
                             print(f"Товар {nm_id}: нет размеров")
             
@@ -10217,6 +10228,7 @@ def api_prices_export_excel():
             'barcode': 'Баркод',
             'purchase': 'Закупочная цена',
             'price_before': 'Цена до скидки',
+            'seller_discount': 'Скидка продавца',
             'price_discount': 'Цена со скидки',
             'price_wallet': 'Цена со скидкой (WB клуб)',
             'category': 'Категория',
@@ -10252,7 +10264,7 @@ def api_prices_export_excel():
             for col_key in visible_columns:
                 if col_key in row_data:
                     value = row_data[col_key]
-                    if col_key in ['commission_pct', 'expenses_pct', 'profit_pct']:
+                    if col_key in ['commission_pct', 'expenses_pct', 'profit_pct', 'seller_discount']:
                         worksheet.write(row, col_index, value, number_style)
                     elif col_key in ['commission_rub', 'tax_rub', 'logistics_rub', 'storage_rub', 'receiving_rub', 'acquiring_rub', 'total_expenses', 'price_to_receive', 'profit_net', 'purchase', 'price_before', 'price_discount', 'price_wallet']:
                         worksheet.write(row, col_index, value, number_style)
@@ -10271,6 +10283,7 @@ def api_prices_export_excel():
             'barcode': 2000,
             'purchase': 2000,
             'price_before': 2000,
+            'seller_discount': 2000,
             'price_discount': 2000,
             'price_wallet': 2000,
             'category': 3000,

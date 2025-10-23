@@ -31,6 +31,98 @@
       border-right: none;
     }
     
+    /* Стили для выделения измененных инпутов */
+    .input-changed {
+      border: 2px solid #dc3545 !important;
+      box-shadow: 0 0 0 0.2rem rgba(220, 53, 69, 0.25) !important;
+      transition: all 0.15s ease-in-out;
+    }
+    
+    /* Стили для отображения старых значений */
+    .old-value {
+      display: block;
+      font-size: 0.75em;
+      color: #6c757d;
+      text-decoration: line-through;
+      margin-top: 2px;
+      font-style: italic;
+    }
+    
+    /* Стили для индикатора загрузки */
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 99999;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    /* Слой блюра только для фона */
+    .loading-overlay::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      backdrop-filter: blur(3px);
+      z-index: 1;
+    }
+    
+    /* Контент индикатора - четкий, поверх блюра */
+    .loading-content {
+      text-align: center;
+      background: #ffffff;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+      border: 2px solid #007bff;
+      position: relative;
+      z-index: 2;
+    }
+    
+    .loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #007bff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+      color: #666;
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+    
+    body {
+      transition: all 0.3s ease;
+    }
+    
+    body.loaded {
+      filter: none;
+      opacity: 1;
+    }
+    
+    .content-blurred {
+      filter: blur(1px);
+      opacity: 0.6;
+      transition: all 0.3s ease;
+    }
+    
+    
     /* Прилипающая шапка с поиском */
     .sticky-header {
       position: sticky;
@@ -114,6 +206,14 @@
   </style>
 </head>
 <body>
+  <!-- Индикатор загрузки (аккуратный дизайн) -->
+  <div id="loadingOverlay" class="loading-overlay" style="display: flex !important;">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Загрузка страницы...</div>
+    </div>
+  </div>
+  
   {% include '_navbar.html' %}
   <div class="container mt-3">
     <div class="d-flex align-items-center justify-content-between mb-2 gap-2 flex-wrap">
@@ -230,6 +330,9 @@
             <th class="header-price sortable" data-column="price_before" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
               Цена до скидки <i class="bi bi-arrow-down-up sort-icon"></i>
             </th>
+            <th class="header-price sortable" data-column="seller_discount" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Скидка продавца <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
             <th class="header-price sortable" data-column="price_discount" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
               Цена со скидкой <i class="bi bi-arrow-down-up sort-icon"></i>
             </th>
@@ -328,6 +431,13 @@
                 </td>
                 <td class="text-center">
                   {% set nm_id = product.nm_id %}
+                  <input type="number" class="form-control form-control-sm text-end seller-discount-input" 
+                         data-nm-id="{{ nm_id }}" step="0.1" min="0" max="100"
+                         value="{% if prices_data and nm_id in prices_data and prices_data[nm_id].seller_discount_percent %}{{ prices_data[nm_id].seller_discount_percent|round|int }}{% else %}{% endif %}" 
+                         style="width:90px;display:inline-block;" placeholder="0.0">
+                </td>
+                <td class="text-center">
+                  {% set nm_id = product.nm_id %}
                   <input type="number" class="form-control form-control-sm text-end price-edit price-discount-input"
                          data-nm-id="{{ nm_id }}" step="0.01" min="0"
                          value="{% if prices_data and nm_id in prices_data %}{{ '%.2f'|format(prices_data[nm_id].discount_price) }}{% else %}{% endif %}" style="width:110px;display:inline-block;">
@@ -414,7 +524,34 @@
       </div>
     </div>
   </div>
+
   <script>
+    // Функции для управления индикатором загрузки
+    function showLoading(text = 'Загрузка данных...') {
+      const overlay = document.getElementById('loadingOverlay');
+      console.log('showLoading вызвана, overlay:', overlay);
+      if (!overlay) {
+        console.log('Overlay не найден!');
+        return; // Проверяем существование элемента
+      }
+      const loadingText = overlay.querySelector('.loading-text');
+      if (loadingText) {
+        loadingText.textContent = text;
+      }
+      overlay.style.display = 'flex';
+      console.log('Индикатор загрузки показан');
+    }
+
+    function hideLoading() {
+      const overlay = document.getElementById('loadingOverlay');
+      if (!overlay) return; // Проверяем существование элемента
+      overlay.style.display = 'none';
+      document.body.classList.add('loaded');
+    }
+
+    // Индикатор загрузки уже виден по умолчанию в HTML
+    console.log('Индикатор загрузки уже виден по умолчанию');
+
     // Данные для экспорта (парсим из JSON-скриптов, чтобы не ломать линтер)
     const productsData = JSON.parse(document.getElementById('productsDataJson').textContent || '[]');
     const pricesData = JSON.parse(document.getElementById('pricesDataJson').textContent || '{}');
@@ -569,7 +706,7 @@
           // Логистика руб. - новая схема на основе объёма
           const logisticsCell = row.querySelector('.logistics-rub');
           if (logisticsCell){
-            const volumeCell = row.querySelector('td:nth-child(9)'); // Колонка объёма
+            const volumeCell = row.querySelector('td:nth-child(10)'); // Колонка объёма
             let logisticsValue = 0;
             
             if (volumeCell) {
@@ -685,6 +822,7 @@
           const profitNetInput = row.querySelector('.profit-net-input');
           if (profitNetInput){
             profitNetInput.value = isNaN(profitNet) ? '' : profitNet.toFixed(2);
+            // Не обновляем baseline здесь, чтобы отображалось исходное значение
             const profitNetTd = profitNetInput.closest('td');
             if (profitNetTd){
               profitNetTd.classList.toggle('profit-bad', !isNaN(profitNet) && profitNet <= 0);
@@ -696,10 +834,26 @@
           const profitPctInput = row.querySelector('.profit-pct-input');
           if (profitPctInput){
             profitPctInput.value = isNaN(profitPct) ? '' : profitPct.toFixed(2);
+            // Не обновляем baseline здесь, чтобы отображалось исходное значение
             const profitPctTd = profitPctInput.closest('td');
             if (profitPctTd){
               profitPctTd.classList.toggle('profit-bad', !isNaN(profitPct) && profitPct <= 0);
             }
+          }
+        });
+        
+        // Автоматически обновляем подсветку для всех полей после пересчета
+        rows.forEach(row => {
+          const priceBeforeInput = row.querySelector('.price-before-input');
+          const sellerDiscountInput = row.querySelector('.seller-discount-input');
+          const priceDiscountInput = row.querySelector('.price-discount-input');
+          const priceWalletInput = row.querySelector('.price-wallet-input');
+          const profitNetInput = row.querySelector('.profit-net-input');
+          const profitPctInput = row.querySelector('.profit-pct-input');
+          
+          const allInputs = [priceBeforeInput, sellerDiscountInput, priceDiscountInput, priceWalletInput, profitNetInput, profitPctInput].filter(Boolean);
+          if (allInputs.length > 0) {
+            markInputsChanged(allInputs);
           }
         });
       }
@@ -905,6 +1059,91 @@
         });
       });
 
+      // Базовые значения для сравнения, чтобы понимать что реально изменилось
+      const originalValues = new WeakMap();
+
+      function ensureOriginalValue(input) {
+        if (!input) return;
+        if (!originalValues.has(input)) {
+          // Нормализуем значение при установке baseline (заменяем запятые на точки)
+          const normalizedValue = String(input.value ?? '').replace(',', '.');
+          originalValues.set(input, normalizedValue);
+        }
+      }
+
+      function markInputsChanged(inputs) {
+        inputs.forEach(input => {
+          if (!input) return;
+          ensureOriginalValue(input);
+          // Сравниваем текущее значение с исходным
+          const orig = originalValues.get(input);
+          const now = String(input.value ?? '').replace(',', '.');
+          
+          // Для числовых полей используем сравнение с допуском
+          const isNumericInput = input.classList.contains('price-before-input') ||
+                                 input.classList.contains('seller-discount-input') ||
+                                 input.classList.contains('price-discount-input') ||
+                                 input.classList.contains('price-wallet-input') ||
+                                 input.classList.contains('profit-net-input') ||
+                                 input.classList.contains('profit-pct-input');
+          
+          let changed = false;
+          if (isNumericInput) {
+            const numOrig = parseFloat(orig);
+            const numNow = parseFloat(now);
+            // Сравниваем с небольшой погрешностью для чисел с плавающей запятой
+            changed = Math.abs(numNow - numOrig) > 0.1; // Допуск 0.1 (10 копеек)
+          } else {
+            changed = now !== orig;
+          }
+          
+          if (changed) {
+            input.classList.add('input-changed');
+            // Показываем старое значение
+            showOldValue(input, orig);
+          } else {
+            input.classList.remove('input-changed');
+            // Скрываем старое значение
+            hideOldValue(input);
+          }
+        });
+      }
+
+      // Обновляет baseline для программно измененных полей
+      function updateBaselineForInputs(inputs) {
+        inputs.forEach(input => {
+          if (input) {
+            originalValues.set(input, String(input.value ?? ''));
+          }
+        });
+      }
+
+      // Показывает старое значение под input'ом
+      function showOldValue(input, oldValue) {
+        if (!input || !oldValue) return;
+        
+        // Убираем старое отображение если есть
+        hideOldValue(input);
+        
+        // Создаем элемент для старого значения и вставляем после input'а
+        const oldValueElement = document.createElement('span');
+        oldValueElement.className = 'old-value';
+        oldValueElement.textContent = oldValue;
+        input.parentElement.insertBefore(oldValueElement, input.nextSibling);
+      }
+
+      // Скрывает старое значение
+      function hideOldValue(input) {
+        if (!input) return;
+        const parent = input.parentElement;
+        if (parent) {
+          const oldValueElement = parent.querySelector('.old-value');
+          if (oldValueElement) {
+            oldValueElement.remove();
+          }
+        }
+      }
+
       // Редактирование цен: обновляем локальный объект и пересчитываем
       function bindPriceInputs(){
         document.querySelectorAll('.price-edit').forEach(inp => {
@@ -915,12 +1154,91 @@
             const key = String(nmId);
             pricesData[key] = pricesData[key] || {};
             if (input.classList.contains('price-before-input')){
-              pricesData[key].price = Number(input.value) || 0;
+              const newPrice = Number(input.value) || 0;
+              pricesData[key].price = newPrice;
+              
+              // Обновляем скидку продавца при изменении базовой цены
+              const sellerDiscountInput = input.closest('tr').querySelector('.seller-discount-input');
+              const discountInput = input.closest('tr').querySelector('.price-discount-input');
+              const profitNetInput = input.closest('tr').querySelector('.profit-net-input');
+              const profitPctInput = input.closest('tr').querySelector('.profit-pct-input');
+              
+              if (sellerDiscountInput && sellerDiscountInput.value) {
+                const discountPercent = Number(sellerDiscountInput.value) || 0;
+                const newDiscountPrice = newPrice * (1 - discountPercent / 100);
+                pricesData[key].discount_price = newDiscountPrice;
+                
+                // Обновляем поле "Цена со скидкой"
+                if (discountInput) {
+                  discountInput.value = newDiscountPrice.toFixed(2);
+                }
+              }
+              
+              // Обновляем подсветку связанных инпутов
+              markInputsChanged([input, discountInput, profitNetInput, profitPctInput]);
             } else if (input.classList.contains('price-discount-input')){
-              pricesData[key].discount_price = Number(input.value) || 0;
+              const newDiscountPrice = Number(input.value) || 0;
+              pricesData[key].discount_price = newDiscountPrice;
+              
+              // Пересчитываем скидку продавца при изменении цены со скидкой
+              const basePrice = pricesData[key].price || 0;
+              const sellerDiscountInput = input.closest('tr').querySelector('.seller-discount-input');
+              const profitNetInput = input.closest('tr').querySelector('.profit-net-input');
+              const profitPctInput = input.closest('tr').querySelector('.profit-pct-input');
+              
+              if (basePrice > 0) {
+                const newSellerDiscountPercent = ((basePrice - newDiscountPrice) / basePrice) * 100;
+                pricesData[key].seller_discount_percent = newSellerDiscountPercent;
+                
+                // Обновляем поле "Скидка продавца"
+                if (sellerDiscountInput) {
+                  sellerDiscountInput.value = Math.round(newSellerDiscountPercent);
+                }
+              }
+              
+              // Обновляем подсветку связанных инпутов
+              markInputsChanged([input, sellerDiscountInput, profitNetInput, profitPctInput]);
             } else if (input.classList.contains('price-wallet-input')){
               pricesData[key].club_discount_price = Number(input.value) || 0;
+              
+              // Обновляем подсветку (WB клуб влияет только на себя)
+              markInputsChanged([input]);
             }
+            updateCommissionColumn();
+          });
+        });
+        
+        // Обработчик для скидки продавца
+        document.querySelectorAll('.seller-discount-input').forEach(inp => {
+          inp.addEventListener('input', (e) => {
+            const input = e.target;
+            const nmId = input.getAttribute('data-nm-id');
+            if (!nmId) return;
+            const key = String(nmId);
+            pricesData[key] = pricesData[key] || {};
+            
+            const sellerDiscountPercent = Number(input.value) || 0;
+            const basePrice = pricesData[key].price || 0;
+            
+            // Вычисляем новую цену со скидкой
+            const newDiscountPrice = basePrice * (1 - sellerDiscountPercent / 100);
+            
+            // Обновляем данные
+            pricesData[key].seller_discount_percent = sellerDiscountPercent;
+            pricesData[key].discount_price = newDiscountPrice;
+            
+            // Обновляем поле "Цена со скидкой"
+            const discountInput = input.closest('tr').querySelector('.price-discount-input');
+            const profitNetInput = input.closest('tr').querySelector('.profit-net-input');
+            const profitPctInput = input.closest('tr').querySelector('.profit-pct-input');
+            
+            if (discountInput) {
+              discountInput.value = newDiscountPrice.toFixed(2);
+            }
+            
+            // Обновляем подсветку связанных инпутов
+            markInputsChanged([input, discountInput, profitNetInput, profitPctInput]);
+            
             updateCommissionColumn();
           });
         });
@@ -965,13 +1283,32 @@
 
           function setDiscountPrice(newDiscount){
             const discountInput = row.querySelector('.price-discount-input');
+            const sellerDiscountInput = row.querySelector('.seller-discount-input');
+            const profitNetInput = row.querySelector('.profit-net-input');
+            const profitPctInput = row.querySelector('.profit-pct-input');
+            
             if (discountInput){
               discountInput.value = isNaN(newDiscount) ? '' : Number(newDiscount).toFixed(2);
               // Обновить локальное хранилище
               if (key){
                 pricesData[key] = pricesData[key] || {};
                 pricesData[key].discount_price = Number(newDiscount) || 0;
+                
+                // Пересчитываем скидку продавца при изменении цены со скидкой
+                const basePrice = pricesData[key].price || 0;
+                if (basePrice > 0) {
+                  const newSellerDiscountPercent = ((basePrice - newDiscount) / basePrice) * 100;
+                  pricesData[key].seller_discount_percent = newSellerDiscountPercent;
+                  
+                  // Обновляем поле "Скидка продавца"
+                  if (sellerDiscountInput) {
+                    sellerDiscountInput.value = Math.round(newSellerDiscountPercent);
+                  }
+                }
               }
+              
+              // Обновляем подсветку связанных инпутов
+              markInputsChanged([discountInput, sellerDiscountInput, profitNetInput, profitPctInput]);
             }
             updateCommissionColumn();
           }
@@ -1025,6 +1362,24 @@
       bindProfitInputs();
       // первичная отрисовка после загрузки
       updateCommissionColumn();
+      
+      // Зафиксируем исходные значения для всех контролов после первичного пересчета
+      // Добавляем небольшую задержку, чтобы дать время всем вычислениям завершиться
+      setTimeout(() => {
+        document.querySelectorAll('.price-before-input, .seller-discount-input, .price-discount-input, .price-wallet-input, .profit-net-input, .profit-pct-input').forEach(inp=>{
+          if (inp) {
+            // Инициализируем baseline
+            if (!originalValues.has(inp)) originalValues.set(inp, String(inp.value ?? '').replace(',', '.'));
+          }
+        });
+        
+        // Обновляем подсветку для всех полей после установки baseline
+        document.querySelectorAll('.price-before-input, .seller-discount-input, .price-discount-input, .price-wallet-input, .profit-net-input, .profit-pct-input').forEach(inp=>{
+          if (inp) {
+            markInputsChanged([inp]);
+          }
+        });
+      }, 100); // Задержка 100мс
 
       // ---- Видимость колонок (по аналогии с /fbw/planning) ----
       const columnsMap = [
@@ -1035,22 +1390,23 @@
         { key: 'barcode', label: 'Баркод', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'barcode' },
         { key: 'purchase', label: 'Закупочная цена', selector: 'th:nth-child(4), td:nth-child(4)', exportKey: 'purchase' },
         { key: 'price_before', label: 'Цена до скидки', selector: 'th:nth-child(5), td:nth-child(5)', exportKey: 'price_before' },
-        { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(6), td:nth-child(6)', exportKey: 'price_discount' },
-        { key: 'price_wallet', label: 'Цена со скидкой (WB клуб)', selector: 'th:nth-child(7), td:nth-child(7)', exportKey: 'price_wallet' },
-        { key: 'category', label: 'Категория', selector: 'th:nth-child(8), td:nth-child(8)', exportKey: 'category' },
-        { key: 'volume', label: 'Объём', selector: 'th:nth-child(9), td:nth-child(9)', exportKey: 'volume' },
-        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(10), td:nth-child(10)', exportKey: 'commission_pct' },
-        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(11), td:nth-child(11)', exportKey: 'commission_rub' },
-        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(12), td:nth-child(12)', exportKey: 'tax_rub' },
-        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(13), td:nth-child(13)', exportKey: 'logistics_rub' },
-        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(14), td:nth-child(14)', exportKey: 'storage_rub' },
-        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(15), td:nth-child(15)', exportKey: 'receiving_rub' },
-        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(16), td:nth-child(16)', exportKey: 'acquiring_rub' },
-        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(17), td:nth-child(17)', exportKey: 'total_expenses' },
-        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(18), td:nth-child(18)', exportKey: 'expenses_pct' },
-        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(19), td:nth-child(19)', exportKey: 'price_to_receive' },
-        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(20), td:nth-child(20)', exportKey: 'profit_net' },
-        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(21), td:nth-child(21)', exportKey: 'profit_pct' },
+        { key: 'seller_discount', label: 'Скидка продавца', selector: 'th:nth-child(6), td:nth-child(6)', exportKey: 'seller_discount' },
+        { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(7), td:nth-child(7)', exportKey: 'price_discount' },
+        { key: 'price_wallet', label: 'Цена со скидкой (WB клуб)', selector: 'th:nth-child(8), td:nth-child(8)', exportKey: 'price_wallet' },
+        { key: 'category', label: 'Категория', selector: 'th:nth-child(9), td:nth-child(9)', exportKey: 'category' },
+        { key: 'volume', label: 'Объём', selector: 'th:nth-child(10), td:nth-child(10)', exportKey: 'volume' },
+        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(11), td:nth-child(11)', exportKey: 'commission_pct' },
+        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(12), td:nth-child(12)', exportKey: 'commission_rub' },
+        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(13), td:nth-child(13)', exportKey: 'tax_rub' },
+        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(14), td:nth-child(14)', exportKey: 'logistics_rub' },
+        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(15), td:nth-child(15)', exportKey: 'storage_rub' },
+        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(16), td:nth-child(16)', exportKey: 'receiving_rub' },
+        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(17), td:nth-child(17)', exportKey: 'acquiring_rub' },
+        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(18), td:nth-child(18)', exportKey: 'total_expenses' },
+        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(19), td:nth-child(19)', exportKey: 'expenses_pct' },
+        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(20), td:nth-child(20)', exportKey: 'price_to_receive' },
+        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(21), td:nth-child(21)', exportKey: 'profit_net' },
+        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(22), td:nth-child(22)', exportKey: 'profit_pct' },
       ];
 
       const COLUMNS_STORAGE_KEY = 'tools_prices_columns_visibility_v1';
@@ -1378,6 +1734,10 @@
                   const priceBeforeInput = row.querySelector('.price-before-input');
                   value = priceBeforeInput ? (priceBeforeInput.value || '') : '';
                   break;
+                case 'seller_discount':
+                  const sellerDiscountInput = row.querySelector('.seller-discount-input');
+                  value = sellerDiscountInput ? (sellerDiscountInput.value || '') : '';
+                  break;
                 case 'price_discount':
                   const priceDiscountInput = row.querySelector('.price-discount-input');
                   value = priceDiscountInput ? (priceDiscountInput.value || '') : '';
@@ -1387,11 +1747,11 @@
                   value = priceWalletInput ? (priceWalletInput.value || '') : '';
                   break;
                 case 'category':
-                  const categoryCell = row.querySelector('td:nth-child(8)');
+                  const categoryCell = row.querySelector('td:nth-child(9)');
                   value = categoryCell ? categoryCell.textContent.trim() : '';
                   break;
                 case 'volume':
-                  const volumeCell = row.querySelector('td:nth-child(9)');
+                  const volumeCell = row.querySelector('td:nth-child(10)');
                   value = volumeCell ? volumeCell.textContent.trim() : '';
                   break;
                 case 'commission_pct':
@@ -1582,15 +1942,15 @@
               break;
               
             case 'category':
-              const aCategoryCell = a.querySelector('td:nth-child(8)');
-              const bCategoryCell = b.querySelector('td:nth-child(8)');
+              const aCategoryCell = a.querySelector('td:nth-child(9)');
+              const bCategoryCell = b.querySelector('td:nth-child(9)');
               aValue = aCategoryCell ? aCategoryCell.textContent.trim() : '';
               bValue = bCategoryCell ? bCategoryCell.textContent.trim() : '';
               break;
               
             case 'volume':
-              const aVolumeCell = a.querySelector('td:nth-child(9)');
-              const bVolumeCell = b.querySelector('td:nth-child(9)');
+              const aVolumeCell = a.querySelector('td:nth-child(10)');
+              const bVolumeCell = b.querySelector('td:nth-child(10)');
               aValue = aVolumeCell ? parseFloat(aVolumeCell.textContent.trim()) || 0 : 0;
               bValue = bVolumeCell ? parseFloat(bVolumeCell.textContent.trim()) || 0 : 0;
               break;
@@ -1718,13 +2078,27 @@
       // Инициализируем сортировку
       initSorting();
 
-      // Инициализация Bootstrap tooltips
-      const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-      tooltipTriggerList.map(function (tooltipTriggerEl) {
-        return new bootstrap.Tooltip(tooltipTriggerEl);
-      });
+      // Скрываем индикатор загрузки после полной инициализации с небольшой задержкой
+      setTimeout(() => {
+        console.log('Скрываем индикатор загрузки...');
+        hideLoading();
+      }, 2000); // Увеличиваем задержку до 2 секунд чтобы точно увидеть индикатор
     })();
+    
+    // Инициализация Bootstrap tooltips после загрузки Bootstrap
+    document.addEventListener('DOMContentLoaded', function() {
+      // Ждем немного, чтобы Bootstrap точно загрузился
+      setTimeout(() => {
+        if (typeof bootstrap !== 'undefined') {
+          const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+          tooltipTriggerList.map(function (tooltipTriggerEl) {
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+          });
+        }
+      }, 100);
+    });
   </script>
+  
   {% include '_footer.html' %}
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
