@@ -307,6 +307,25 @@
       </div>
     </div>
 
+    <!-- Переключатель фильтрации по остаткам -->
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="row g-2 align-items-center">
+          <div class="col-auto">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="stocksFilterToggle" style="transform: scale(1.2); cursor: pointer;">
+              <label class="form-check-label" for="stocksFilterToggle" style="cursor: pointer;">
+                <strong>Только с остатками</strong>
+              </label>
+            </div>
+          </div>
+          <div class="col-auto text-muted small" id="stocksFilterStatus">
+            (Показаны все товары)
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Прилипающая шапка с поиском -->
     <div class="sticky-header">
       <div class="row">
@@ -324,6 +343,9 @@
             <th style="width:56px; border-right: 1px solid #dee2e6;">#</th>
             <th style="width:72px; border-right: 1px solid #dee2e6;">Фото</th>
             <th style="border-right: 1px solid #dee2e6;">Наименование</th>
+            <th class="sortable" data-column="stocks" style="width:100px; border-right: 1px solid #dee2e6; cursor: pointer;">
+              Остатки <i class="bi bi-arrow-down-up sort-icon"></i>
+            </th>
             <th class="header-purchase sortable" data-column="purchase" style="width:120px; border-right: 1px solid #dee2e6; cursor: pointer;">
               Закупочная цена <i class="bi bi-arrow-down-up sort-icon"></i>
             </th>
@@ -411,6 +433,16 @@
                       {% if product.nm_id and product.barcode %} | {% endif %}
                       {% if product.barcode %}Баркод: {{ product.barcode }}{% endif %}
                     </div>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  {% set product_barcode = product.barcode %}
+                  {% if stocks_data and product_barcode in stocks_data %}
+                    <span class="badge {% if stocks_data[product_barcode] > 0 %}bg-success{% else %}bg-secondary{% endif %}">
+                      {{ stocks_data[product_barcode] }}
+                    </span>
+                  {% else %}
+                    <span class="text-muted">—</span>
                   {% endif %}
                 </td>
                 <td class="text-center">
@@ -502,6 +534,7 @@
   <script id="commissionDataJson" type="application/json">{{ commission_data|tojson|safe }}</script>
   <script id="dimensionsDataJson" type="application/json">{{ dimensions_data|tojson|safe }}</script>
   <script id="warehousesDataJson" type="application/json">{{ warehouses_data|tojson|safe }}</script>
+  <script id="stocksDataJson" type="application/json">{{ stocks_data|tojson|safe }}</script>
   <script id="purchasePricesDataJson" type="application/json">{{ purchase_prices|tojson|safe }}</script>
   
   <!-- Модальное окно настройки колонок -->
@@ -558,6 +591,7 @@
     const commissionData = JSON.parse(document.getElementById('commissionDataJson').textContent || '{}');
     const dimensionsData = JSON.parse(document.getElementById('dimensionsDataJson').textContent || '{}');
     const warehousesData = JSON.parse(document.getElementById('warehousesDataJson').textContent || '[]');
+    const stocksData = JSON.parse(document.getElementById('stocksDataJson').textContent || '{}');
     const purchasePricesData = JSON.parse(document.getElementById('purchasePricesDataJson').textContent || '{}');
     
     // Отладочная информация
@@ -706,7 +740,7 @@
           // Логистика руб. - новая схема на основе объёма
           const logisticsCell = row.querySelector('.logistics-rub');
           if (logisticsCell){
-            const volumeCell = row.querySelector('td:nth-child(10)'); // Колонка объёма
+            const volumeCell = row.querySelector('td:nth-child(11)'); // Колонка объёма
             let logisticsValue = 0;
             
             if (volumeCell) {
@@ -1025,6 +1059,48 @@
           console.log('Warehouse not restored - conditions not met');
         }
         updateWarehouseUI();
+        
+        // Инициализация фильтрации по остаткам
+        const stocksFilterToggle = document.getElementById('stocksFilterToggle');
+        const stocksFilterStatus = document.getElementById('stocksFilterStatus');
+        
+        function applyStocksFilter() {
+          const isEnabled = stocksFilterToggle.checked;
+          const tableRows = document.querySelectorAll('#productsTable tbody tr');
+          let visibleCount = 0;
+          let totalCount = tableRows.length;
+          
+          tableRows.forEach(row => {
+            const barcode = row.getAttribute('data-barcode'); // Barcode хранится в атрибуте строки
+            const stocks = barcode ? (stocksData[barcode] || 0) : 0;
+            
+            if (isEnabled) {
+              // Показываем только товары с остатками >= 1
+              if (stocks >= 1) {
+                row.style.display = '';
+                visibleCount++;
+              } else {
+                row.style.display = 'none';
+              }
+            } else {
+              // Показываем все товары
+              row.style.display = '';
+              visibleCount++;
+            }
+          });
+          
+          // Обновляем статус
+          if (isEnabled) {
+            stocksFilterStatus.textContent = `(Показаны товары с остатками (${visibleCount} из ${totalCount}))`;
+          } else {
+            stocksFilterStatus.textContent = `(Показаны все товары (${visibleCount}))`;
+          }
+        }
+        
+        // Обработчик изменения переключателя
+        if (stocksFilterToggle) {
+          stocksFilterToggle.addEventListener('change', applyStocksFilter);
+        }
       }
 
       // Изменение закупочной цены — пересчитывать прибыль и АВТОСОХРАНЯТЬ в БД (дебаунс)
@@ -1388,25 +1464,26 @@
         { key: 'name', label: 'Наименование', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'name' },
         { key: 'nm_id', label: 'Артикул WB', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'nm_id' },
         { key: 'barcode', label: 'Баркод', selector: 'th:nth-child(3), td:nth-child(3)', exportKey: 'barcode' },
-        { key: 'purchase', label: 'Закупочная цена', selector: 'th:nth-child(4), td:nth-child(4)', exportKey: 'purchase' },
-        { key: 'price_before', label: 'Цена до скидки', selector: 'th:nth-child(5), td:nth-child(5)', exportKey: 'price_before' },
-        { key: 'seller_discount', label: 'Скидка продавца', selector: 'th:nth-child(6), td:nth-child(6)', exportKey: 'seller_discount' },
-        { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(7), td:nth-child(7)', exportKey: 'price_discount' },
-        { key: 'price_wallet', label: 'Цена со скидкой (WB клуб)', selector: 'th:nth-child(8), td:nth-child(8)', exportKey: 'price_wallet' },
-        { key: 'category', label: 'Категория', selector: 'th:nth-child(9), td:nth-child(9)', exportKey: 'category' },
-        { key: 'volume', label: 'Объём', selector: 'th:nth-child(10), td:nth-child(10)', exportKey: 'volume' },
-        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(11), td:nth-child(11)', exportKey: 'commission_pct' },
-        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(12), td:nth-child(12)', exportKey: 'commission_rub' },
-        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(13), td:nth-child(13)', exportKey: 'tax_rub' },
-        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(14), td:nth-child(14)', exportKey: 'logistics_rub' },
-        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(15), td:nth-child(15)', exportKey: 'storage_rub' },
-        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(16), td:nth-child(16)', exportKey: 'receiving_rub' },
-        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(17), td:nth-child(17)', exportKey: 'acquiring_rub' },
-        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(18), td:nth-child(18)', exportKey: 'total_expenses' },
-        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(19), td:nth-child(19)', exportKey: 'expenses_pct' },
-        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(20), td:nth-child(20)', exportKey: 'price_to_receive' },
-        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(21), td:nth-child(21)', exportKey: 'profit_net' },
-        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(22), td:nth-child(22)', exportKey: 'profit_pct' },
+        { key: 'stocks', label: 'Остатки', selector: 'th:nth-child(4), td:nth-child(4)', exportKey: 'stocks' },
+        { key: 'purchase', label: 'Закупочная цена', selector: 'th:nth-child(5), td:nth-child(5)', exportKey: 'purchase' },
+        { key: 'price_before', label: 'Цена до скидки', selector: 'th:nth-child(6), td:nth-child(6)', exportKey: 'price_before' },
+        { key: 'seller_discount', label: 'Скидка продавца', selector: 'th:nth-child(7), td:nth-child(7)', exportKey: 'seller_discount' },
+        { key: 'price_discount', label: 'Цена со скидкой', selector: 'th:nth-child(8), td:nth-child(8)', exportKey: 'price_discount' },
+        { key: 'price_wallet', label: 'Цена со скидкой (WB клуб)', selector: 'th:nth-child(9), td:nth-child(9)', exportKey: 'price_wallet' },
+        { key: 'category', label: 'Категория', selector: 'th:nth-child(10), td:nth-child(10)', exportKey: 'category' },
+        { key: 'volume', label: 'Объём', selector: 'th:nth-child(11), td:nth-child(11)', exportKey: 'volume' },
+        { key: 'commission_pct', label: 'Комиссия WB, %', selector: 'th:nth-child(12), td:nth-child(12)', exportKey: 'commission_pct' },
+        { key: 'commission_rub', label: 'Комиссия WB руб.', selector: 'th:nth-child(13), td:nth-child(13)', exportKey: 'commission_rub' },
+        { key: 'tax_rub', label: 'Налог руб.', selector: 'th:nth-child(14), td:nth-child(14)', exportKey: 'tax_rub' },
+        { key: 'logistics_rub', label: 'Логистика руб.', selector: 'th:nth-child(15), td:nth-child(15)', exportKey: 'logistics_rub' },
+        { key: 'storage_rub', label: 'Хранение руб.', selector: 'th:nth-child(16), td:nth-child(16)', exportKey: 'storage_rub' },
+        { key: 'receiving_rub', label: 'Приёмка руб.', selector: 'th:nth-child(17), td:nth-child(17)', exportKey: 'receiving_rub' },
+        { key: 'acquiring_rub', label: 'Эквайринг руб.', selector: 'th:nth-child(18), td:nth-child(18)', exportKey: 'acquiring_rub' },
+        { key: 'total_expenses', label: 'Итого расходов: руб.', selector: 'th:nth-child(19), td:nth-child(19)', exportKey: 'total_expenses' },
+        { key: 'expenses_pct', label: 'Расходов в %', selector: 'th:nth-child(20), td:nth-child(20)', exportKey: 'expenses_pct' },
+        { key: 'price_to_receive', label: 'Цена к получению руб.', selector: 'th:nth-child(21), td:nth-child(21)', exportKey: 'price_to_receive' },
+        { key: 'profit_net', label: 'Прибыль чистая руб.', selector: 'th:nth-child(22), td:nth-child(22)', exportKey: 'profit_net' },
+        { key: 'profit_pct', label: 'Прибыль %', selector: 'th:nth-child(23), td:nth-child(23)', exportKey: 'profit_pct' },
       ];
 
       const COLUMNS_STORAGE_KEY = 'tools_prices_columns_visibility_v1';
@@ -1746,12 +1823,16 @@
                   const priceWalletInput = row.querySelector('.price-wallet-input');
                   value = priceWalletInput ? (priceWalletInput.value || '') : '';
                   break;
+                case 'stocks':
+                  const stocksCell = row.querySelector('td:nth-child(4)');
+                  value = stocksCell ? stocksCell.textContent.trim() : '';
+                  break;
                 case 'category':
-                  const categoryCell = row.querySelector('td:nth-child(9)');
+                  const categoryCell = row.querySelector('td:nth-child(10)');
                   value = categoryCell ? categoryCell.textContent.trim() : '';
                   break;
                 case 'volume':
-                  const volumeCell = row.querySelector('td:nth-child(10)');
+                  const volumeCell = row.querySelector('td:nth-child(11)');
                   value = volumeCell ? volumeCell.textContent.trim() : '';
                   break;
                 case 'commission_pct':
@@ -1941,16 +2022,23 @@
               bValue = bPriceWalletInput ? parseFloat(bPriceWalletInput.value) || 0 : 0;
               break;
               
+            case 'stocks':
+              const aStocksCell = a.querySelector('td:nth-child(4)');
+              const bStocksCell = b.querySelector('td:nth-child(4)');
+              aValue = aStocksCell ? parseFloat(aStocksCell.textContent.trim()) || 0 : 0;
+              bValue = bStocksCell ? parseFloat(bStocksCell.textContent.trim()) || 0 : 0;
+              break;
+              
             case 'category':
-              const aCategoryCell = a.querySelector('td:nth-child(9)');
-              const bCategoryCell = b.querySelector('td:nth-child(9)');
+              const aCategoryCell = a.querySelector('td:nth-child(10)');
+              const bCategoryCell = b.querySelector('td:nth-child(10)');
               aValue = aCategoryCell ? aCategoryCell.textContent.trim() : '';
               bValue = bCategoryCell ? bCategoryCell.textContent.trim() : '';
               break;
               
             case 'volume':
-              const aVolumeCell = a.querySelector('td:nth-child(10)');
-              const bVolumeCell = b.querySelector('td:nth-child(10)');
+              const aVolumeCell = a.querySelector('td:nth-child(11)');
+              const bVolumeCell = b.querySelector('td:nth-child(11)');
               aValue = aVolumeCell ? parseFloat(aVolumeCell.textContent.trim()) || 0 : 0;
               bValue = bVolumeCell ? parseFloat(bVolumeCell.textContent.trim()) || 0 : 0;
               break;

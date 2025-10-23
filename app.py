@@ -10014,6 +10014,27 @@ def tools_prices_page():
                 traceback.print_exc()
                 warehouses_data = []
             
+            # Получаем данные об остатках
+            stocks_data = {}
+            try:
+                stocks_cached = load_stocks_cache()
+                if stocks_cached and stocks_cached.get("_user_id") == current_user.id:
+                    items = stocks_cached.get("items", [])
+                    # Агрегируем остатки по штрихкоду
+                    for stock_item in items:
+                        barcode = stock_item.get("barcode")
+                        qty = int(stock_item.get("qty", 0) or 0)
+                        if barcode:
+                            if barcode not in stocks_data:
+                                stocks_data[barcode] = 0
+                            stocks_data[barcode] += qty
+                    print(f"Загружено остатков для {len(stocks_data)} товаров")
+                else:
+                    print("Кэш остатков не найден или устарел")
+            except Exception as e:
+                print(f"Ошибка при загрузке остатков: {e}")
+                stocks_data = {}
+            
             # Настройки маржи пользователя
             margin_settings = load_user_margin_settings(current_user.id)
 
@@ -10065,6 +10086,7 @@ def tools_prices_page():
         commission_data=commission_data,
         dimensions_data=dimensions_data if 'dimensions_data' in locals() else {},
         warehouses_data=warehouses_data if 'warehouses_data' in locals() else [],
+        stocks_data=stocks_data if 'stocks_data' in locals() else {},
         purchase_prices=purchase_prices,
         margin_settings=margin_settings if 'margin_settings' in locals() else load_user_margin_settings(current_user.id),
         prices_last_updated=prices_last_updated,
@@ -10233,6 +10255,7 @@ def api_prices_export_excel():
             'price_wallet': 'Цена со скидкой (WB клуб)',
             'category': 'Категория',
             'volume': 'Объём л.',
+            'stocks': 'Остатки',
             'commission_pct': 'Комиссия WB, %',
             'commission_rub': 'Комиссия WB руб.',
             'tax_rub': 'Налог руб.',
