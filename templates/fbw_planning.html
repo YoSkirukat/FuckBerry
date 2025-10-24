@@ -554,7 +554,7 @@
         <div class="spinner-border text-primary" role="status">
           <span class="visually-hidden">Загрузка...</span>
         </div>
-        <div class="mt-2" id="loadingText">Загружаем товары пользователя...</div>
+        <div class="mt-2" id="loadingText">Обновляю информацию, ожидайте...</div>
       </div>
       
       <div id="resultsContent" style="display: none;">
@@ -1407,7 +1407,7 @@
     
     function loadUserProducts(formData) {
       // Обновляем текст загрузки
-      document.getElementById('loadingText').textContent = 'Загружаем товары пользователя...';
+      document.getElementById('loadingText').textContent = 'Обновляю информацию, ожидайте...';
       
       // Получаем ID склада из скрытого select
       const warehouseId = document.getElementById('warehouse').value;
@@ -1434,29 +1434,32 @@
       
       console.log(`Конвертированные даты: ${dateFromFormatted} - ${dateToFormatted}`);
       
-      // Загружаем данные параллельно
-      Promise.all([
-        fetch('/api/fbw/planning/products'),
-        fetch(`/api/fbw/planning/stocks?warehouse_id=${warehouseId}`),
-        fetch('/api/fbw/planning/stocks?warehouse_id=all'), // Остатки по всем складам
-        fetch(`/api/fbw/planning/orders?warehouse_id=${warehouseId}&date_from=${dateFromFormatted}&date_to=${dateToFormatted}`)
-      ])
-      .then(responses => {
-        // Проверяем статус ответов перед парсингом JSON
-        const errorResponses = responses.filter(r => !r.ok);
-        if (errorResponses.length > 0) {
-          const errorResponse = errorResponses[0];
-          if (errorResponse.status === 429) {
+      // Загружаем все данные одним запросом (оптимизация против 429)
+      fetch(`/api/fbw/planning/data?warehouse_id=${warehouseId}&date_from=${dateFromFormatted}&date_to=${dateToFormatted}`)
+      .then(response => {
+        // Проверяем статус ответа
+        if (!response.ok) {
+          if (response.status === 429) {
             throw new Error('Превышен лимит запросов к API Wildberries. Попробуйте через несколько минут.');
-          } else if (errorResponse.status === 502) {
+          } else if (response.status === 502) {
             throw new Error('Временная недоступность API Wildberries. Попробуйте позже.');
           } else {
-            throw new Error(`Ошибка API: ${errorResponse.status}`);
+            throw new Error(`Ошибка API: ${response.status}`);
           }
         }
-        return Promise.all(responses.map(r => r.json()));
+        return response.json();
       })
-      .then(([productsData, stocksData, allStocksData, ordersData]) => {
+      .then(data => {
+        // Извлекаем данные из объединенного ответа
+        const productsData = data.products;
+        const stocksData = data.stocks;
+        const allStocksData = data.all_stocks;
+        const ordersData = data.orders;
+        
+        // Преобразуем формат данных товаров для совместимости
+        if (productsData && productsData.products) {
+          productsData.data = productsData.products;
+        }
         console.log('Результаты загрузки:', {productsData, stocksData, allStocksData, ordersData});
         
         // Проверяем наличие ошибок в данных
@@ -1565,7 +1568,7 @@
           }
           
           // Обновляем текст загрузки
-          document.getElementById('loadingText').textContent = `Загружено ${productsData.count} товаров, остатков и ${ordersData.total_orders} заказов. Рассчитываем потребность...`;
+          document.getElementById('loadingText').textContent = `Загружено ${productsData.count} товаров, текущие остатки и ${ordersData.total_orders} заказов. Рассчитываем потребность...`;
           
           // Сохраняем общее количество заказов для отображения в сводке
           window.totalOrdersCount = ordersData.total_orders || 0;

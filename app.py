@@ -4031,8 +4031,8 @@ def api_fbw_planning_stocks():
                 try:
                     # Парсим время обновления из кэша
                     cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
-                    # Если остатки обновлялись менее 5 минут назад, используем кэш
-                    if (datetime.now() - cache_time).total_seconds() < 300:  # 5 минут
+                    # Если остатки обновлялись менее 10 минут назад, используем кэш
+                    if (datetime.now() - cache_time).total_seconds() < 600:  # 10 минут
                         should_refresh = False
                         print(f"=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Используем кэшированные остатки ===")
                         print(f"Кэш обновлен: {updated_at}")
@@ -4156,6 +4156,293 @@ def api_fbw_planning_stocks():
         print(f"=== ОШИБКА в api_fbw_planning_stocks ===")
         print(f"Exception: {str(exc)}")
         print(f"Exception type: {type(exc)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
+
+@app.route("/api/fbw/planning/data", methods=["GET"])
+@login_required
+def api_fbw_planning_data():
+    """API для получения всех данных планирования поставки одним запросом (оптимизация против 429)"""
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    warehouse_id = request.args.get("warehouse_id")
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+    
+    if not token:
+        return jsonify({"error": "no_token"}), 401
+    if not warehouse_id:
+        return jsonify({"error": "no_warehouse", "message": "Не указан ID склада"}), 400
+    if not date_from or not date_to:
+        return jsonify({"error": "missing_dates", "message": "Не указаны даты"}), 400
+    
+    try:
+        from datetime import datetime
+        
+        # 1. Получаем товары пользователя
+        print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Загружаем товары пользователя ===")
+        try:
+            # Используем ту же функцию что и в оригинальном endpoint
+            raw_cards = fetch_all_cards(token, page_limit=100)
+            products = normalize_cards_response({"cards": raw_cards})
+            print(f"Загружено товаров: {len(products)}")
+        except Exception as e:
+            print(f"Ошибка загрузки товаров: {e}")
+            products = []
+        
+        # 2. Получаем остатки (один запрос для всех данных)
+        print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Загружаем остатки ===")
+        cached = load_stocks_cache()
+        should_refresh = True
+        
+        if cached and cached.get("_user_id") == current_user.id:
+            updated_at = cached.get("updated_at")
+            if updated_at:
+                try:
+                    cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
+                    if (datetime.now() - cache_time).total_seconds() < 600:  # 10 минут
+                        should_refresh = False
+                        print(f"=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Используем кэшированные остатки ===")
+                except Exception as e:
+                    print(f"Ошибка парсинга времени кэша: {e}")
+        
+        if should_refresh:
+            print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Принудительное обновление остатков ===")
+            print(f"Пользователь: {current_user.id}, Склад: {warehouse_id}")
+            try:
+                raw_stocks = fetch_stocks_resilient(token)
+                stocks = normalize_stocks(raw_stocks)
+                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                save_stocks_cache({"items": stocks, "_user_id": current_user.id, "updated_at": now_str})
+                print(f"Остатки обновлены для планирования поставки: {len(stocks)} товаров в {now_str}")
+            except requests.HTTPError as e:
+                if e.response and e.response.status_code == 429:
+                    print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Ошибка 429, используем кэш ===")
+                    if cached and cached.get("_user_id") == current_user.id:
+                        stocks = cached.get("items", [])
+                        print(f"Используем кэшированные остатки: {len(stocks)} товаров")
+                    else:
+                        return jsonify({"error": "rate_limit", "message": "Превышен лимит запросов к API. Попробуйте позже."}), 429
+                else:
+                    raise
+        else:
+            stocks = cached.get("items", []) if cached else []
+            print(f"Используем кэшированные остатки: {len(stocks)} товаров")
+        
+        if not stocks:
+            return jsonify({"error": "no_stocks", "message": "Нет данных об остатках. Попробуйте позже."}), 500
+        
+        # 3. Получаем название склада
+        warehouse_name = None
+        try:
+            warehouses_response = requests.get(
+                "https://supplies-api.wildberries.ru/api/v1/warehouses",
+                headers={"Authorization": token, "Content-Type": "application/json"},
+                timeout=30
+            )
+            if warehouses_response.status_code == 200:
+                warehouses_data = warehouses_response.json()
+                print(f"=== DEBUG: Получены данные складов: {len(warehouses_data)} элементов")
+                for warehouse in warehouses_data:
+                    if str(warehouse.get("ID")) == str(warehouse_id):
+                        warehouse_name = warehouse.get("name")
+                        print(f"Найден склад: ID={warehouse_id}, Name='{warehouse_name}'")
+                        break
+                if not warehouse_name:
+                    print(f"Склад с ID {warehouse_id} не найден в списке складов")
+                    print("Доступные склады:")
+                    for wh in warehouses_data[:10]:  # Показываем первые 10
+                        print(f"  ID={wh.get('ID')}, Name='{wh.get('name')}'")
+        except Exception as e:
+            print(f"Ошибка получения названия склада: {e}")
+        
+        if not warehouse_name:
+            warehouse_name = f"Склад {warehouse_id}"
+            print(f"Используем fallback название: '{warehouse_name}'")
+        
+        # 4. Обрабатываем остатки для конкретного склада и всех складов
+        warehouse_stocks = {}
+        all_warehouse_stocks = {}
+        
+        for stock in stocks:
+            stock_warehouse = stock.get("warehouse", "")
+            barcode = stock.get("barcode")
+            
+            if barcode:
+                qty = int(stock.get("qty", 0) or 0)
+                
+                # Остатки по всем складам
+                if barcode in all_warehouse_stocks:
+                    all_warehouse_stocks[barcode] += qty
+                else:
+                    all_warehouse_stocks[barcode] = qty
+                
+                # Остатки по конкретному складу
+                if (stock_warehouse == warehouse_name or 
+                    (warehouse_name in stock_warehouse) or 
+                    (stock_warehouse in warehouse_name)):
+                    if barcode in warehouse_stocks:
+                        warehouse_stocks[barcode] += qty
+                    else:
+                        warehouse_stocks[barcode] = qty
+        
+        # 5. Получаем заказы
+        print(f"Загружаем заказы для склада: '{warehouse_name}' за период {date_from} - {date_to}")
+        
+        headers = {
+            "Authorization": token,
+            "Content-Type": "application/json"
+        }
+        
+        # Конвертируем даты в формат RFC3339 для API
+        try:
+            date_from_dt = datetime.strptime(date_from, "%d.%m.%Y")
+            date_to_dt = datetime.strptime(date_to, "%d.%m.%Y")
+            date_from_iso = date_from_dt.strftime("%Y-%m-%dT00:00:00")
+            date_to_iso = date_to_dt.strftime("%Y-%m-%dT23:59:59")
+        except ValueError:
+            return jsonify({"error": "invalid_date_format"}), 400
+        
+        orders_url = "https://statistics-api.wildberries.ru/api/v1/supplier/orders"
+        params = {
+            "dateFrom": date_from_iso,
+            "dateTo": date_to_iso
+        }
+        
+        try:
+            orders_response = requests.get(orders_url, headers=headers, params=params, timeout=30)
+            orders_response.raise_for_status()
+            orders_data = orders_response.json()
+            print(f"Получено заказов: {len(orders_data)}")
+        except Exception as e:
+            print(f"Ошибка загрузки заказов: {e}")
+            orders_data = []
+        
+        # Отладочная информация - покажем все склады в заказах
+        unique_warehouses = set()
+        for order in orders_data:
+            wh_name = order.get("warehouseName")
+            if wh_name:
+                unique_warehouses.add(wh_name)
+        
+        print(f"Уникальные склады в заказах: {sorted(unique_warehouses)}")
+        print(f"Ищем заказы для склада: '{warehouse_name}'")
+        
+        # Фильтруем заказы по складу (используем гибкую логику как в оригинальном endpoint)
+        filtered_orders = []
+        for order in orders_data:
+            order_warehouse = order.get("warehouseName")
+            if order_warehouse and not order.get("isCancel", False):
+                # Точное совпадение
+                if order_warehouse == warehouse_name:
+                    filtered_orders.append(order)
+                # Частичное совпадение - проверяем содержит ли название склада из заказов название из API складов
+                elif warehouse_name in order_warehouse or order_warehouse in warehouse_name:
+                    print(f"Найдено частичное совпадение: '{order_warehouse}' <-> '{warehouse_name}'")
+                    filtered_orders.append(order)
+        
+        print(f"Найдено заказов для склада '{warehouse_name}': {len(filtered_orders)}")
+        
+        # Отладочная информация - покажем примеры заказов
+        if filtered_orders:
+            print("=== DEBUG: Примеры найденных заказов ===")
+            for i, order in enumerate(filtered_orders[:3]):
+                print(f"  Заказ {i+1}: barcode={order.get('barcode')}, warehouseName={order.get('warehouseName')}")
+        else:
+            print("=== DEBUG: Заказы не найдены ===")
+            print("Проверяем первые 5 заказов из общего списка:")
+            for i, order in enumerate(orders_data[:5]):
+                print(f"  Заказ {i+1}: barcode={order.get('barcode')}, warehouseName={order.get('warehouseName')}")
+        
+        # Группируем заказы по баркодам
+        orders_by_barcode = {}
+        cancelled_orders = 0
+        
+        for order in filtered_orders:
+            barcode = order.get("barcode")
+            if barcode:
+                if barcode in orders_by_barcode:
+                    orders_by_barcode[barcode] += 1
+                else:
+                    orders_by_barcode[barcode] = 1
+            else:
+                print(f"Заказ без баркода: {order}")
+        
+        # Подсчитываем отмененные заказы для отладки
+        for order in orders_data:
+            if order.get("isCancel", False):
+                cancelled_orders += 1
+        
+        print(f"Отмененных заказов исключено: {cancelled_orders}")
+        
+        print(f"Заказы сгруппированы по {len(orders_by_barcode)} баркодам")
+        
+        # Подсчитываем общее количество заказов
+        total_orders = sum(orders_by_barcode.values())
+        print(f"Общее количество заказов: {total_orders}")
+        
+        # Получаем время обновления
+        now_str = cached.get("updated_at") if cached else datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        
+        # Формируем список товаров с баркодами (как в оригинальном endpoint)
+        products_with_barcodes = []
+        for product in products:
+            barcode = product.get("barcode")
+            if barcode:
+                products_with_barcodes.append({
+                    "barcode": str(barcode),
+                    "name": product.get("supplier_article") or "Без артикула",
+                    "nm_id": product.get("nm_id"),
+                    "supplier_article": product.get("supplier_article") or "Без артикула",
+                    "photo": product.get("photo")
+                })
+        
+        # Возвращаем все данные одним ответом
+        return jsonify({
+            "success": True,
+            "products": {
+                "success": True,
+                "products": products_with_barcodes,
+                "count": len(products_with_barcodes)
+            },
+            "stocks": {
+                "success": True,
+                "stocks": warehouse_stocks,
+                "total_stocks": sum(warehouse_stocks.values()),
+                "unique_products": len(warehouse_stocks),
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "updated_at": now_str
+            },
+            "all_stocks": {
+                "success": True,
+                "stocks": all_warehouse_stocks,
+                "total_stocks": sum(all_warehouse_stocks.values()),
+                "unique_products": len(all_warehouse_stocks),
+                "warehouse_id": "all",
+                "warehouse_name": "Все склады",
+                "updated_at": now_str
+            },
+            "orders": {
+                "success": True,
+                "orders": orders_by_barcode,
+                "total_orders": total_orders,
+                "unique_products": len(orders_by_barcode),
+                "warehouse_id": warehouse_id,
+                "warehouse_name": warehouse_name,
+                "date_from": date_from,
+                "date_to": date_to
+            }
+        })
+        
+    except requests.HTTPError as http_err:
+        print(f"=== ОШИБКА API в api_fbw_planning_data ===")
+        print(f"HTTP Error: {http_err.response.status_code}")
+        print(f"Response: {http_err.response.text}")
+        return jsonify({"error": "api_error", "message": f"Ошибка API: {http_err.response.status_code}"}), 502
+    except Exception as exc:
+        print(f"=== ОШИБКА в api_fbw_planning_data ===")
+        print(f"Exception: {str(exc)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
@@ -8797,22 +9084,39 @@ def fetch_stocks_paginated(token: str, start_iso: str = "1970-01-01T00:00:00") -
     return collected
 
 
+# Глобальная блокировка для предотвращения одновременных запросов к API остатков
+_stocks_api_lock = threading.Lock()
+_last_stocks_request_time = 0
+
 def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
-    try:
-        data = fetch_stocks_all(token)
-        if isinstance(data, list) and data:
-            return data
-    except requests.HTTPError as e:
-        # если 429 — не уходим в пагинацию, возвращаем 429
+    global _last_stocks_request_time
+    
+    # Используем блокировку для предотвращения одновременных запросов
+    with _stocks_api_lock:
+        # Проверяем, не делали ли мы запрос слишком недавно (минимум 1 секунда между запросами)
+        current_time = time.time()
+        if current_time - _last_stocks_request_time < 1.0:
+            sleep_time = 1.0 - (current_time - _last_stocks_request_time)
+            print(f"=== RATE LIMITING: Ждем {sleep_time:.2f} сек перед запросом к API остатков ===")
+            time.sleep(sleep_time)
+        
+        _last_stocks_request_time = time.time()
+        
         try:
-            if e.response is not None and e.response.status_code == 429:
-                raise
-        except Exception:
-            pass
-        # иначе попробуем постранично (редкие случаи нестабильности снапшота)
+            data = fetch_stocks_all(token)
+            if isinstance(data, list) and data:
+                return data
+        except requests.HTTPError as e:
+            # если 429 — не уходим в пагинацию, возвращаем 429
+            try:
+                if e.response is not None and e.response.status_code == 429:
+                    raise
+            except Exception:
+                pass
+            # иначе попробуем постранично (редкие случаи нестабильности снапшота)
+            return fetch_stocks_paginated(token)
+        # Fallback to paginated flow
         return fetch_stocks_paginated(token)
-    # Fallback to paginated flow
-    return fetch_stocks_paginated(token)
 
 
 def fetch_product_price_history(token: str, nm_id: int) -> List[Dict[str, Any]]:
