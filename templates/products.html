@@ -22,6 +22,7 @@
         <div class="d-flex gap-2">
           <button id="saveChanges" class="btn btn-success btn-sm" disabled>Сохранить правки</button>
       <button id="refreshProducts" class="btn btn-primary btn-sm">Обновить список товаров</button>
+          <button id="saveImages" class="btn btn-info btn-sm"><i class="fas fa-download me-1"></i> Сохранить картинки</button>
           <div class="btn-group">
             <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
               Действия с Excel
@@ -455,6 +456,76 @@
         }
       });
       
+      // Сохранение картинок
+      const saveImagesBtn = document.getElementById('saveImages');
+      if (saveImagesBtn) {
+        saveImagesBtn.addEventListener('click', function(e) {
+          e.preventDefault();
+          saveImagesBtn.disabled = true;
+          saveImagesBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Создание архива...';
+          
+          // Собираем данные о товарах с картинками и баркодами
+          const productsWithImages = [];
+          const rows = document.querySelectorAll('#productsTable tbody tr');
+          
+          rows.forEach((row) => {
+            const img = row.querySelector('img.product-thumb');
+            const barcode = row.getAttribute('data-barcode');
+            
+            if (img && barcode && img.src) {
+              productsWithImages.push({
+                barcode: barcode,
+                imageUrl: img.src
+              });
+            }
+          });
+          
+          if (productsWithImages.length === 0) {
+            alert('Нет товаров с картинками и баркодами для сохранения');
+            saveImagesBtn.disabled = false;
+            saveImagesBtn.innerHTML = '<i class="fas fa-download me-1"></i> Сохранить картинки';
+            return;
+          }
+          
+          // Отправляем запрос на сервер
+          fetch('/api/products/save-images', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ products: productsWithImages })
+          })
+          .then(response => {
+            if (response.ok) {
+              return response.blob();
+            } else {
+              return response.json().then(data => {
+                throw new Error(data.error || 'Ошибка создания архива');
+              });
+            }
+          })
+          .then(blob => {
+            // Создаем ссылку для скачивания
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `product_images_${new Date().toISOString().slice(0, 10)}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+          })
+          .catch(error => {
+            console.error('Ошибка создания архива:', error);
+            alert('Ошибка при создании архива: ' + error.message);
+          })
+          .finally(() => {
+            saveImagesBtn.disabled = false;
+            saveImagesBtn.innerHTML = '<i class="fas fa-download me-1"></i> Сохранить картинки';
+          });
+        });
+      }
+
       // Экспорт в Excel
       const exportBtn = document.getElementById('actionExportExcel');
       if (exportBtn) {

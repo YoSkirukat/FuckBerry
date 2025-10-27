@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # FBS warehouses/stocks
 FBS_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
 FBS_STOCKS_BY_WAREHOUSE_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks/{warehouseId}"
@@ -9694,6 +9695,79 @@ def api_products_export_excel():
     except Exception as e:
         print(f"Ошибка экспорта Excel: {e}")
         return jsonify({"error": f"Ошибка экспорта: {str(e)}"}), 500
+
+@app.route("/api/products/save-images", methods=["POST"])
+@login_required
+def api_products_save_images():
+    """Создает ZIP-архив с картинками товаров, названными по баркодам."""
+    try:
+        data = request.get_json()
+        if not data or not data.get("products"):
+            return jsonify({"error": "Нет данных о товарах"}), 400
+        
+        products = data["products"]
+        if not products:
+            return jsonify({"error": "Список товаров пуст"}), 400
+        
+        # Импортируем необходимые модули
+        import zipfile
+        from PIL import Image
+        import tempfile
+        
+        # Создаем временный файл для ZIP-архива
+        temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+        temp_zip.close()
+        
+        # Создаем ZIP-архив
+        with zipfile.ZipFile(temp_zip.name, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for product in products:
+                barcode = product.get("barcode")
+                image_url = product.get("imageUrl")
+                
+                if not barcode or not image_url:
+                    continue
+                
+                try:
+                    # Скачиваем изображение
+                    response = requests.get(image_url, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Конвертируем в JPEG если нужно
+                    image = Image.open(io.BytesIO(response.content))
+                    if image.mode in ('RGBA', 'LA', 'P'):
+                        image = image.convert('RGB')
+                    
+                    # Сохраняем в память как JPEG
+                    img_buffer = io.BytesIO()
+                    image.save(img_buffer, format='JPEG', quality=95)
+                    img_buffer.seek(0)
+                    
+                    # Добавляем в ZIP с именем по баркоду
+                    filename = f"{barcode}.jpeg"
+                    zip_file.writestr(filename, img_buffer.getvalue())
+                    
+                except Exception as e:
+                    print(f"Ошибка обработки изображения для баркода {barcode}: {e}")
+                    continue
+        
+        # Читаем созданный ZIP-файл
+        with open(temp_zip.name, 'rb') as f:
+            zip_data = f.read()
+        
+        # Удаляем временный файл
+        os.unlink(temp_zip.name)
+        
+        # Возвращаем ZIP-файл
+        return send_file(
+            io.BytesIO(zip_data),
+            as_attachment=True,
+            download_name=f"product_images_{time.strftime('%Y%m%d_%H%M')}.zip",
+            mimetype="application/zip"
+        )
+        
+    except Exception as e:
+        print(f"Ошибка создания архива с картинками: {e}")
+        return jsonify({"error": f"Ошибка создания архива: {str(e)}"}), 500
 
 @app.route('/favicon.ico')
 def favicon():
