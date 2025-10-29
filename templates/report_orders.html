@@ -951,10 +951,9 @@
       const form = document.querySelector('form[action="/report/orders"]');
       const btn = document.getElementById('exportExcelBtn');
       if (!form || !btn) return;
-      
+      const prev = btn.textContent; // сохранить текст до try/catch, чтобы использовать в catch
       try {
         btn.disabled = true;
-        const prev = btn.textContent;
         btn.textContent = 'Экспорт...';
         
         const params = new URLSearchParams(new FormData(form));
