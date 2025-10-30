@@ -18404,3 +18404,9 @@
 2025-10-29 12:00:30,893 - __main__ - INFO - Строим детальный кэш поставок для пользователя 8...
 2025-10-29 12:01:11,214 - werkzeug - INFO - 127.0.0.1 - - [29/Oct/2025 12:01:11] "GET /api/notifications/count HTTP/1.1" 200 -
 2025-10-29 12:01:11,312 - werkzeug - INFO - 127.0.0.1 - - [29/Oct/2025 12:01:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2025-10-29 12:02:10,742 - werkzeug - INFO -  * Detected change in '/home/yos/www/FuckBerry/app.py', reloading
+2025-10-29 12:02:16,410 - werkzeug - INFO -  * Restarting with stat
+2025-10-29 12:02:27,508 - werkzeug - WARNING -  * Debugger is active!
+2025-10-29 12:02:27,517 - werkzeug - INFO -  * Debugger PIN: 584-769-947
+2025-10-29 12:02:27,696 - werkzeug - INFO - 127.0.0.1 - - [29/Oct/2025 12:02:27] "GET /api/notifications/count HTTP/1.1" 200 -
+2025-10-29 12:02:27,757 - werkzeug - INFO - 127.0.0.1 - - [29/Oct/2025 12:02:27] "GET /api/notifications/count HTTP/1.1" 200 -
