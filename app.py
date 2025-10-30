@@ -9506,6 +9506,27 @@ def stocks_page():
         ]
         wh_list.sort(key=lambda x: (-x["qty"], x["warehouse"]))
         rec["warehouses"] = wh_list
+    # Enrich with product photos from products cache
+    try:
+        nm_to_photo: Dict[Any, Any] = {}
+        prod_cached = load_products_cache() or {}
+        for it_p in (prod_cached.get("items") or []):
+            nmv = it_p.get("nm_id") or it_p.get("nmId") or it_p.get("nmID")
+            if nmv is None:
+                continue
+            photo = it_p.get("photo") or it_p.get("img")
+            if photo:
+                nm_to_photo[int(nmv)] = photo
+        # attach photo to products_agg items
+        for rec in prod_map.values():
+            nm = rec.get("nm_id")
+            if nm is not None:
+                try:
+                    rec["photo"] = nm_to_photo.get(int(nm))
+                except Exception:
+                    rec["photo"] = nm_to_photo.get(nm)
+    except Exception:
+        pass
     products_agg = sorted(prod_map.values(), key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
     # by warehouse
     wh_map: Dict[str, Dict[str, Any]] = {}
@@ -9528,6 +9549,27 @@ def stocks_page():
         })
     for rec in wh_map.values():
         rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
+    # Enrich nested products with photos as well
+    try:
+        nm_to_photo: Dict[Any, Any] = {}
+        prod_cached = load_products_cache() or {}
+        for it_p in (prod_cached.get("items") or []):
+            nmv = it_p.get("nm_id") or it_p.get("nmId") or it_p.get("nmID")
+            if nmv is None:
+                continue
+            photo = it_p.get("photo") or it_p.get("img")
+            if photo:
+                nm_to_photo[int(nmv)] = photo
+        for wh in wh_map.values():
+            for p in wh.get("products", []):
+                nm = p.get("nm_id")
+                if nm is not None:
+                    try:
+                        p["photo"] = nm_to_photo.get(int(nm))
+                    except Exception:
+                        p["photo"] = nm_to_photo.get(nm)
+    except Exception:
+        pass
     warehouses_agg = sorted(wh_map.values(), key=lambda x: (-x["total_qty"], x["warehouse"] or ""))
     updated_at = None
     try:
@@ -9612,6 +9654,26 @@ def api_stocks_data():
         ]
         rec["warehouses"].sort(key=lambda x: (-x["qty"], x["warehouse"]))
         products_agg.append(rec)
+    # Enrich with product photos from products cache
+    try:
+        nm_to_photo: Dict[Any, Any] = {}
+        prod_cached = load_products_cache() or {}
+        for it_p in (prod_cached.get("items") or []):
+            nmv = it_p.get("nm_id") or it_p.get("nmId") or it_p.get("nmID")
+            if nmv is None:
+                continue
+            photo = it_p.get("photo") or it_p.get("img")
+            if photo:
+                nm_to_photo[int(nmv)] = photo
+        for rec in products_agg:
+            nm = rec.get("nm_id")
+            if nm is not None:
+                try:
+                    rec["photo"] = nm_to_photo.get(int(nm))
+                except Exception:
+                    rec["photo"] = nm_to_photo.get(nm)
+    except Exception:
+        pass
     products_agg.sort(key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
 
     # by warehouse
@@ -9635,6 +9697,27 @@ def api_stocks_data():
         })
     for rec in wh_map.values():
         rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
+    # Enrich nested products with photos as well
+    try:
+        nm_to_photo: Dict[Any, Any] = {}
+        prod_cached = load_products_cache() or {}
+        for it_p in (prod_cached.get("items") or []):
+            nmv = it_p.get("nm_id") or it_p.get("nmId") or it_p.get("nmID")
+            if nmv is None:
+                continue
+            photo = it_p.get("photo") or it_p.get("img")
+            if photo:
+                nm_to_photo[int(nmv)] = photo
+        for wh in wh_map.values():
+            for p in wh.get("products", []):
+                nm = p.get("nm_id")
+                if nm is not None:
+                    try:
+                        p["photo"] = nm_to_photo.get(int(nm))
+                    except Exception:
+                        p["photo"] = nm_to_photo.get(nm)
+    except Exception:
+        pass
     warehouses_agg = sorted(wh_map.values(), key=lambda x: (-x["total_qty"], x["warehouse"] or ""))
 
     return jsonify({
@@ -10577,7 +10660,7 @@ def tools_prices_page():
                 traceback.print_exc()
                 warehouses_data = []
             
-            # Получаем данные об остатках
+            # Получаем данные об остатках FBW
             stocks_data = {}
             try:
                 stocks_cached = load_stocks_cache()
@@ -10597,6 +10680,41 @@ def tools_prices_page():
             except Exception as e:
                 print(f"Ошибка при загрузке остатков: {e}")
                 stocks_data = {}
+
+            # Получаем данные об остатках FBS (сумма по всем FBS-складам)
+            fbs_stocks_data: dict[str, int] = {}
+            try:
+                # Собираем список баркодов (SKU) из кэша товаров
+                prod_cached = load_products_cache() or {}
+                products_all = prod_cached.get("products") or prod_cached.get("items") or []
+                skus: list[str] = []
+                for p in products_all:
+                    if isinstance(p.get("barcodes"), list):
+                        skus.extend([str(x) for x in p.get("barcodes") if x])
+                    elif p.get("barcode"):
+                        skus.append(str(p.get("barcode")))
+                # Уникальные SKU
+                skus = list({s for s in skus if s})
+                if skus:
+                    wlist = fetch_fbs_warehouses(token)
+                    for w in wlist or []:
+                        wid = w.get("id") or w.get("warehouseId") or w.get("warehouseID")
+                        if not wid:
+                            continue
+                        try:
+                            stocks = fetch_fbs_stocks_by_warehouse(token, int(wid), skus)
+                        except Exception:
+                            stocks = []
+                        for s in stocks or []:
+                            bc = str(s.get("sku") or s.get("barcode") or "").strip()
+                            amount = int(s.get("amount") or 0)
+                            if not bc:
+                                continue
+                            fbs_stocks_data[bc] = fbs_stocks_data.get(bc, 0) + amount
+                print(f"Загружено FBS остатков для {len(fbs_stocks_data)} товаров")
+            except Exception as e:
+                print(f"Ошибка при загрузке FBS остатков: {e}")
+                fbs_stocks_data = {}
             
             # Настройки маржи пользователя
             margin_settings = load_user_margin_settings(current_user.id)
@@ -10650,6 +10768,7 @@ def tools_prices_page():
         dimensions_data=dimensions_data if 'dimensions_data' in locals() else {},
         warehouses_data=warehouses_data if 'warehouses_data' in locals() else [],
         stocks_data=stocks_data if 'stocks_data' in locals() else {},
+            fbs_stocks_data=fbs_stocks_data if 'fbs_stocks_data' in locals() else {},
         purchase_prices=purchase_prices,
         margin_settings=margin_settings if 'margin_settings' in locals() else load_user_margin_settings(current_user.id),
         prices_last_updated=prices_last_updated,

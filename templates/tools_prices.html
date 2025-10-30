@@ -437,10 +437,12 @@
                 </td>
                 <td class="text-center">
                   {% set product_barcode = product.barcode %}
-                  {% if stocks_data and product_barcode in stocks_data %}
-                    <span class="badge {% if stocks_data[product_barcode] > 0 %}bg-success{% else %}bg-secondary{% endif %}">
-                      {{ stocks_data[product_barcode] }}
-                    </span>
+                  {% set fbw = (stocks_data[product_barcode] if stocks_data and product_barcode in stocks_data else None) %}
+                  {% set fbs = (fbs_stocks_data[product_barcode] if fbs_stocks_data and product_barcode in fbs_stocks_data else None) %}
+                  {% if fbw is not none or fbs is not none %}
+                    <span class="badge {{ 'bg-success' if (fbw or 0) > 0 else 'bg-secondary' }}" data-bs-toggle="tooltip" title="FBW">{{ fbw if fbw is not none else 0 }}</span>
+                    <span>/</span>
+                    <span class="badge {{ 'bg-primary' if (fbs or 0) > 0 else 'bg-secondary' }}" data-bs-toggle="tooltip" title="FBS, DBS">{{ fbs if fbs is not none else 0 }}</span>
                   {% else %}
                     <span class="text-muted">—</span>
                   {% endif %}
@@ -535,6 +537,7 @@
   <script id="dimensionsDataJson" type="application/json">{{ dimensions_data|tojson|safe }}</script>
   <script id="warehousesDataJson" type="application/json">{{ warehouses_data|tojson|safe }}</script>
   <script id="stocksDataJson" type="application/json">{{ stocks_data|tojson|safe }}</script>
+  <script id="fbsStocksDataJson" type="application/json">{{ fbs_stocks_data|tojson|safe }}</script>
   <script id="purchasePricesDataJson" type="application/json">{{ purchase_prices|tojson|safe }}</script>
   
   <!-- Модальное окно настройки колонок -->
