@@ -5715,8 +5715,58 @@ def export_excel():
             top_products=[],
         )
 
-    raw_data = fetch_orders_range(token, date_from, date_to)
-    rows = to_rows(raw_data, date_from, date_to)
+    # Проверяем кеш перед запросом к API, чтобы избежать ошибки 429
+    cached = load_last_results()
+    if (
+        cached
+        and current_user.is_authenticated
+        and cached.get("_user_id") == current_user.id
+        and cached.get("date_from") == date_from
+        and cached.get("date_to") == date_to
+    ):
+        # Используем данные из кеша (они уже обработаны через to_rows)
+        rows = cached.get("orders", [])
+    else:
+        # Если кеш отсутствует или не совпадает, делаем запрос к API
+        try:
+            raw_data = fetch_orders_range(token, date_from, date_to)
+            rows = to_rows(raw_data, date_from, date_to)
+        except requests.HTTPError as http_err:
+            # Если получили ошибку 429 или другую, пытаемся использовать кеш как резервный вариант
+            if cached and current_user.is_authenticated and cached.get("_user_id") == current_user.id:
+                rows = cached.get("orders", [])
+                if not rows:
+                    return render_template(
+                        "index.html",
+                        error=f"Ошибка API при экспорте (HTTP {http_err.response.status_code}). Кеш недоступен. Попробуйте позже.",
+                        token=token,
+                        date_from=date_from,
+                        date_to=date_to,
+                        orders=[],
+                        total_orders=0,
+                        total_revenue=0,
+                        daily_labels=[],
+                        daily_counts=[],
+                        daily_revenue=[],
+                        warehouse_summary=[],
+                        top_products=[],
+                    )
+            else:
+                return render_template(
+                    "index.html",
+                    error=f"Ошибка API при экспорте (HTTP {http_err.response.status_code}). Загрузите данные на странице аналитики сначала.",
+                    token=token,
+                    date_from=date_from,
+                    date_to=date_to,
+                    orders=[],
+                    total_orders=0,
+                    total_revenue=0,
+                    daily_labels=[],
+                    daily_counts=[],
+                    daily_revenue=[],
+                    warehouse_summary=[],
+                    top_products=[],
+                )
 
     wb = Workbook()
     ws = wb.active
