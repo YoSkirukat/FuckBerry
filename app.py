@@ -393,6 +393,11 @@ FBS_SUPPLIES_LIST_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies"
 FBS_SUPPLY_INFO_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}"
 FBS_SUPPLY_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}/orders"
 
+# DBS (Delivery by Seller) API
+DBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/new"
+DBS_STATUS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/status"
+DBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders"
+
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
 ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
@@ -1551,8 +1556,6 @@ def load_fbs_tasks_cache() -> Dict[str, Any] | None:
             return json.load(f)
     except Exception:
         return None
-
-
 def load_fbs_tasks_cache_by_user_id(user_id: int) -> Dict[str, Any] | None:
     """Load FBS tasks cache by user ID (for background threads)"""
     path = os.path.join(CACHE_DIR, f"fbs_tasks_user_{user_id}.json")
@@ -1601,6 +1604,39 @@ def save_last_results(payload: Dict[str, Any]) -> None:
         except Exception:
             # If current_user unavailable outside request context, ignore
             pass
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+# -------------------------
+# DBS Active orders cache (per user)
+# -------------------------
+
+def _dbs_active_cache_path_for_user() -> str:
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"dbs_active_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "dbs_active_anon.json")
+
+
+def load_dbs_active_cache() -> Dict[str, Any] | None:
+    path = _dbs_active_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_dbs_active_cache(payload: Dict[str, Any]) -> None:
+    path = _dbs_active_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False)
     except Exception:
@@ -2340,8 +2376,6 @@ def fetch_fbs_orders(token: str, limit: int = 100, next_cursor: str | None = Non
     if last_err:
         raise last_err
     return last_data  # type: ignore[name-defined]
-
-
 def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
     headers_list = [
         {"Authorization": f"{token}"},
@@ -2363,6 +2397,164 @@ def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
     if last_err:
         raise last_err
     return {}
+
+
+def fetch_dbs_new_orders(token: str) -> List[Dict[str, Any]]:
+    """Fetch new DBS orders.
+
+    Returns a list of orders in whatever shape WB responds with; caller normalizes.
+    """
+    headers = {"Authorization": f"{token}"}
+    resp = get_with_retry(DBS_NEW_URL, headers, params={})
+    data = resp.json()
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        arr = data.get("orders")
+        if isinstance(arr, list):
+            return arr
+        inner = data.get("data")
+        if isinstance(inner, list):
+            return inner
+        if isinstance(inner, dict) and isinstance(inner.get("orders"), list):
+            return inner["orders"]
+    return []
+
+
+def to_dbs_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize DBS orders to a simple table row format for UI."""
+    rows: List[Dict[str, Any]] = []
+    for it in items:
+        try:
+            created_raw = (
+                it.get("createdAt")
+                or it.get("dateCreated")
+                or it.get("date")
+            )
+            try:
+                _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
+                _dt_msk = to_moscow(_dt) if _dt else None
+                created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
+            except Exception:
+                created_str = str(created_raw) if created_raw else ""
+
+            nm_id = it.get("nmId") or it.get("nmID")
+            article = it.get("article") or it.get("vendorCode") or ""
+            price = (
+                it.get("finalPrice")
+                or it.get("convertedFinalPrice")
+                or it.get("salePrice")
+                or it.get("price")
+            )
+            addr = None
+            adr = it.get("address") or {}
+            if isinstance(adr, dict):
+                addr = adr.get("fullAddress") or None
+
+            # status fields (if present directly in item)
+            status_val = (
+                it.get("status")
+                or it.get("supplierStatus")
+                or it.get("wbStatus")
+            )
+            status_name_val = (
+                it.get("statusName")
+                or it.get("supplierStatusName")
+                or it.get("wbStatusName")
+                or status_val
+            )
+
+            rows.append({
+                "orderId": it.get("id") or it.get("orderId") or it.get("ID"),
+                "Номер и дата заказа": f"{it.get('id') or it.get('orderId') or ''} | {created_str}".strip(" |"),
+                "Наименование товара": article,
+                "Цена": price,
+                "Адрес": addr or "",
+                "nm_id": nm_id,
+                "status": status_val,
+                "statusName": status_name_val,
+            })
+        except Exception:
+            continue
+    return rows
+
+
+def fetch_dbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    bodies = [
+        {"orders": order_ids},
+    ]
+    last_err: Exception | None = None
+    for hdrs in headers_list:
+        for body in bodies:
+            try:
+                resp = post_with_retry(DBS_STATUS_URL, hdrs, json_body=body)
+                return resp.json()
+            except Exception as e:
+                last_err = e
+                continue
+    if last_err:
+        raise last_err
+    return {}
+
+
+def fetch_dbs_orders(
+    token: str,
+    limit: int = 1000,
+    next_cursor: Any | None = None,
+    date_from_ts: int | None = None,
+    date_to_ts: int | None = None,
+) -> Dict[str, Any]:
+    """Fetch completed DBS assembly orders after sale or cancellation.
+
+    Returns raw response dict. Uses tolerant auth header variants like FBS.
+    """
+    params: Dict[str, Any] = {
+        "limit": limit,
+        "next": 0 if next_cursor is None else next_cursor,
+    }
+    if date_from_ts is not None:
+        params["dateFrom"] = int(date_from_ts)
+    if date_to_ts is not None:
+        params["dateTo"] = int(date_to_ts)
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err: Exception | None = None
+    last_data: Dict[str, Any] | None = None
+    # Try with seconds params first, then retry with milliseconds if empty
+    attempts: list[tuple[dict[str, Any], str]] = [(params, "sec" )]
+    if date_from_ts is not None and date_to_ts is not None:
+        params_ms = dict(params)
+        try:
+            params_ms["dateFrom"] = int(date_from_ts) * 1000
+            params_ms["dateTo"] = int(date_to_ts) * 1000
+        except Exception:
+            params_ms = params
+        attempts.append((params_ms, "ms"))
+
+    for hdrs in headers_list:
+        for p, tag in attempts:
+            try:
+                resp = get_with_retry(DBS_ORDERS_URL, hdrs, params=p)
+                try:
+                    txt = resp.text or ""
+                    print(f"DBS ORDERS upstream status={resp.status_code}, mode={tag}, len={len(txt)}")
+                except Exception:
+                    pass
+                data = resp.json() if (resp.text or "").strip() else {}
+                last_data = data if isinstance(data, dict) else {"data": data}
+                return last_data
+            except Exception as e:
+                last_err = e
+                continue
+    if last_err:
+        raise last_err
+    return last_data or {}
 def fetch_fbs_latest_orders(token: str, want_count: int = 30, page_limit: int = 200, max_pages: int = 20) -> tuple[List[Dict[str, Any]], Any]:
     """Fetch multiple pages and return most recent `want_count` items by created time.
 
@@ -3026,8 +3218,6 @@ def check_version_updates():
                 
         except Exception as e:
             print(f"Error in check_version_updates: {e}")
-
-
 # Global variable to track monitoring state
 _monitoring_started = False
 
@@ -3613,8 +3803,6 @@ def root():
     if request.method == "POST":
         return redirect(url_for("index"), code=307)
     return redirect(url_for("index"))
-
-
 @app.route("/orders", methods=["GET", "POST"]) 
 @login_required
 def index():
@@ -4160,7 +4348,6 @@ def api_fbw_planning_stocks():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
-
 @app.route("/api/fbw/planning/data", methods=["GET"])
 @login_required
 def api_fbw_planning_data():
@@ -4890,7 +5077,7 @@ def api_fbw_supplies():
         return jsonify({"error": str(exc)}), 500
 
 
-@app.route("/fbs-stock", methods=["GET"]) 
+@app.route("/fbs-stock", methods=["GET", "POST"]) 
 @login_required
 def fbs_stock_page():
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
@@ -5666,8 +5853,6 @@ def profile_password():
         db.session.rollback()
         flash("Ошибка обновления пароля")
     return redirect(url_for("profile"))
-
-
 @app.route("/export", methods=["POST"]) 
 @login_required
 def export_excel():
@@ -7385,6 +7570,18 @@ def fbs_page():
 
     # Не блокируем рендер страницы: текущие задания подтянем AJAX-ом
     return render_template("fbs.html", error=error, rows=rows, products_hint=products_hint, current_orders=[])
+
+
+@app.route("/dbs", methods=["GET"]) 
+@login_required
+def dbs_page():
+    """DBS page: initial render; data loaded via JS."""
+    error = None
+    products_hint = None
+    prod_cached_now = load_products_cache()
+    if not prod_cached_now or not ((prod_cached_now or {}).get("items")):
+        products_hint = "Для отображения фото товара и баркода обновите данные на странице Товары"
+    return render_template("dbs.html", error=error, products_hint=products_hint)
 @app.route("/fbs/export", methods=["POST"]) 
 @login_required
 def fbs_export():
@@ -7977,6 +8174,332 @@ def api_fbs_create_supply():
     
     return jsonify({"error": last_err or "Unknown error"}), 500
 
+
+@app.route("/api/dbs/orders/new", methods=["GET"]) 
+@login_required
+def api_dbs_orders_new():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "updated_at": None}), 200
+    try:
+        raw = fetch_dbs_new_orders(token)
+        # Sort by created time asc for consistent display
+        try:
+            raw_sorted = sorted(raw, key=_extract_created_at)
+        except Exception:
+            raw_sorted = raw
+        rows = to_dbs_rows(raw_sorted)
+
+        # Enrich with products cache (photo, barcode) by nmId like in FBS
+        prod_cached = load_products_cache() or {}
+        items = (prod_cached.get("items") or [])
+        by_nm: Dict[int, Dict[str, Any]] = {}
+        for it in items:
+            nmv = it.get("nm_id") or it.get("nmID")
+            try:
+                if nmv:
+                    by_nm[int(nmv)] = it
+            except Exception:
+                pass
+        for r in rows:
+            nm = r.get("nm_id")
+            try:
+                nm_i = int(nm) if nm is not None else None
+            except Exception:
+                nm_i = None
+            hit = by_nm.get(nm_i) if nm_i is not None else None
+            if hit:
+                r["photo"] = hit.get("photo")
+                if hit.get("barcode"):
+                    r["barcode"] = hit.get("barcode")
+                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                    r["barcode"] = str(hit.get("barcodes")[0])
+                else:
+                    sizes = hit.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bl = s.get("skus") or s.get("barcodes")
+                            if isinstance(bl, list) and bl:
+                                r["barcode"] = str(bl[0])
+                                break
+
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        return jsonify({"items": rows, "updated_at": now_str}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
+
+
+@app.route("/api/dbs/orders/<order_id>/deliver", methods=["PATCH"]) 
+@login_required
+def api_dbs_order_deliver(order_id: str):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "No token"}), 401
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    url = f"https://marketplace-api.wildberries.ru/api/v3/dbs/orders/{order_id}/deliver"
+    last_err = None
+    for hdrs in headers_list:
+        try:
+            resp = requests.patch(url, headers=hdrs, timeout=30)
+            if resp.status_code in [200, 204]:
+                return jsonify({"success": True}), 200
+            else:
+                last_err = f"HTTP {resp.status_code}: {resp.text}"
+                continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+    return jsonify({"error": last_err or "Unknown error"}), 500
+
+
+@app.route("/api/dbs/orders", methods=["GET"]) 
+@login_required
+def api_dbs_orders_list():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "next": None}), 200
+    try:
+        limit = request.args.get("limit", default="1000")
+        try:
+            limit_i = max(1, min(1000, int(limit)))
+        except Exception:
+            limit_i = 1000
+        next_val = request.args.get("next")
+        # Required date range (Unix timestamps). Default: последние 7 дней.
+        df_q = request.args.get("dateFrom")
+        dt_q = request.args.get("dateTo")
+        if df_q and dt_q:
+            try:
+                date_from_ts = int(df_q)
+                date_to_ts = int(dt_q)
+            except Exception:
+                date_from_ts = None
+                date_to_ts = None
+        else:
+            now = datetime.now(MOSCOW_TZ)
+            date_to_ts = int(now.timestamp())
+            date_from_ts = int((now - timedelta(days=180)).timestamp())
+
+        print(f"DBS ORDERS params: limit={limit_i}, next={next_val}, from={date_from_ts}, to={date_to_ts}")
+        raw = fetch_dbs_orders(
+            token,
+            limit=limit_i,
+            next_cursor=next_val,
+            date_from_ts=date_from_ts,
+            date_to_ts=date_to_ts,
+        )
+        try:
+            # Light debug to understand response shapes
+            if isinstance(raw, dict):
+                sample_count = len((raw.get('orders') or [])) if isinstance(raw.get('orders'), list) else (len(raw.get('data') or []) if isinstance(raw.get('data'), list) else (len((raw.get('data') or {}).get('orders') or []) if isinstance(raw.get('data'), dict) else 0))
+                print(f"DBS ORDERS raw keys={list(raw.keys())}, sample_count={sample_count}, has_next={bool(raw.get('next') or (isinstance(raw.get('data'), dict) and raw.get('data', {}).get('next')))}")
+                # Extended debug of alternative containers
+                try:
+                    alt1 = raw.get('orders') if isinstance(raw.get('orders'), list) else None
+                    alt2 = raw.get('data') if isinstance(raw.get('data'), list) else None
+                    alt3 = (raw.get('data') or {}).get('orders') if isinstance(raw.get('data'), dict) and isinstance((raw.get('data') or {}).get('orders'), list) else None
+                    alt4 = (raw.get('orders') or {}).get('items') if isinstance(raw.get('orders'), dict) and isinstance((raw.get('orders') or {}).get('items'), list) else None
+                    counts = {
+                        'orders:list': len(alt1 or []),
+                        'data:list': len(alt2 or []),
+                        'data.orders:list': len(alt3 or []),
+                        'orders.items:list': len(alt4 or []),
+                    }
+                    print(f"DBS ORDERS candidates counts: {counts}")
+                except Exception:
+                    pass
+                # Print small preview of raw json text (truncated)
+                try:
+                    import json as _json
+                    _txt = _json.dumps(raw, ensure_ascii=False)
+                    print(f"DBS ORDERS raw preview: {_txt[:500]}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Normalize
+        orders = []
+        next_cursor = None
+        if isinstance(raw, dict):
+            # Try multiple known shapes
+            arr_top = raw.get("orders")
+            if isinstance(arr_top, list):
+                orders = arr_top
+            elif isinstance(arr_top, dict):
+                # e.g. { orders: { items: [], next: ... } }
+                inner_items = arr_top.get("items") or arr_top.get("data") or []
+                if isinstance(inner_items, list):
+                    orders = inner_items
+                    next_cursor = arr_top.get("next") or next_cursor
+            if not orders:
+                data_val = raw.get("data")
+                if isinstance(data_val, list):
+                    orders = data_val
+                elif isinstance(data_val, dict):
+                    if isinstance(data_val.get("orders"), list):
+                        orders = data_val.get("orders") or []
+                    elif isinstance(data_val.get("items"), list):
+                        orders = data_val.get("items") or []
+                    next_cursor = data_val.get("next") if next_cursor is None else next_cursor
+            # Fallback: if raw itself is list-like in unexpected way (already handled by json parsing)
+            # Determine next cursor at top level if not set
+            if next_cursor is None:
+                next_cursor = raw.get("next")
+
+        # Fallback strategy: if no data returned for 180d window, retry with 60d then 30d
+        if not orders and not next_val:
+            for days in (60, 30):
+                try:
+                    alt_from = int((datetime.now(MOSCOW_TZ) - timedelta(days=days)).timestamp())
+                    alt_to = int(datetime.now(MOSCOW_TZ).timestamp())
+                    print(f"DBS ORDERS fallback retry with last {days} days")
+                    alt_raw = fetch_dbs_orders(
+                        token,
+                        limit=limit_i,
+                        next_cursor=0,
+                        date_from_ts=alt_from,
+                        date_to_ts=alt_to,
+                    )
+                    alt_orders = []
+                    if isinstance(alt_raw, dict):
+                        alt_arr = alt_raw.get("orders")
+                        if isinstance(alt_arr, list):
+                            alt_orders = alt_arr
+                        elif isinstance(alt_raw.get("data"), dict) and isinstance(alt_raw.get("data", {}).get("orders"), list):
+                            alt_orders = alt_raw.get("data", {}).get("orders") or []
+                        elif isinstance(alt_raw.get("data"), list):
+                            alt_orders = alt_raw.get("data") or []
+                    if alt_orders:
+                        orders = alt_orders
+                        break
+                except Exception:
+                    continue
+        # If мало данных и нет пагинации, дособираем окнами по 30 дней до 6 месяцев назад
+        if (not next_val) and (not orders or len(orders) < 20):
+            try:
+                print("DBS ORDERS backfill windows 6x30d")
+                combined: list[dict[str, Any]] = []
+                seen: set[int] = set()
+                now_ts = int(datetime.now(MOSCOW_TZ).timestamp())
+                for offset in range(0, 180, 30):
+                    wnd_to = now_ts - offset * 24 * 3600
+                    wnd_from = now_ts - (offset + 30) * 24 * 3600
+                    r = fetch_dbs_orders(
+                        token,
+                        limit=1000,
+                        next_cursor=0,
+                        date_from_ts=wnd_from,
+                        date_to_ts=wnd_to,
+                    )
+                    arr: list[dict[str, Any]] = []
+                    if isinstance(r, dict):
+                        a = r.get("orders")
+                        if isinstance(a, list):
+                            arr = a
+                        elif isinstance(r.get("data"), dict) and isinstance(r.get("data", {}).get("orders"), list):
+                            arr = r.get("data", {}).get("orders") or []
+                        elif isinstance(r.get("data"), list):
+                            arr = r.get("data") or []
+                    for it in arr:
+                        oid = it.get("id") or it.get("orderId") or it.get("ID")
+                        try:
+                            oi = int(oid)
+                        except Exception:
+                            oi = None
+                        if oi is not None and oi in seen:
+                            continue
+                        if oi is not None:
+                            seen.add(oi)
+                        combined.append(it)
+                if combined:
+                    orders = combined
+            except Exception:
+                pass
+
+        # Sort by created time desc
+        try:
+            orders.sort(key=_extract_created_at, reverse=True)
+        except Exception:
+            pass
+        # Build rows with enrichment similar to new orders
+        rows = to_dbs_rows(orders)
+
+        # Merge statuses (supplier/wb) via status endpoint for reliability
+        try:
+            ids: list[int] = []
+            for it in orders:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        ids.append(int(oid))
+                except Exception:
+                    continue
+            if ids:
+                st = fetch_dbs_statuses(token, ids[:1000])
+                arr = st.get("orders") if isinstance(st, dict) else []
+                m: dict[int, dict[str, Any]] = {}
+                if isinstance(arr, list):
+                    for x in arr:
+                        try:
+                            m[int(x.get("id") or x.get("orderId") or 0)] = x
+                        except Exception:
+                            continue
+                for r in rows:
+                    try:
+                        oid = int(r.get("orderId") or 0)
+                        sx = m.get(oid) or {}
+                        status_val = sx.get("status") or sx.get("supplierStatus") or sx.get("wbStatus") or r.get("status")
+                        status_name_val = (
+                            sx.get("statusName")
+                            or sx.get("supplierStatusName")
+                            or sx.get("wbStatusName")
+                            or status_val
+                        )
+                        if status_name_val:
+                            r["statusName"] = status_name_val
+                        if status_val:
+                            r["status"] = status_val
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        prod_cached = load_products_cache() or {}
+        items = (prod_cached.get("items") or [])
+        by_nm: Dict[int, Dict[str, Any]] = {}
+        for it in items:
+            nmv = it.get("nm_id") or it.get("nmID")
+            try:
+                if nmv:
+                    by_nm[int(nmv)] = it
+            except Exception:
+                pass
+        for r in rows:
+            nm = r.get("nm_id")
+            try:
+                nm_i = int(nm) if nm is not None else None
+            except Exception:
+                nm_i = None
+            hit = by_nm.get(nm_i) if nm_i is not None else None
+            if hit:
+                r["photo"] = hit.get("photo")
+                if hit.get("barcode"):
+                    r["barcode"] = hit.get("barcode")
+                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                    r["barcode"] = str(hit.get("barcodes")[0])
+                else:
+                    sizes = hit.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bl = s.get("skus") or s.get("barcodes")
+                            if isinstance(bl, list) and bl:
+                                r["barcode"] = str(bl[0])
+                                break
+        return jsonify({"items": rows, "next": next_cursor}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "next": None, "error": str(exc)}), 200
 
 @app.route("/coefficients", methods=["GET", "POST"]) 
 @login_required
@@ -9451,8 +9974,6 @@ def api_stocks_update_time():
             })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/stocks", methods=["GET"]) 
 @login_required
 def stocks_page():
@@ -10221,8 +10742,6 @@ def admin_users_delete(user_id: int):
             db.session.rollback()
             flash("Ошибка")
     return redirect(url_for("admin_users"))
-
-
 @app.route("/admin/users/<int:user_id>/validity", methods=["POST"]) 
 @login_required
 def admin_users_validity(user_id: int):
@@ -10893,8 +11412,6 @@ def api_prices_save():
     except Exception as e:
         db.session.rollback()
         return jsonify({"success": False, "error": f"Ошибка сохранения: {str(e)}"}), 500
-
-
 @app.route("/api/prices/export-excel", methods=["POST"])
 @login_required
 def api_prices_export_excel():
