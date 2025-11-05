@@ -24,6 +24,14 @@
       color: #842029; /* красный текст */
       background-color: #f8d7da; /* розовый фон */
     }
+    .status-pending {
+      color: #b35c00; /* тёмно-оранжевый */
+      background-color: #ffe5cc; /* светло-оранжевый фон */
+    }
+    .status-deliver {
+      color: #084298; /* тёмно-синий */
+      background-color: #cfe2ff; /* светло-синий фон */
+    }
   </style>
 </head>
 <body>
@@ -241,9 +249,13 @@
         let statusText = r.statusName || r.status || '';
         if (rawStatus === 'receive') statusText = 'Выкуплен';
         if (rawStatus === 'cancel') statusText = 'Отменен';
+        if (rawStatus === 'confirm') statusText = 'На сборке';
+        if (rawStatus === 'deliver') statusText = 'В доставке';
         let statusClass = '';
         if (rawStatus === 'receive') statusClass = 'status-badge status-ok';
         else if (rawStatus === 'cancel') statusClass = 'status-badge status-cancel';
+        else if (rawStatus === 'confirm') statusClass = 'status-badge status-pending';
+        else if (rawStatus === 'deliver') statusClass = 'status-badge status-deliver';
         const statusHtml = statusText ? `<span class="${statusClass}">${statusText}</span>` : '';
         tr.innerHTML = `<td class="text-center">${(currentCount + idx + 1)}</td>
           <td class="text-center">${statusHtml}</td>

@@ -1556,6 +1556,8 @@ def load_fbs_tasks_cache() -> Dict[str, Any] | None:
             return json.load(f)
     except Exception:
         return None
+
+
 def load_fbs_tasks_cache_by_user_id(user_id: int) -> Dict[str, Any] | None:
     """Load FBS tasks cache by user ID (for background threads)"""
     path = os.path.join(CACHE_DIR, f"fbs_tasks_user_{user_id}.json")
@@ -1604,39 +1606,6 @@ def save_last_results(payload: Dict[str, Any]) -> None:
         except Exception:
             # If current_user unavailable outside request context, ignore
             pass
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(enriched, f, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-# -------------------------
-# DBS Active orders cache (per user)
-# -------------------------
-
-def _dbs_active_cache_path_for_user() -> str:
-    if current_user.is_authenticated:
-        return os.path.join(CACHE_DIR, f"dbs_active_user_{current_user.id}.json")
-    return os.path.join(CACHE_DIR, "dbs_active_anon.json")
-
-
-def load_dbs_active_cache() -> Dict[str, Any] | None:
-    path = _dbs_active_cache_path_for_user()
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def save_dbs_active_cache(payload: Dict[str, Any]) -> None:
-    path = _dbs_active_cache_path_for_user()
-    try:
-        enriched = dict(payload)
-        if current_user.is_authenticated:
-            enriched["_user_id"] = current_user.id
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False)
     except Exception:
@@ -2376,6 +2345,8 @@ def fetch_fbs_orders(token: str, limit: int = 100, next_cursor: str | None = Non
     if last_err:
         raise last_err
     return last_data  # type: ignore[name-defined]
+
+
 def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
     headers_list = [
         {"Authorization": f"{token}"},
@@ -2400,10 +2371,7 @@ def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
 
 
 def fetch_dbs_new_orders(token: str) -> List[Dict[str, Any]]:
-    """Fetch new DBS orders.
-
-    Returns a list of orders in whatever shape WB responds with; caller normalizes.
-    """
+    """Fetch new DBS orders."""
     headers = {"Authorization": f"{token}"}
     resp = get_with_retry(DBS_NEW_URL, headers, params={})
     data = resp.json()
@@ -2419,64 +2387,6 @@ def fetch_dbs_new_orders(token: str) -> List[Dict[str, Any]]:
         if isinstance(inner, dict) and isinstance(inner.get("orders"), list):
             return inner["orders"]
     return []
-
-
-def to_dbs_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Normalize DBS orders to a simple table row format for UI."""
-    rows: List[Dict[str, Any]] = []
-    for it in items:
-        try:
-            created_raw = (
-                it.get("createdAt")
-                or it.get("dateCreated")
-                or it.get("date")
-            )
-            try:
-                _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
-                _dt_msk = to_moscow(_dt) if _dt else None
-                created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
-            except Exception:
-                created_str = str(created_raw) if created_raw else ""
-
-            nm_id = it.get("nmId") or it.get("nmID")
-            article = it.get("article") or it.get("vendorCode") or ""
-            price = (
-                it.get("finalPrice")
-                or it.get("convertedFinalPrice")
-                or it.get("salePrice")
-                or it.get("price")
-            )
-            addr = None
-            adr = it.get("address") or {}
-            if isinstance(adr, dict):
-                addr = adr.get("fullAddress") or None
-
-            # status fields (if present directly in item)
-            status_val = (
-                it.get("status")
-                or it.get("supplierStatus")
-                or it.get("wbStatus")
-            )
-            status_name_val = (
-                it.get("statusName")
-                or it.get("supplierStatusName")
-                or it.get("wbStatusName")
-                or status_val
-            )
-
-            rows.append({
-                "orderId": it.get("id") or it.get("orderId") or it.get("ID"),
-                "Номер и дата заказа": f"{it.get('id') or it.get('orderId') or ''} | {created_str}".strip(" |"),
-                "Наименование товара": article,
-                "Цена": price,
-                "Адрес": addr or "",
-                "nm_id": nm_id,
-                "status": status_val,
-                "statusName": status_name_val,
-            })
-        except Exception:
-            continue
-    return rows
 
 
 def fetch_dbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
@@ -2508,10 +2418,7 @@ def fetch_dbs_orders(
     date_from_ts: int | None = None,
     date_to_ts: int | None = None,
 ) -> Dict[str, Any]:
-    """Fetch completed DBS assembly orders after sale or cancellation.
-
-    Returns raw response dict. Uses tolerant auth header variants like FBS.
-    """
+    """Fetch completed DBS assembly orders after sale or cancellation."""
     params: Dict[str, Any] = {
         "limit": limit,
         "next": 0 if next_cursor is None else next_cursor,
@@ -2526,8 +2433,7 @@ def fetch_dbs_orders(
     ]
     last_err: Exception | None = None
     last_data: Dict[str, Any] | None = None
-    # Try with seconds params first, then retry with milliseconds if empty
-    attempts: list[tuple[dict[str, Any], str]] = [(params, "sec" )]
+    attempts: list[tuple[dict[str, Any], str]] = [(params, "sec")]
     if date_from_ts is not None and date_to_ts is not None:
         params_ms = dict(params)
         try:
@@ -2536,16 +2442,10 @@ def fetch_dbs_orders(
         except Exception:
             params_ms = params
         attempts.append((params_ms, "ms"))
-
     for hdrs in headers_list:
         for p, tag in attempts:
             try:
                 resp = get_with_retry(DBS_ORDERS_URL, hdrs, params=p)
-                try:
-                    txt = resp.text or ""
-                    print(f"DBS ORDERS upstream status={resp.status_code}, mode={tag}, len={len(txt)}")
-                except Exception:
-                    pass
                 data = resp.json() if (resp.text or "").strip() else {}
                 last_data = data if isinstance(data, dict) else {"data": data}
                 return last_data
@@ -2555,6 +2455,62 @@ def fetch_dbs_orders(
     if last_err:
         raise last_err
     return last_data or {}
+
+
+def to_dbs_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize DBS orders to a simple table row format for UI."""
+    rows: List[Dict[str, Any]] = []
+    for it in items:
+        try:
+            created_raw = (
+                it.get("createdAt")
+                or it.get("dateCreated")
+                or it.get("date")
+            )
+            try:
+                _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
+                _dt_msk = to_moscow(_dt) if _dt else None
+                created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
+            except Exception:
+                created_str = str(created_raw) if created_raw else ""
+            nm_id = it.get("nmId") or it.get("nmID")
+            article = it.get("article") or it.get("vendorCode") or ""
+            price = (
+                it.get("finalPrice")
+                or it.get("convertedFinalPrice")
+                or it.get("salePrice")
+                or it.get("price")
+            )
+            addr = None
+            adr = it.get("address") or {}
+            if isinstance(adr, dict):
+                addr = adr.get("fullAddress") or None
+            status_val = (
+                it.get("status")
+                or it.get("supplierStatus")
+                or it.get("wbStatus")
+            )
+            status_name_val = (
+                it.get("statusName")
+                or it.get("supplierStatusName")
+                or it.get("wbStatusName")
+                or status_val
+            )
+            rows.append({
+                "orderId": it.get("id") or it.get("orderId") or it.get("ID"),
+                "Номер и дата заказа": f"{it.get('id') or it.get('orderId') or ''} | {created_str}".strip(" |"),
+                "Наименование товара": article,
+                "Цена": price,
+                "Адрес": addr or "",
+                "nm_id": nm_id,
+                "status": status_val,
+                "statusName": status_name_val,
+            })
+        except Exception:
+            continue
+    return rows
+
+
 def fetch_fbs_latest_orders(token: str, want_count: int = 30, page_limit: int = 200, max_pages: int = 20) -> tuple[List[Dict[str, Any]], Any]:
     """Fetch multiple pages and return most recent `want_count` items by created time.
 
@@ -3149,6 +3105,79 @@ def check_fbs_new_orders_for_notifications():
                     
         except Exception as e:
             print(f"Error in FBS notifications check: {e}")
+
+
+def check_dbs_new_orders_for_notifications():
+    """Check for new DBS orders and create notifications for all active users"""
+    with app.app_context():
+        try:
+            # Get all active users with WB tokens
+            users = User.query.filter_by(is_active=True).filter(User.wb_token.isnot(None)).all()
+            
+            for user in users:
+                try:
+                    # Get last check time from cache
+                    cache_path = os.path.join(CACHE_DIR, f"dbs_notifications_user_{user.id}.json")
+                    last_check = None
+                    if os.path.exists(cache_path):
+                        with open(cache_path, 'r', encoding='utf-8') as f:
+                            cache_data = json.load(f)
+                            last_check_str = cache_data.get('last_check')
+                            if last_check_str:
+                                last_check = datetime.fromisoformat(last_check_str.replace('Z', '+00:00'))
+                    
+                    # If no previous check, check last 5 minutes
+                    if not last_check:
+                        last_check = datetime.now(MOSCOW_TZ) - timedelta(minutes=5)
+                    
+                    # Fetch new orders
+                    new_orders = fetch_dbs_new_orders(user.wb_token)
+                    
+                    # Filter orders created after last check
+                    new_orders_since_check = []
+                    for order in new_orders:
+                        order_time = _extract_created_at(order)
+                        if order_time and order_time > last_check:
+                            new_orders_since_check.append(order)
+                    
+                    # Create notifications for new orders
+                    if new_orders_since_check:
+                        for order in new_orders_since_check:
+                            order_id = order.get('id') or order.get('orderId') or order.get('ID') or 'Unknown'
+                            order_time = _extract_created_at(order)
+                            # Конвертируем время в московское время для корректного отображения
+                            moscow_time = to_moscow(order_time) if order_time else None
+                            time_str = moscow_time.strftime('%H:%M') if moscow_time else 'Unknown'
+                            
+                            create_notification(
+                                user_id=user.id,
+                                title="Новый заказ DBS",
+                                message=f"Поступил новый заказ DBS #{order_id}",
+                                notification_type="dbs_new_order",
+                                data={
+                                    'order_id': order_id,
+                                    'order_data': order,
+                                    'created_at': order.get('createdAt') or order.get('dateCreated') or order.get('date')
+                                },
+                                created_at=datetime.now(MOSCOW_TZ)
+                            )
+                    
+                    # Update last check time
+                    current_time = datetime.now(MOSCOW_TZ)
+                    with open(cache_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'last_check': current_time.isoformat(),
+                            'checked_orders_count': len(new_orders_since_check)
+                        }, f, ensure_ascii=False)
+                        
+                except Exception as e:
+                    print(f"Error checking DBS orders for user {user.id}: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Error in DBS notifications check: {e}")
+
+
 def check_version_updates():
     """Check for version updates and create notifications"""
     with app.app_context():
@@ -3218,6 +3247,8 @@ def check_version_updates():
                 
         except Exception as e:
             print(f"Error in check_version_updates: {e}")
+
+
 # Global variable to track monitoring state
 _monitoring_started = False
 
@@ -3235,6 +3266,7 @@ def start_notification_monitoring():
                 print(f"Running notification checks at {current_time.strftime('%H:%M:%S')}")
                 
                 check_fbs_new_orders_for_notifications()
+                check_dbs_new_orders_for_notifications()
                 check_version_updates()
                 
                 # Clean up old notifications every hour
@@ -3803,6 +3835,8 @@ def root():
     if request.method == "POST":
         return redirect(url_for("index"), code=307)
     return redirect(url_for("index"))
+
+
 @app.route("/orders", methods=["GET", "POST"]) 
 @login_required
 def index():
@@ -4348,6 +4382,7 @@ def api_fbw_planning_stocks():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
+
 @app.route("/api/fbw/planning/data", methods=["GET"])
 @login_required
 def api_fbw_planning_data():
@@ -5077,7 +5112,7 @@ def api_fbw_supplies():
         return jsonify({"error": str(exc)}), 500
 
 
-@app.route("/fbs-stock", methods=["GET", "POST"]) 
+@app.route("/fbs-stock", methods=["GET"]) 
 @login_required
 def fbs_stock_page():
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
@@ -5853,6 +5888,8 @@ def profile_password():
         db.session.rollback()
         flash("Ошибка обновления пароля")
     return redirect(url_for("profile"))
+
+
 @app.route("/export", methods=["POST"]) 
 @login_required
 def export_excel():
@@ -7570,18 +7607,6 @@ def fbs_page():
 
     # Не блокируем рендер страницы: текущие задания подтянем AJAX-ом
     return render_template("fbs.html", error=error, rows=rows, products_hint=products_hint, current_orders=[])
-
-
-@app.route("/dbs", methods=["GET"]) 
-@login_required
-def dbs_page():
-    """DBS page: initial render; data loaded via JS."""
-    error = None
-    products_hint = None
-    prod_cached_now = load_products_cache()
-    if not prod_cached_now or not ((prod_cached_now or {}).get("items")):
-        products_hint = "Для отображения фото товара и баркода обновите данные на странице Товары"
-    return render_template("dbs.html", error=error, products_hint=products_hint)
 @app.route("/fbs/export", methods=["POST"]) 
 @login_required
 def fbs_export():
@@ -7664,6 +7689,834 @@ def fbs_export():
         return (f"Ошибка API: {http_err.response.status_code}", 502)
     except Exception as exc:
         return (f"Ошибка: {exc}", 500)
+
+
+# --- DBS active orders cache (to track in-progress tasks) ---
+try:
+    BASE_DIR
+except NameError:
+    import os as _os
+    BASE_DIR = _os.path.dirname(_os.path.abspath(__file__))
+
+DBS_CACHE_DIR = os.path.join(BASE_DIR, "cache")
+DBS_ACTIVE_IDS_PATH = os.path.join(DBS_CACHE_DIR, "dbs_active_ids.json")
+DBS_KNOWN_ORDERS_PATH = os.path.join(DBS_CACHE_DIR, "dbs_known_orders.json")
+
+def _ensure_dbs_cache_dir() -> None:
+    try:
+        os.makedirs(DBS_CACHE_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+def load_dbs_active_ids() -> Dict[str, Any]:
+    _ensure_dbs_cache_dir()
+    try:
+        with open(DBS_ACTIVE_IDS_PATH, "r", encoding="utf-8") as f:
+            import json as _json
+            return _json.load(f)
+    except Exception:
+        return {"ids": [], "updated_at": None}
+
+def save_dbs_active_ids(data: Dict[str, Any]) -> None:
+    _ensure_dbs_cache_dir()
+    try:
+        with open(DBS_ACTIVE_IDS_PATH, "w", encoding="utf-8") as f:
+            import json as _json
+            _json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def add_dbs_active_ids(ids: list[int]) -> None:
+    if not ids:
+        return
+    cache = load_dbs_active_ids() or {"ids": [], "updated_at": None}
+    cur_ids = set(int(x) for x in (cache.get("ids") or []))
+    for i in ids:
+        try:
+            cur_ids.add(int(i))
+        except Exception:
+            continue
+    cache["ids"] = sorted(cur_ids)
+    cache["updated_at"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    save_dbs_active_ids(cache)
+
+def load_dbs_known_orders() -> Dict[str, Any]:
+    _ensure_dbs_cache_dir()
+    try:
+        with open(DBS_KNOWN_ORDERS_PATH, "r", encoding="utf-8") as f:
+            import json as _json
+            return _json.load(f)
+    except Exception:
+        return {"orders": {}, "updated_at": None}
+
+def save_dbs_known_orders(data: Dict[str, Any]) -> None:
+    _ensure_dbs_cache_dir()
+    try:
+        with open(DBS_KNOWN_ORDERS_PATH, "w", encoding="utf-8") as f:
+            import json as _json
+            _json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def add_dbs_known_orders(orders: list[dict[str, Any]]) -> None:
+    if not orders:
+        return
+    cache = load_dbs_known_orders() or {"orders": {}, "updated_at": None}
+    known: Dict[str, Any] = cache.get("orders") or {}
+    for it in orders:
+        oid = it.get("id") or it.get("orderId") or it.get("ID")
+        if oid is None:
+            continue
+        try:
+            key = str(int(oid))
+        except Exception:
+            continue
+        known[key] = {"item": it, "seen_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    cache["orders"] = known
+    cache["updated_at"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    save_dbs_known_orders(cache)
+
+
+@app.route("/dbs", methods=["GET"]) 
+@login_required
+def dbs_page():
+    """DBS page: initial render; data loaded via JS."""
+    error = None
+    products_hint = None
+    prod_cached_now = load_products_cache()
+    if not prod_cached_now or not ((prod_cached_now or {}).get("items")):
+        products_hint = "Для отображения фото товара и баркода обновите данные на странице Товары"
+    return render_template("dbs.html", error=error, products_hint=products_hint)
+
+
+@app.route("/api/dbs/orders/new", methods=["GET"]) 
+@login_required
+def api_dbs_orders_new():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "updated_at": None}), 200
+    try:
+        raw = fetch_dbs_new_orders(token)
+        try:
+            raw_sorted = sorted(raw, key=_extract_created_at)
+        except Exception:
+            raw_sorted = raw
+        rows = to_dbs_rows(raw_sorted)
+        # Cache known orders and IDs for tracking in-progress statuses later
+        try:
+            add_dbs_known_orders(raw_sorted)
+            ids_to_add: list[int] = []
+            for it in raw_sorted:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        ids_to_add.append(int(oid))
+                except Exception:
+                    continue
+            add_dbs_active_ids(ids_to_add)
+        except Exception:
+            pass
+        prod_cached = load_products_cache() or {}
+        items = (prod_cached.get("items") or [])
+        by_nm: Dict[int, Dict[str, Any]] = {}
+        for it in items:
+            nmv = it.get("nm_id") or it.get("nmID")
+            try:
+                if nmv:
+                    by_nm[int(nmv)] = it
+            except Exception:
+                pass
+        for r in rows:
+            nm = r.get("nm_id")
+            try:
+                nm_i = int(nm) if nm is not None else None
+            except Exception:
+                nm_i = None
+            hit = by_nm.get(nm_i) if nm_i is not None else None
+            if hit:
+                r["photo"] = hit.get("photo")
+                if hit.get("barcode"):
+                    r["barcode"] = hit.get("barcode")
+                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                    r["barcode"] = str(hit.get("barcodes")[0])
+                else:
+                    sizes = hit.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bl = s.get("skus") or s.get("barcodes")
+                            if isinstance(bl, list) and bl:
+                                r["barcode"] = str(bl[0])
+                                break
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        return jsonify({"items": rows, "updated_at": now_str}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
+
+
+@app.route("/api/dbs/orders/<order_id>/deliver", methods=["PATCH"]) 
+@login_required
+def api_dbs_order_deliver(order_id: str):
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"error": "No token"}), 401
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    url = f"https://marketplace-api.wildberries.ru/api/v3/dbs/orders/{order_id}/deliver"
+    last_err = None
+    for hdrs in headers_list:
+        try:
+            resp = requests.patch(url, headers=hdrs, timeout=30)
+            if resp.status_code in [200, 204]:
+                try:
+                    add_dbs_active_ids([int(order_id)])
+                except Exception:
+                    pass
+                return jsonify({"success": True}), 200
+            else:
+                last_err = f"HTTP {resp.status_code}: {resp.text}"
+                continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+    return jsonify({"error": last_err or "Unknown error"}), 500
+
+
+@app.route("/api/dbs/orders", methods=["GET"]) 
+@login_required
+def api_dbs_orders_list():
+    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    if not token:
+        return jsonify({"items": [], "next": None}), 200
+    try:
+        limit = request.args.get("limit", default="1000")
+        try:
+            limit_i = max(1, min(1000, int(limit)))
+        except Exception:
+            limit_i = 1000
+        next_val = request.args.get("next")
+        df_q = request.args.get("dateFrom")
+        dt_q = request.args.get("dateTo")
+        if df_q and dt_q:
+            try:
+                date_from_ts = int(df_q)
+                date_to_ts = int(dt_q)
+            except Exception:
+                date_from_ts = None
+                date_to_ts = None
+        else:
+            now = datetime.now(MOSCOW_TZ)
+            date_to_ts = int(now.timestamp())
+            date_from_ts = int((now - timedelta(days=180)).timestamp())
+        
+        # Strategy: collect completed orders AND in-progress orders (confirm/deliver status)
+        # 1. Get completed orders from /api/v3/dbs/orders
+        raw = fetch_dbs_orders(
+            token,
+            limit=limit_i,
+            next_cursor=next_val,
+            date_from_ts=date_from_ts,
+            date_to_ts=date_to_ts,
+        )
+        orders = []
+        next_cursor = None
+        if isinstance(raw, dict):
+            arr_top = raw.get("orders")
+            if isinstance(arr_top, list):
+                orders = arr_top
+            elif isinstance(arr_top, dict):
+                inner_items = arr_top.get("items") or arr_top.get("data") or []
+                if isinstance(inner_items, list):
+                    orders = inner_items
+                    next_cursor = arr_top.get("next") or next_cursor
+            if not orders:
+                data_val = raw.get("data")
+                if isinstance(data_val, list):
+                    orders = data_val
+                elif isinstance(data_val, dict):
+                    if isinstance(data_val.get("orders"), list):
+                        orders = data_val.get("orders") or []
+                    elif isinstance(data_val.get("items"), list):
+                        orders = data_val.get("items") or []
+                    next_cursor = data_val.get("next") if next_cursor is None else next_cursor
+            if next_cursor is None:
+                next_cursor = raw.get("next")
+        
+        print(f"DBS ORDERS: fetched {len(orders)} orders from /api/v3/dbs/orders")
+        
+        # Check statuses of completed orders - some might still be in progress
+        completed_ids: list[int] = []
+        for it in orders:
+            oid = it.get("id") or it.get("orderId") or it.get("ID")
+            try:
+                if oid is not None:
+                    completed_ids.append(int(oid))
+            except Exception:
+                continue
+        
+        # Filter out orders that are actually completed (receive/cancel)
+        # Keep only those that are truly completed
+        # Also collect in-progress orders from this list
+        truly_completed_orders: list[dict[str, Any]] = []
+        in_progress_from_completed: list[dict[str, Any]] = []
+        if completed_ids:
+            try:
+                st = fetch_dbs_statuses(token, completed_ids[:1000])
+                status_arr = st.get("orders") if isinstance(st, dict) else []
+                status_map: dict[int, dict[str, Any]] = {}
+                if isinstance(status_arr, list):
+                    for x in status_arr:
+                        try:
+                            status_map[int(x.get("id") or x.get("orderId") or 0)] = x
+                        except Exception:
+                            continue
+                
+                for it in orders:
+                    oid = it.get("id") or it.get("orderId") or it.get("ID")
+                    try:
+                        oid_i = int(oid) if oid is not None else None
+                    except Exception:
+                        oid_i = None
+                    if oid_i is None:
+                        continue
+                    
+                    sx = status_map.get(oid_i) or {}
+                    supplier_status = (
+                        sx.get("supplierStatus")
+                        or sx.get("status")
+                        or ""
+                    ).lower()
+                    
+                    # If status is confirm/deliver, add to in-progress
+                    if supplier_status in ("confirm", "deliver"):
+                        it_copy = dict(it)
+                        it_copy["status"] = supplier_status
+                        it_copy["supplierStatus"] = supplier_status
+                        if sx.get("wbStatus"):
+                            it_copy["wbStatus"] = sx.get("wbStatus")
+                        in_progress_from_completed.append(it_copy)
+                    else:
+                        # Only include truly completed orders (receive, cancel, reject)
+                        truly_completed_orders.append(it)
+            except Exception:
+                # If status check fails, assume all are completed
+                truly_completed_orders = orders
+        else:
+            truly_completed_orders = orders
+        
+        orders = truly_completed_orders
+        
+        # 2. Get new orders and check their statuses, filter those in confirm/deliver
+        # Also check statuses of recent orders to find in-progress ones
+        in_progress_orders: list[dict[str, Any]] = []
+        all_order_ids_to_check: set[int] = set()
+        recent_orders: list[dict[str, Any]] = []
+        new_raw: list[dict[str, Any]] | None = None
+        
+        # Collect IDs from new orders
+        try:
+            new_raw = fetch_dbs_new_orders(token)
+            print(f"DBS ORDERS: fetched {len(new_raw) if new_raw else 0} new orders")
+            if new_raw:
+                for it in new_raw:
+                    oid = it.get("id") or it.get("orderId") or it.get("ID")
+                    try:
+                        if oid is not None:
+                            all_order_ids_to_check.add(int(oid))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        
+        # Also collect IDs from recent completed orders (same period as main query) to check if they're still in progress
+        # This is important because orders in deliver status might appear in completed list
+        # Use the same date range as the main query (180 days)
+        try:
+            recent_raw = fetch_dbs_orders(
+                token,
+                limit=1000,
+                next_cursor=0,
+                date_from_ts=date_from_ts,
+                date_to_ts=date_to_ts,
+            )
+            if isinstance(recent_raw, dict):
+                arr = recent_raw.get("orders")
+                if isinstance(arr, list):
+                    recent_orders = arr
+                elif isinstance(recent_raw.get("data"), dict) and isinstance(recent_raw.get("data", {}).get("orders"), list):
+                    recent_orders = recent_raw.get("data", {}).get("orders") or []
+                elif isinstance(recent_raw.get("data"), list):
+                    recent_orders = recent_raw.get("data") or []
+            
+            print(f"DBS ORDERS: fetched {len(recent_orders)} recent orders (for status check)")
+            
+            for it in recent_orders:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        all_order_ids_to_check.add(int(oid))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        
+        # Also check recent orders from /api/v3/dbs/orders (last 7 days) to find in-progress ones
+        # These might be in confirm/deliver status but not yet completed
+        try:
+            recent_7d_from = int((datetime.now(MOSCOW_TZ) - timedelta(days=7)).timestamp())
+            recent_7d_to = int(datetime.now(MOSCOW_TZ).timestamp())
+            recent_7d_raw = fetch_dbs_orders(
+                token,
+                limit=1000,
+                next_cursor=0,
+                date_from_ts=recent_7d_from,
+                date_to_ts=recent_7d_to,
+            )
+            recent_7d_orders = []
+            if isinstance(recent_7d_raw, dict):
+                arr = recent_7d_raw.get("orders")
+                if isinstance(arr, list):
+                    recent_7d_orders = arr
+                elif isinstance(recent_7d_raw.get("data"), dict) and isinstance(recent_7d_raw.get("data", {}).get("orders"), list):
+                    recent_7d_orders = recent_7d_raw.get("data", {}).get("orders") or []
+                elif isinstance(recent_7d_raw.get("data"), list):
+                    recent_7d_orders = recent_7d_raw.get("data") or []
+            
+            print(f"DBS ORDERS: fetched {len(recent_7d_orders)} orders from last 7 days")
+            
+            # Add IDs to check
+            for it in recent_7d_orders:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        oid_i = int(oid)
+                        if oid_i not in all_order_ids_to_check:
+                            all_order_ids_to_check.add(oid_i)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        
+        # Include cached active IDs before deciding whether to check statuses
+        known_cache = None
+        try:
+            active_cache = load_dbs_active_ids() or {}
+            active_ids = active_cache.get("ids") or []
+            for aid in active_ids:
+                try:
+                    ai = int(aid)
+                    if ai not in all_order_ids_to_check:
+                        all_order_ids_to_check.add(ai)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        print(f"DBS ORDERS: total IDs to check: {len(all_order_ids_to_check)}")
+        
+        # Check statuses of all collected orders
+        if all_order_ids_to_check:
+            order_ids_list = list(all_order_ids_to_check)
+            all_orders_map: dict[int, dict[str, Any]] = {}
+            
+            # Build map of all orders (from new + recent + recent_7d)
+            if new_raw:
+                for it in new_raw:
+                    oid = it.get("id") or it.get("orderId") or it.get("ID")
+                    try:
+                        if oid is not None:
+                            all_orders_map[int(oid)] = it
+                    except Exception:
+                        continue
+            
+            # Also add recent orders to map (they might be in progress)
+            for it in recent_orders:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        oid_i = int(oid)
+                        if oid_i not in all_orders_map:
+                            all_orders_map[oid_i] = it
+                except Exception:
+                    continue
+            
+            # Add recent 7d orders to map
+            for it in recent_7d_orders:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        oid_i = int(oid)
+                        if oid_i not in all_orders_map:
+                            all_orders_map[oid_i] = it
+                except Exception:
+                    continue
+
+            # Add known cached orders to map to enrich in-progress items
+            try:
+                if known_cache is None:
+                    known_cache = load_dbs_known_orders() or {}
+                known_map = (known_cache.get("orders") or {})
+                for k, v in known_map.items():
+                    try:
+                        ki = int(k)
+                    except Exception:
+                        continue
+                    if ki not in all_orders_map and isinstance(v, dict):
+                        item = v.get("item") if isinstance(v.get("item"), dict) else v
+                        if isinstance(item, dict):
+                            all_orders_map[ki] = item
+            except Exception:
+                pass
+
+            # Also enrich map with items for active cached IDs
+            try:
+                active_cache = load_dbs_active_ids() or {}
+                active_ids = active_cache.get("ids") or []
+                for aid in active_ids:
+                    try:
+                        ai = int(aid)
+                        if ai not in all_orders_map and (known_cache or {}):
+                            item = ((known_cache or {}).get("orders") or {}).get(str(ai))
+                            if isinstance(item, dict):
+                                it = item.get("item") if isinstance(item.get("item"), dict) else item
+                                if isinstance(it, dict):
+                                    all_orders_map[ai] = it
+                    except Exception:
+                        continue
+                order_ids_list = list(all_order_ids_to_check)
+            except Exception:
+                pass
+            
+            # Check statuses in batches
+            for batch_start in range(0, len(order_ids_list), 1000):
+                batch = order_ids_list[batch_start:batch_start + 1000]
+                try:
+                    st = fetch_dbs_statuses(token, batch)
+                    status_arr = st.get("orders") if isinstance(st, dict) else []
+                    status_map: dict[int, dict[str, Any]] = {}
+                    if isinstance(status_arr, list):
+                        for x in status_arr:
+                            try:
+                                status_map[int(x.get("id") or x.get("orderId") or 0)] = x
+                            except Exception:
+                                continue
+                    
+                    # Find orders in progress (confirm or deliver status)
+                    for oid_i in batch:
+                        sx = status_map.get(oid_i) or {}
+                        supplier_status = (
+                            sx.get("supplierStatus")
+                            or sx.get("status")
+                            or ""
+                        ).lower()
+                        
+                        # Include orders in confirm or deliver status (in progress)
+                        if supplier_status in ("confirm", "deliver"):
+                            order_data = all_orders_map.get(oid_i)
+                            if order_data:
+                                # Add status info to order data
+                                order_data_copy = dict(order_data)
+                                order_data_copy["status"] = supplier_status
+                                order_data_copy["supplierStatus"] = supplier_status
+                                if sx.get("wbStatus"):
+                                    order_data_copy["wbStatus"] = sx.get("wbStatus")
+                                in_progress_orders.append(order_data_copy)
+                            else:
+                                # If order not in our map, create minimal record
+                                in_progress_orders.append({
+                                    "id": oid_i,
+                                    "orderId": oid_i,
+                                    "ID": oid_i,
+                                    "status": supplier_status,
+                                    "supplierStatus": supplier_status,
+                                    "wbStatus": sx.get("wbStatus"),
+                                })
+                                print(f"DBS ORDERS: found in-progress order {oid_i} with status {supplier_status} (no data)")
+                    # Debug logging
+                    if batch_start == 0:
+                        in_progress_count = len([oid for oid in batch if (status_map.get(oid) or {}).get("supplierStatus", "").lower() in ("confirm", "deliver")])
+                        print(f"DBS ORDERS: checked {len(batch)} orders, found {in_progress_count} in progress")
+                        # Show sample statuses
+                        if len(batch) > 0:
+                            sample_oid = batch[0]
+                            sample_status = status_map.get(sample_oid) or {}
+                            print(f"DBS ORDERS: sample order {sample_oid} status: {sample_status.get('supplierStatus')} / {sample_status.get('wbStatus')}")
+                except Exception:
+                    continue
+        
+        # Add in-progress orders found from "completed" list
+        in_progress_orders.extend(in_progress_from_completed)
+        print(f"DBS ORDERS: in_progress_from_completed: {len(in_progress_from_completed)}, total in_progress: {len(in_progress_orders)}")
+        
+        # Start with completed orders from main query
+        all_orders = orders
+        
+        # Fallback strategy: if no data returned for 180d window, retry with 60d then 30d
+        if not all_orders and not next_val:
+            for days in (60, 30):
+                try:
+                    alt_from = int((datetime.now(MOSCOW_TZ) - timedelta(days=days)).timestamp())
+                    alt_to = int(datetime.now(MOSCOW_TZ).timestamp())
+                    alt_raw = fetch_dbs_orders(
+                        token,
+                        limit=limit_i,
+                        next_cursor=0,
+                        date_from_ts=alt_from,
+                        date_to_ts=alt_to,
+                    )
+                    alt_orders = []
+                    if isinstance(alt_raw, dict):
+                        alt_arr = alt_raw.get("orders")
+                        if isinstance(alt_arr, list):
+                            alt_orders = alt_arr
+                        elif isinstance(alt_raw.get("data"), dict) and isinstance(alt_raw.get("data", {}).get("orders"), list):
+                            alt_orders = alt_raw.get("data", {}).get("orders") or []
+                        elif isinstance(alt_raw.get("data"), list):
+                            alt_orders = alt_raw.get("data") or []
+                    if alt_orders:
+                        all_orders.extend(alt_orders)
+                        break
+                except Exception:
+                    continue
+        
+        # If мало данных и нет пагинации, дособираем окнами по 30 дней до 6 месяцев назад
+        if (not next_val) and (not all_orders or len(all_orders) < 20):
+            try:
+                combined: list[dict[str, Any]] = []
+                seen: set[int] = set()
+                now_ts = int(datetime.now(MOSCOW_TZ).timestamp())
+                for offset in range(0, 180, 30):
+                    wnd_to = now_ts - offset * 24 * 3600
+                    wnd_from = now_ts - (offset + 30) * 24 * 3600
+                    r = fetch_dbs_orders(
+                        token,
+                        limit=1000,
+                        next_cursor=0,
+                        date_from_ts=wnd_from,
+                        date_to_ts=wnd_to,
+                    )
+                    arr: list[dict[str, Any]] = []
+                    if isinstance(r, dict):
+                        a = r.get("orders")
+                        if isinstance(a, list):
+                            arr = a
+                        elif isinstance(r.get("data"), dict) and isinstance(r.get("data", {}).get("orders"), list):
+                            arr = r.get("data", {}).get("orders") or []
+                        elif isinstance(r.get("data"), list):
+                            arr = r.get("data") or []
+                    for it in arr:
+                        oid = it.get("id") or it.get("orderId") or it.get("ID")
+                        try:
+                            oi = int(oid)
+                        except Exception:
+                            oi = None
+                        if oi is not None and oi in seen:
+                            continue
+                        if oi is not None:
+                            seen.add(oi)
+                        combined.append(it)
+                if combined:
+                    # Check statuses of backfilled orders to find in-progress ones
+                    backfill_ids: list[int] = []
+                    for it in combined:
+                        oid = it.get("id") or it.get("orderId") or it.get("ID")
+                        try:
+                            if oid is not None:
+                                backfill_ids.append(int(oid))
+                        except Exception:
+                            continue
+                    
+                    if backfill_ids:
+                        print(f"DBS ORDERS: checking {len(backfill_ids)} backfilled orders for in-progress status")
+                        try:
+                            st = fetch_dbs_statuses(token, backfill_ids[:1000])
+                            status_arr = st.get("orders") if isinstance(st, dict) else []
+                            status_map: dict[int, dict[str, Any]] = {}
+                            if isinstance(status_arr, list):
+                                for x in status_arr:
+                                    try:
+                                        status_map[int(x.get("id") or x.get("orderId") or 0)] = x
+                                    except Exception:
+                                        continue
+                            
+                            # Separate completed and in-progress orders
+                            truly_completed_backfill: list[dict[str, Any]] = []
+                            in_progress_backfill: list[dict[str, Any]] = []
+                            
+                            # Log all statuses for debugging
+                            print(f"DBS ORDERS: statuses from API: {[(x.get('id'), x.get('supplierStatus'), x.get('wbStatus')) for x in status_arr[:10]]}")
+                            
+                            for it in combined:
+                                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                                try:
+                                    oid_i = int(oid) if oid is not None else None
+                                except Exception:
+                                    oid_i = None
+                                if oid_i is None:
+                                    truly_completed_backfill.append(it)
+                                    continue
+                                
+                                sx = status_map.get(oid_i) or {}
+                                supplier_status = (
+                                    sx.get("supplierStatus")
+                                    or sx.get("status")
+                                    or ""
+                                ).lower()
+                                
+                                if supplier_status in ("confirm", "deliver"):
+                                    it_copy = dict(it)
+                                    it_copy["status"] = supplier_status
+                                    it_copy["supplierStatus"] = supplier_status
+                                    if sx.get("wbStatus"):
+                                        it_copy["wbStatus"] = sx.get("wbStatus")
+                                    in_progress_backfill.append(it_copy)
+                                    print(f"DBS ORDERS: found in-progress order {oid_i} from backfill with status {supplier_status}")
+                                else:
+                                    truly_completed_backfill.append(it)
+                            
+                            # Add completed backfill orders to all_orders
+                            all_orders.extend(truly_completed_backfill)
+                            # Add in-progress backfill orders to in_progress_orders
+                            in_progress_orders.extend(in_progress_backfill)
+                            print(f"DBS ORDERS: backfill - completed: {len(truly_completed_backfill)}, in_progress: {len(in_progress_backfill)}")
+                        except Exception as e:
+                            print(f"DBS ORDERS: error checking backfill statuses: {e}, adding all as completed")
+                            # If status check failed, add all as completed
+                            all_orders.extend(combined)
+                    else:
+                        # No IDs to check, add all as completed
+                        all_orders.extend(combined)
+            except Exception:
+                pass
+        
+        # Combine completed and in-progress orders
+        # Remove duplicates by order ID (in-progress take priority if both exist)
+        all_orders_dict: dict[int, dict[str, Any]] = {}
+        
+        # First add completed orders
+        for it in all_orders:
+            oid = it.get("id") or it.get("orderId") or it.get("ID")
+            try:
+                if oid is not None:
+                    all_orders_dict[int(oid)] = it
+            except Exception:
+                continue
+        
+        # Then add in-progress orders (they override completed if same ID)
+        for it in in_progress_orders:
+            oid = it.get("id") or it.get("orderId") or it.get("ID")
+            try:
+                if oid is not None:
+                    all_orders_dict[int(oid)] = it
+            except Exception:
+                continue
+        
+        all_orders = list(all_orders_dict.values())
+        
+        # Debug logging
+        print(f"DBS ORDERS: final - completed={len(all_orders) - len(in_progress_orders)}, in_progress={len(in_progress_orders)}, total={len(all_orders)}")
+        
+        try:
+            all_orders.sort(key=_extract_created_at, reverse=True)
+        except Exception:
+            pass
+        
+        rows = to_dbs_rows(all_orders)
+        prod_cached = load_products_cache() or {}
+        items = (prod_cached.get("items") or [])
+        by_nm: Dict[int, Dict[str, Any]] = {}
+        for it in items:
+            nmv = it.get("nm_id") or it.get("nmID")
+            try:
+                if nmv:
+                    by_nm[int(nmv)] = it
+            except Exception:
+                pass
+        for r in rows:
+            nm = r.get("nm_id")
+            try:
+                nm_i = int(nm) if nm is not None else None
+            except Exception:
+                nm_i = None
+            hit = by_nm.get(nm_i) if nm_i is not None else None
+            if hit:
+                r["photo"] = hit.get("photo")
+                if hit.get("barcode"):
+                    r["barcode"] = hit.get("barcode")
+                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                    r["barcode"] = str(hit.get("barcodes")[0])
+                else:
+                    sizes = hit.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bl = s.get("skus") or s.get("barcodes")
+                            if isinstance(bl, list) and bl:
+                                r["barcode"] = str(bl[0])
+                                break
+        
+        # Save statuses of in-progress orders before merge (to preserve them)
+        in_progress_status_map: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            oid = r.get("orderId")
+            status_val = (r.get("status") or "").lower()
+            if oid and status_val in ("confirm", "deliver"):
+                try:
+                    in_progress_status_map[int(oid)] = {
+                        "status": r.get("status"),
+                        "statusName": r.get("statusName"),
+                        "supplierStatus": r.get("status"),
+                    }
+                except Exception:
+                    pass
+        
+        # Merge statuses (supplier/wb) via status endpoint for reliability
+        # BUT preserve in-progress statuses
+        try:
+            ids: list[int] = []
+            for it in all_orders:
+                oid = it.get("id") or it.get("orderId") or it.get("ID")
+                try:
+                    if oid is not None:
+                        ids.append(int(oid))
+                except Exception:
+                    continue
+            if ids:
+                st = fetch_dbs_statuses(token, ids[:1000])
+                arr = st.get("orders") if isinstance(st, dict) else []
+                m: dict[int, dict[str, Any]] = {}
+                if isinstance(arr, list):
+                    for x in arr:
+                        try:
+                            m[int(x.get("id") or x.get("orderId") or 0)] = x
+                        except Exception:
+                            continue
+                for r in rows:
+                    try:
+                        oid = int(r.get("orderId") or 0)
+                        # Skip merge if order is in progress (preserve its status)
+                        if oid in in_progress_status_map:
+                            continue
+                        sx = m.get(oid) or {}
+                        status_val = sx.get("status") or sx.get("supplierStatus") or sx.get("wbStatus") or r.get("status")
+                        status_name_val = (
+                            sx.get("statusName")
+                            or sx.get("supplierStatusName")
+                            or sx.get("wbStatusName")
+                            or status_val
+                        )
+                        if status_name_val:
+                            r["statusName"] = status_name_val
+                        if status_val:
+                            r["status"] = status_val
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        
+        return jsonify({"items": rows, "next": next_cursor}), 200
+    except Exception as exc:
+        return jsonify({"items": [], "next": None, "error": str(exc)}), 200
 
 
 @app.route("/api/fbs/tasks", methods=["GET"]) 
@@ -8174,332 +9027,6 @@ def api_fbs_create_supply():
     
     return jsonify({"error": last_err or "Unknown error"}), 500
 
-
-@app.route("/api/dbs/orders/new", methods=["GET"]) 
-@login_required
-def api_dbs_orders_new():
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
-    if not token:
-        return jsonify({"items": [], "updated_at": None}), 200
-    try:
-        raw = fetch_dbs_new_orders(token)
-        # Sort by created time asc for consistent display
-        try:
-            raw_sorted = sorted(raw, key=_extract_created_at)
-        except Exception:
-            raw_sorted = raw
-        rows = to_dbs_rows(raw_sorted)
-
-        # Enrich with products cache (photo, barcode) by nmId like in FBS
-        prod_cached = load_products_cache() or {}
-        items = (prod_cached.get("items") or [])
-        by_nm: Dict[int, Dict[str, Any]] = {}
-        for it in items:
-            nmv = it.get("nm_id") or it.get("nmID")
-            try:
-                if nmv:
-                    by_nm[int(nmv)] = it
-            except Exception:
-                pass
-        for r in rows:
-            nm = r.get("nm_id")
-            try:
-                nm_i = int(nm) if nm is not None else None
-            except Exception:
-                nm_i = None
-            hit = by_nm.get(nm_i) if nm_i is not None else None
-            if hit:
-                r["photo"] = hit.get("photo")
-                if hit.get("barcode"):
-                    r["barcode"] = hit.get("barcode")
-                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
-                    r["barcode"] = str(hit.get("barcodes")[0])
-                else:
-                    sizes = hit.get("sizes") or []
-                    if isinstance(sizes, list):
-                        for s in sizes:
-                            bl = s.get("skus") or s.get("barcodes")
-                            if isinstance(bl, list) and bl:
-                                r["barcode"] = str(bl[0])
-                                break
-
-        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        return jsonify({"items": rows, "updated_at": now_str}), 200
-    except Exception as exc:
-        return jsonify({"items": [], "error": str(exc)}), 200
-
-
-@app.route("/api/dbs/orders/<order_id>/deliver", methods=["PATCH"]) 
-@login_required
-def api_dbs_order_deliver(order_id: str):
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
-    if not token:
-        return jsonify({"error": "No token"}), 401
-    headers_list = [
-        {"Authorization": f"{token}"},
-        {"Authorization": f"Bearer {token}"},
-    ]
-    url = f"https://marketplace-api.wildberries.ru/api/v3/dbs/orders/{order_id}/deliver"
-    last_err = None
-    for hdrs in headers_list:
-        try:
-            resp = requests.patch(url, headers=hdrs, timeout=30)
-            if resp.status_code in [200, 204]:
-                return jsonify({"success": True}), 200
-            else:
-                last_err = f"HTTP {resp.status_code}: {resp.text}"
-                continue
-        except Exception as e:
-            last_err = str(e)
-            continue
-    return jsonify({"error": last_err or "Unknown error"}), 500
-
-
-@app.route("/api/dbs/orders", methods=["GET"]) 
-@login_required
-def api_dbs_orders_list():
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
-    if not token:
-        return jsonify({"items": [], "next": None}), 200
-    try:
-        limit = request.args.get("limit", default="1000")
-        try:
-            limit_i = max(1, min(1000, int(limit)))
-        except Exception:
-            limit_i = 1000
-        next_val = request.args.get("next")
-        # Required date range (Unix timestamps). Default: последние 7 дней.
-        df_q = request.args.get("dateFrom")
-        dt_q = request.args.get("dateTo")
-        if df_q and dt_q:
-            try:
-                date_from_ts = int(df_q)
-                date_to_ts = int(dt_q)
-            except Exception:
-                date_from_ts = None
-                date_to_ts = None
-        else:
-            now = datetime.now(MOSCOW_TZ)
-            date_to_ts = int(now.timestamp())
-            date_from_ts = int((now - timedelta(days=180)).timestamp())
-
-        print(f"DBS ORDERS params: limit={limit_i}, next={next_val}, from={date_from_ts}, to={date_to_ts}")
-        raw = fetch_dbs_orders(
-            token,
-            limit=limit_i,
-            next_cursor=next_val,
-            date_from_ts=date_from_ts,
-            date_to_ts=date_to_ts,
-        )
-        try:
-            # Light debug to understand response shapes
-            if isinstance(raw, dict):
-                sample_count = len((raw.get('orders') or [])) if isinstance(raw.get('orders'), list) else (len(raw.get('data') or []) if isinstance(raw.get('data'), list) else (len((raw.get('data') or {}).get('orders') or []) if isinstance(raw.get('data'), dict) else 0))
-                print(f"DBS ORDERS raw keys={list(raw.keys())}, sample_count={sample_count}, has_next={bool(raw.get('next') or (isinstance(raw.get('data'), dict) and raw.get('data', {}).get('next')))}")
-                # Extended debug of alternative containers
-                try:
-                    alt1 = raw.get('orders') if isinstance(raw.get('orders'), list) else None
-                    alt2 = raw.get('data') if isinstance(raw.get('data'), list) else None
-                    alt3 = (raw.get('data') or {}).get('orders') if isinstance(raw.get('data'), dict) and isinstance((raw.get('data') or {}).get('orders'), list) else None
-                    alt4 = (raw.get('orders') or {}).get('items') if isinstance(raw.get('orders'), dict) and isinstance((raw.get('orders') or {}).get('items'), list) else None
-                    counts = {
-                        'orders:list': len(alt1 or []),
-                        'data:list': len(alt2 or []),
-                        'data.orders:list': len(alt3 or []),
-                        'orders.items:list': len(alt4 or []),
-                    }
-                    print(f"DBS ORDERS candidates counts: {counts}")
-                except Exception:
-                    pass
-                # Print small preview of raw json text (truncated)
-                try:
-                    import json as _json
-                    _txt = _json.dumps(raw, ensure_ascii=False)
-                    print(f"DBS ORDERS raw preview: {_txt[:500]}")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # Normalize
-        orders = []
-        next_cursor = None
-        if isinstance(raw, dict):
-            # Try multiple known shapes
-            arr_top = raw.get("orders")
-            if isinstance(arr_top, list):
-                orders = arr_top
-            elif isinstance(arr_top, dict):
-                # e.g. { orders: { items: [], next: ... } }
-                inner_items = arr_top.get("items") or arr_top.get("data") or []
-                if isinstance(inner_items, list):
-                    orders = inner_items
-                    next_cursor = arr_top.get("next") or next_cursor
-            if not orders:
-                data_val = raw.get("data")
-                if isinstance(data_val, list):
-                    orders = data_val
-                elif isinstance(data_val, dict):
-                    if isinstance(data_val.get("orders"), list):
-                        orders = data_val.get("orders") or []
-                    elif isinstance(data_val.get("items"), list):
-                        orders = data_val.get("items") or []
-                    next_cursor = data_val.get("next") if next_cursor is None else next_cursor
-            # Fallback: if raw itself is list-like in unexpected way (already handled by json parsing)
-            # Determine next cursor at top level if not set
-            if next_cursor is None:
-                next_cursor = raw.get("next")
-
-        # Fallback strategy: if no data returned for 180d window, retry with 60d then 30d
-        if not orders and not next_val:
-            for days in (60, 30):
-                try:
-                    alt_from = int((datetime.now(MOSCOW_TZ) - timedelta(days=days)).timestamp())
-                    alt_to = int(datetime.now(MOSCOW_TZ).timestamp())
-                    print(f"DBS ORDERS fallback retry with last {days} days")
-                    alt_raw = fetch_dbs_orders(
-                        token,
-                        limit=limit_i,
-                        next_cursor=0,
-                        date_from_ts=alt_from,
-                        date_to_ts=alt_to,
-                    )
-                    alt_orders = []
-                    if isinstance(alt_raw, dict):
-                        alt_arr = alt_raw.get("orders")
-                        if isinstance(alt_arr, list):
-                            alt_orders = alt_arr
-                        elif isinstance(alt_raw.get("data"), dict) and isinstance(alt_raw.get("data", {}).get("orders"), list):
-                            alt_orders = alt_raw.get("data", {}).get("orders") or []
-                        elif isinstance(alt_raw.get("data"), list):
-                            alt_orders = alt_raw.get("data") or []
-                    if alt_orders:
-                        orders = alt_orders
-                        break
-                except Exception:
-                    continue
-        # If мало данных и нет пагинации, дособираем окнами по 30 дней до 6 месяцев назад
-        if (not next_val) and (not orders or len(orders) < 20):
-            try:
-                print("DBS ORDERS backfill windows 6x30d")
-                combined: list[dict[str, Any]] = []
-                seen: set[int] = set()
-                now_ts = int(datetime.now(MOSCOW_TZ).timestamp())
-                for offset in range(0, 180, 30):
-                    wnd_to = now_ts - offset * 24 * 3600
-                    wnd_from = now_ts - (offset + 30) * 24 * 3600
-                    r = fetch_dbs_orders(
-                        token,
-                        limit=1000,
-                        next_cursor=0,
-                        date_from_ts=wnd_from,
-                        date_to_ts=wnd_to,
-                    )
-                    arr: list[dict[str, Any]] = []
-                    if isinstance(r, dict):
-                        a = r.get("orders")
-                        if isinstance(a, list):
-                            arr = a
-                        elif isinstance(r.get("data"), dict) and isinstance(r.get("data", {}).get("orders"), list):
-                            arr = r.get("data", {}).get("orders") or []
-                        elif isinstance(r.get("data"), list):
-                            arr = r.get("data") or []
-                    for it in arr:
-                        oid = it.get("id") or it.get("orderId") or it.get("ID")
-                        try:
-                            oi = int(oid)
-                        except Exception:
-                            oi = None
-                        if oi is not None and oi in seen:
-                            continue
-                        if oi is not None:
-                            seen.add(oi)
-                        combined.append(it)
-                if combined:
-                    orders = combined
-            except Exception:
-                pass
-
-        # Sort by created time desc
-        try:
-            orders.sort(key=_extract_created_at, reverse=True)
-        except Exception:
-            pass
-        # Build rows with enrichment similar to new orders
-        rows = to_dbs_rows(orders)
-
-        # Merge statuses (supplier/wb) via status endpoint for reliability
-        try:
-            ids: list[int] = []
-            for it in orders:
-                oid = it.get("id") or it.get("orderId") or it.get("ID")
-                try:
-                    if oid is not None:
-                        ids.append(int(oid))
-                except Exception:
-                    continue
-            if ids:
-                st = fetch_dbs_statuses(token, ids[:1000])
-                arr = st.get("orders") if isinstance(st, dict) else []
-                m: dict[int, dict[str, Any]] = {}
-                if isinstance(arr, list):
-                    for x in arr:
-                        try:
-                            m[int(x.get("id") or x.get("orderId") or 0)] = x
-                        except Exception:
-                            continue
-                for r in rows:
-                    try:
-                        oid = int(r.get("orderId") or 0)
-                        sx = m.get(oid) or {}
-                        status_val = sx.get("status") or sx.get("supplierStatus") or sx.get("wbStatus") or r.get("status")
-                        status_name_val = (
-                            sx.get("statusName")
-                            or sx.get("supplierStatusName")
-                            or sx.get("wbStatusName")
-                            or status_val
-                        )
-                        if status_name_val:
-                            r["statusName"] = status_name_val
-                        if status_val:
-                            r["status"] = status_val
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        prod_cached = load_products_cache() or {}
-        items = (prod_cached.get("items") or [])
-        by_nm: Dict[int, Dict[str, Any]] = {}
-        for it in items:
-            nmv = it.get("nm_id") or it.get("nmID")
-            try:
-                if nmv:
-                    by_nm[int(nmv)] = it
-            except Exception:
-                pass
-        for r in rows:
-            nm = r.get("nm_id")
-            try:
-                nm_i = int(nm) if nm is not None else None
-            except Exception:
-                nm_i = None
-            hit = by_nm.get(nm_i) if nm_i is not None else None
-            if hit:
-                r["photo"] = hit.get("photo")
-                if hit.get("barcode"):
-                    r["barcode"] = hit.get("barcode")
-                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
-                    r["barcode"] = str(hit.get("barcodes")[0])
-                else:
-                    sizes = hit.get("sizes") or []
-                    if isinstance(sizes, list):
-                        for s in sizes:
-                            bl = s.get("skus") or s.get("barcodes")
-                            if isinstance(bl, list) and bl:
-                                r["barcode"] = str(bl[0])
-                                break
-        return jsonify({"items": rows, "next": next_cursor}), 200
-    except Exception as exc:
-        return jsonify({"items": [], "next": None, "error": str(exc)}), 200
 
 @app.route("/coefficients", methods=["GET", "POST"]) 
 @login_required
@@ -9974,6 +10501,8 @@ def api_stocks_update_time():
             })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
 @app.route("/stocks", methods=["GET"]) 
 @login_required
 def stocks_page():
@@ -10742,6 +11271,8 @@ def admin_users_delete(user_id: int):
             db.session.rollback()
             flash("Ошибка")
     return redirect(url_for("admin_users"))
+
+
 @app.route("/admin/users/<int:user_id>/validity", methods=["POST"]) 
 @login_required
 def admin_users_validity(user_id: int):
@@ -11412,6 +11943,8 @@ def api_prices_save():
     except Exception as e:
         db.session.rollback()
         return jsonify({"success": False, "error": f"Ошибка сохранения: {str(e)}"}), 500
+
+
 @app.route("/api/prices/export-excel", methods=["POST"])
 @login_required
 def api_prices_export_excel():
