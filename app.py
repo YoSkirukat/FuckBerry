@@ -5043,127 +5043,252 @@ def api_fbw_planning_supplies():
         
         # Проверяем кэш поставок
         cached = load_fbw_supplies_cache() or {}
-        supplies_list = []
+        
+        # Используем кэшированные данные из основной страницы /fbw, если они есть
+        # Там уже есть статусы и типы поставок, что ускорит проверку
+        cached_items = cached.get("items", [])
+        cached_supplies_map = {}
+        for item in cached_items:
+            sid = str(item.get("supply_id") or "")
+            if sid:
+                cached_supplies_map[sid] = item
         
         # Для планирования используем отдельный кэш, чтобы не влиять на основной кэш страницы /fbw
         planning_cache_key = f"planning_supplies_{current_user.id}"
         cached_planning = cached.get(planning_cache_key, {})
         
-        # Для планирования всегда загружаем свежие данные с API (как на странице FBS)
-        # Это обеспечивает учет новых поставок, созданных недавно
-        print("Планирование поставок: загружаем свежие данные с API для учета новых поставок")
+        # Загружаем базовый список поставок для получения ID всех поставок
+        print("Планирование поставок: загружаем список ID поставок с API")
         supplies_list = fetch_fbw_supplies_list(token, days_back=30)
+        print(f"Загружен список ID поставок для планирования: {len(supplies_list)} поставок")
         
-        # Сохраняем в отдельный ключ для планирования, не трогая основной кэш
-        cached[planning_cache_key] = {
-            "supplies_list": supplies_list,
-            "updated_at": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
-        }
-        save_fbw_supplies_cache(cached)
-        print(f"Загружен свежий список поставок для планирования: {len(supplies_list)} поставок")
+        # Сначала фильтруем поставки по складу из кэша - это быстрее, чем загружать детали для всех
+        # Фильтруем поставки по дате создания - только за последние 60 дней
+        from datetime import timedelta
+        cutoff_date = datetime.now(MOSCOW_TZ) - timedelta(days=60)
         
-        # Фильтруем поставки по подходящим статусам для планирования
-        supplies_with_status = []
-        print(f"Фильтруем подходящие поставки для планирования из {len(supplies_list)} поставок")
+        # Предварительная фильтрация: сначала проверяем кэш на совпадение склада
+        supplies_to_check = []
+        for supply in supplies_list:
+            supply_id = supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
+            supply_id_str = str(supply_id or "")
+            if not supply_id_str:
+                continue
+            
+            # Проверяем дату создания
+            create_date = supply.get("createDate")
+            if create_date:
+                try:
+                    create_dt = _parse_iso_datetime(str(create_date))
+                    if create_dt and create_dt < cutoff_date:
+                        continue  # Пропускаем старые поставки
+                except Exception:
+                    pass  # Если не удалось распарсить, проверяем дальше
+            
+            # Проверяем склад и статус/тип из кэша для быстрой фильтрации
+            cached_item = cached_supplies_map.get(supply_id_str)
+            if cached_item:
+                cached_warehouse = cached_item.get("warehouse", "").strip()
+                cached_status = cached_item.get("status", "").strip()
+                cached_type = cached_item.get("type", "").strip()
+                
+                # Если склад указан и не совпадает - сразу пропускаем
+                if cached_warehouse and warehouse_name:
+                    if not (cached_warehouse == warehouse_name or 
+                            warehouse_name in cached_warehouse or
+                            cached_warehouse in warehouse_name):
+                        continue  # Пропускаем поставки на другие склады
+                
+                # Если статус "Принято" - сразу пропускаем (не подходит для планирования)
+                if cached_status and "Принято" in cached_status:
+                    continue
+                
+                # Если тип "Допринято" или "Без коробов" - сразу пропускаем
+                if cached_type and ("Допринято" in cached_type or "Без коробов" in cached_type):
+                    continue
+                
+                # Если тип не "Короба" - пропускаем
+                if cached_type and "короб" not in cached_type.lower():
+                    continue
+                
+                # Если все проверки пройдены - добавляем для дальнейшей обработки
+                supplies_to_check.append(supply)
+            else:
+                # Если в кэше нет данных - НЕ добавляем для проверки, чтобы не загружать детали
+                # Это значительно ускорит процесс, так как большинство поставок без кэша - старые или на другие склады
+                # Если нужны свежие данные, пользователь может обновить кэш на странице /fbw
+                pass
         
-        # Собираем статистику по статусам для отладки
+        print(f"Проверяем {len(supplies_to_check)} поставок (отфильтровано по складу из кэша из {len(supplies_list)} всего)...")
+        pending_supplies = []
         status_counts = {}
         
-        for supply in supplies_list[:20]:  # Берем только последние 20
+        for supply in supplies_to_check:
             supply_id = supply.get("supplyID") or supply.get("supplyId") or supply.get("id")
-            if not supply_id:
+            supply_id_str = str(supply_id or "")
+            if not supply_id_str:
                 continue
-                
-            status = supply.get("statusName", "").strip()
-            status_counts[status] = status_counts.get(status, 0) + 1
             
-            # Логируем каждую поставку для отладки
-            print(f"Поставка {supply_id}: статус='{status}', склад='{supply.get('warehouseName', 'не указан')}'")
-            
-            # Включаем поставки с различными статусами, подходящими для планирования
-            if status in ["Отгрузка разрешена", "Запланировано", "Создано", "В работе"]:
-                supplies_with_status.append({
-                    "supply_id": str(supply_id),
-                    "create_date": supply.get("createDate"),
-                    "supply_date": supply.get("supplyDate"),
-                    "status": status
-                })
-        
-        print(f"Найдено подходящих поставок для планирования: {len(supplies_with_status)}")
-        print(f"Статистика по статусам: {status_counts}")
-        
-        # Если нет подходящих поставок, возвращаем пустой результат
-        if not supplies_with_status:
-            return jsonify({
-                "success": True,
-                "supplies": [],
-                "warehouse_name": warehouse_name,
-                "count": 0
-            })
-        
-        # Загружаем детали только для поставок со статусом "Отгрузка разрешена" (медленно, но мало данных)
-        print(f"Загружаем детали для {len(supplies_with_status)} поставок...")
-        pending_supplies = []
-        for supply_info in supplies_with_status:
             try:
-                details = fetch_fbw_supply_details(token, supply_info["supply_id"])
-                if details:
-                    # Получаем название склада из деталей поставки
+                # Сначала проверяем кэш - там уже могут быть статус и тип
+                cached_item = cached_supplies_map.get(supply_id_str)
+                details = None
+                details_status = None
+                box_type_name = None
+                box_type_id = None
+                warehouse_from_details = None
+                
+                if cached_item:
+                    # Используем данные из кэша
+                    details_status = cached_item.get("status", "").strip()
+                    box_type_name = cached_item.get("type", "").strip()
+                    warehouse_from_details = cached_item.get("warehouse", "").strip()
+                    # Определяем boxTypeID из типа
+                    if box_type_name == "Допринято" or box_type_name == "Без коробов":
+                        box_type_id = 1
+                    elif "короб" in box_type_name.lower():
+                        box_type_id = 2
+                
+                # Если данных нет в кэше, загружаем детали с API
+                if not details_status or not warehouse_from_details:
+                    _supplies_api_throttle()
+                    details = fetch_fbw_supply_details(token, supply_id)
+                    if not details:
+                        continue
+                    
+                    # Сначала получаем склад из деталей и проверяем его
                     warehouse_from_details = details.get("warehouseName", "").strip()
-                    if warehouse_from_details:
-                        supply_info["warehouse"] = warehouse_from_details
-                        print(f"Обновлено название склада для поставки {supply_info['supply_id']}: '{warehouse_from_details}'")
+                    if not warehouse_from_details:
+                        continue
                     
-                    total_qty = details.get("quantity", 0) or 0
-                    supply_date = details.get("supplyDate")
+                    # Проверяем совпадение склада ПЕРЕД проверкой статуса и типа
+                    if warehouse_name:
+                        if not (warehouse_from_details == warehouse_name or 
+                                warehouse_name in warehouse_from_details or
+                                warehouse_from_details in warehouse_name):
+                            print(f"Поставка {supply_id} на другой склад '{warehouse_from_details}' != '{warehouse_name}', пропускаем")
+                            continue
                     
-                    # Загружаем товары из поставки
-                    supply_goods = []
-                    try:
-                        goods = fetch_fbw_supply_goods(token, supply_info["supply_id"])
-                        for good in goods:
-                            barcode = good.get("barcode", "").strip()
-                            qty = int(good.get("quantity", 0) or 0)
-                            if barcode and qty > 0:
-                                supply_goods.append({
-                                    "barcode": barcode,
-                                    "quantity": qty,
-                                    "name": good.get("name", ""),
-                                    "article": good.get("article", "")
-                                })
-                        print(f"Загружено товаров из поставки {supply_info['supply_id']}: {len(supply_goods)}")
-                    except Exception as e:
-                        print(f"Ошибка загрузки товаров поставки {supply_info['supply_id']}: {e}")
-                    
-                    # Проверяем, что склад действительно совпадает
-                    if warehouse_name and supply_info["warehouse"]:
-                        if (supply_info["warehouse"] == warehouse_name or 
-                            warehouse_name in supply_info["warehouse"] or
-                            supply_info["warehouse"] in warehouse_name):
-                            
-                            pending_supplies.append({
-                                "supply_id": supply_info["supply_id"],
-                                "warehouse": supply_info["warehouse"],
-                                "total_goods": int(total_qty) if total_qty else 0,
-                                "goods": supply_goods,  # Добавляем детали товаров
-                                "planned_date": _fmt_dt_moscow(supply_date, with_time=False) if supply_date else "",
-                                "created_at": _fmt_dt_moscow(supply_info["create_date"], with_time=False) if supply_info["create_date"] else ""
-                            })
+                    # Получаем статус из деталей
+                    details_status = details.get("statusName", "").strip()
+                    if not details_status:
+                        # Если статус пустой, пытаемся определить его по датам
+                        supply_date = details.get("supplyDate")
+                        fact_date = details.get("factDate")
+                        if fact_date:
+                            details_status = "Принято"
+                        elif supply_date:
+                            try:
+                                planned_dt = _parse_iso_datetime(str(supply_date))
+                                if planned_dt:
+                                    planned_dt_msk = to_moscow(planned_dt) if planned_dt else None
+                                    if planned_dt_msk:
+                                        today = datetime.now(MOSCOW_TZ).date()
+                                        planned_date = planned_dt_msk.date()
+                                        if planned_date < today:
+                                            details_status = "Отгрузка разрешена"
+                                        else:
+                                            details_status = "Запланировано"
+                            except Exception:
+                                details_status = "Запланировано"
                         else:
-                            print(f"Поставка {supply_info['supply_id']} не подходит по складу: '{supply_info['warehouse']}' != '{warehouse_name}'")
-                    else:
-                        # Если нет названия склада, добавляем как есть
-                        pending_supplies.append({
-                            "supply_id": supply_info["supply_id"],
-                            "warehouse": supply_info["warehouse"],
-                            "total_goods": int(total_qty) if total_qty else 0,
-                            "goods": supply_goods,  # Добавляем детали товаров
-                            "planned_date": _fmt_dt_moscow(supply_date, with_time=False) if supply_date else "",
-                            "created_at": _fmt_dt_moscow(supply_info["create_date"], with_time=False) if supply_info["create_date"] else ""
-                        })
+                            details_status = "Не запланировано"
+                    
+                    # Получаем тип из деталей
+                    if not box_type_name:
+                        box_type_name = details.get("boxTypeName", "").strip()
+                    if box_type_id is None:
+                        box_type_id = details.get("boxTypeID")
+                
+                status_counts[details_status] = status_counts.get(details_status, 0) + 1
+                
+                # Проверяем тип поставки ПЕРЕД проверкой статуса - исключаем "Допринято" сразу
+                
+                # Если boxTypeID = 1 или boxTypeName содержит "Допринято"/"Без коробов" - пропускаем
+                if box_type_id == 1 or (box_type_name and ("допринято" in box_type_name.lower() or "без коробов" in box_type_name.lower())):
+                    print(f"Поставка {supply_id} имеет тип 'Допринято' (boxTypeID={box_type_id}, boxTypeName='{box_type_name}'), пропускаем")
+                    continue
+                
+                # Если boxTypeID = 2 или boxTypeName содержит "Короб" - учитываем, иначе пропускаем
+                if box_type_id is not None and box_type_id != 2:
+                    if not box_type_name or "короб" not in box_type_name.lower():
+                        print(f"Поставка {supply_id} не является типом 'Короба' (boxTypeID={box_type_id}, boxTypeName='{box_type_name}'), пропускаем")
+                        continue
+                elif box_type_name and "короб" not in box_type_name.lower():
+                    print(f"Поставка {supply_id} не является типом 'Короба' (boxTypeName='{box_type_name}'), пропускаем")
+                    continue
+                
+                # Проверяем, что статус подходит для планирования (только "Запланировано" и "Отгрузка разрешена")
+                # Исключаем "Принято" и другие статусы
+                if details_status not in ["Запланировано", "Отгрузка разрешена"]:
+                    print(f"Поставка {supply_id} имеет статус '{details_status}', не подходит для планирования, пропускаем")
+                    continue
+                
+                # Проверяем, что склад есть (проверка уже была выше для поставок без кэша)
+                if not warehouse_from_details:
+                    continue
+                
+                # Для поставок из кэша проверяем совпадение склада еще раз (на всякий случай)
+                if cached_item and warehouse_name:
+                    if not (warehouse_from_details == warehouse_name or 
+                            warehouse_name in warehouse_from_details or
+                            warehouse_from_details in warehouse_name):
+                        print(f"Поставка {supply_id} из кэша на другой склад '{warehouse_from_details}' != '{warehouse_name}', пропускаем")
+                        continue
+                
+                # Получаем даты из кэша или деталей
+                planned_date_str = ""
+                if cached_item:
+                    planned_date_str = cached_item.get("planned_date", "") or ""
+                if not planned_date_str and details:
+                    planned_date_str = _fmt_dt_moscow(details.get("supplyDate"), with_time=False) if details.get("supplyDate") else ""
+                
+                created_at_str = ""
+                if cached_item:
+                    created_at_str = cached_item.get("created_at", "") or ""
+                if not created_at_str:
+                    created_at_str = _fmt_dt_moscow(supply.get("createDate"), with_time=False) if supply.get("createDate") else ""
+                
+                # Загружаем товары из поставки только если поставка прошла все проверки
+                supply_goods = []
+                try:
+                    goods = fetch_fbw_supply_goods(token, supply_id)
+                    for good in goods:
+                        barcode = good.get("barcode", "").strip()
+                        qty = int(good.get("quantity", 0) or 0)
+                        if barcode and qty > 0:
+                            supply_goods.append({
+                                "barcode": barcode,
+                                "quantity": qty,
+                                "name": good.get("name", ""),
+                                "article": good.get("article", "")
+                            })
+                except Exception as e:
+                    print(f"Ошибка загрузки товаров поставки {supply_id}: {e}")
+                
+                # Получаем total_goods из кэша или деталей
+                total_goods = 0
+                if cached_item and cached_item.get("total_goods") is not None:
+                    total_goods = int(cached_item.get("total_goods", 0) or 0)
+                elif details:
+                    total_goods = int(details.get("quantity", 0) or 0)
+                
+                # Добавляем поставку в список
+                pending_supplies.append({
+                    "supply_id": supply_id_str,
+                    "warehouse": warehouse_from_details,
+                    "total_goods": total_goods,
+                    "goods": supply_goods,
+                    "planned_date": planned_date_str,
+                    "created_at": created_at_str
+                })
+                
             except Exception as e:
-                print(f"Ошибка загрузки деталей поставки {supply_info['supply_id']}: {e}")
+                print(f"Ошибка обработки поставки {supply_id}: {e}")
                 continue
+        
+        print(f"Найдено подходящих поставок для планирования: {len(pending_supplies)}")
+        print(f"Статистика по статусам: {status_counts}")
         
         return jsonify({
             "success": True,
