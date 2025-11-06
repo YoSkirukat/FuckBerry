@@ -127,7 +127,7 @@
               <tr class="supply-row" data-supply-id="{{ s.supply_id }}">
                 <td class="text-center">{{ loop.index }}</td>
                 <td class="text-center fw-semibold">{{ s.supply_id }}</td>
-                <td class="text-center text-nowrap">{{ s.type }}</td>
+                <td class="text-center text-nowrap">{% set _st = (s.status or '') %}{% if 'Не запланировано' in _st %}{% set _t = '' %}{% else %}{% set _t = (s.type or '') %}{% if _t == 'Без коробов' or not _t %}{% set _t = 'Допринято' %}{% endif %}{% endif %}{{ _t }}</td>
                 <td class="text-center text-nowrap">{{ s.created_at }}</td>
                 <td class="text-center">
                   {% if s.total_goods is not none %}
@@ -161,7 +161,12 @@
                 </td>
                 <td class="text-center text-nowrap">{{ s.fact_date.split(' ')|first if s.fact_date else '' }}</td>
                 <td class="text-center">
-                  {% set st = s.status or '' %}
+                  {# Вычисляем отображаемый статус с учётом типа "Допринято" #}
+                  {% set _raw_status = s.status or '' %}
+                  {% set _type_tmp = s.type or '' %}
+                  {% if 'Не запланировано' in _raw_status %}{% set _type_tmp = '' %}{% endif %}
+                  {% if (_type_tmp == 'Без коробов') or (not _type_tmp) and ('Не запланировано' not in _raw_status) %}{% set _type_tmp = 'Допринято' %}{% endif %}
+                  {% set st = 'Принято' if _type_tmp == 'Допринято' else _raw_status %}
                   {% set cls = '' %}
                   {% if 'Принято' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   {% if 'Отгрузка разрешена' in st %}{% set cls = 'status-allowed' %}{% endif %}
@@ -220,7 +225,9 @@ function __pumpPkg(){
   while (__pkgActive < __PKG_MAX && __pkgQueue.length){
     const row = __pkgQueue.shift();
     if (!row) continue;
-    const id = row.getAttribute('data-supply-id');
+    const id = (row.getAttribute('data-supply-id')||'').trim();
+    // Если нет корректного supply_id, пропускаем, чтобы не слать /supplies//package-count
+    if (!id) { continue; }
     const cell = row.querySelector('td[data-pkg-cell]');
     if (!cell || cell.textContent.trim() !== '-') { continue; }
     __pkgActive++;
@@ -281,15 +288,21 @@ function recomputeStats(){
     rows.forEach(tr=>{
       const tds = tr.querySelectorAll('td');
       const status = (tds[11]?.textContent || '').trim();
-      if (status.includes('Отгрузка разрешена')){
+      // Считаем все поставки, которые еще не приняты (исключаем только "Принято")
+      if (status && !status.includes('Принято')){
+        // Товары: берем первую часть из формата "sent/accepted"
         const goodsStr = (tds[4]?.textContent || '').replace(/\s+/g,'').trim();
-        // Parse format "sent/accepted" - we want the sent part for statistics
-        const sentPart = goodsStr.split('/')[0];
-        const goodsVal = parseInt(sentPart, 10);
-        if (!isNaN(goodsVal)) goods += goodsVal;
+        if (goodsStr && goodsStr !== '-'){
+          const sentPart = goodsStr.split('/')[0];
+          const goodsVal = parseInt(sentPart, 10);
+          if (!isNaN(goodsVal) && goodsVal > 0) goods += goodsVal;
+        }
+        // Коробы: берем значение из колонки "Кол-во коробов"
         const boxStr = (tds[5]?.textContent || '').replace(/\s+/g,'').trim();
-        const boxVal = parseInt(boxStr, 10);
-        if (!isNaN(boxVal)) boxes += boxVal;
+        if (boxStr && boxStr !== '-'){
+          const boxVal = parseInt(boxStr, 10);
+          if (!isNaN(boxVal) && boxVal > 0) boxes += boxVal;
+        }
       }
     });
     document.getElementById('fbwStatGoods').textContent = goods.toString();
@@ -326,7 +339,12 @@ function renderChunk(count){
     tr.innerHTML = `
       <td class="text-center">${i+1}</td>
       <td class="text-center fw-semibold">${s.supply_id||''}</td>
-      <td class="text-center text-nowrap">${s.type||''}</td>
+      <td class="text-center text-nowrap">${(function(){
+        const status = String(s.status||'');
+        if (status.includes('Не запланировано')) return '';
+        const t = String(s.type||'').trim();
+        return (!t || t==='Без коробов') ? 'Допринято' : t;
+      })()}</td>
       <td class="text-center text-nowrap">${s.created_at||''}</td>
       <td class="text-center">${s.total_goods !== undefined && s.total_goods !== null ? (s.total_goods + '/' + (s.accepted_goods !== undefined && s.accepted_goods !== null ? s.accepted_goods : 0)) : '-'}</td>
       <td class="text-center" data-pkg-cell="1">${(s.package_count ? s.package_count : '-') }</td>
@@ -338,7 +356,16 @@ function renderChunk(count){
         ${(!s.status || !String(s.status).includes('Принято')) ? (`<div class=\"text-muted\" style=\"font-size: 0.8em;\">${daysLeftText(s.planned_date)}</div>`) : ''}
       </td>
       <td class="text-center text-nowrap">${onlyDate(s.fact_date)}</td>
-      <td class="text-center"><span class="text-badge ${statusClass(s.status)}">${s.status||''}</span></td>
+      <td class="text-center">${(function(){
+        const status0 = String(s.status||'');
+        const typeShown = (function(){
+          if (status0.includes('Не запланировано')) return '';
+          const t = String(s.type||'').trim();
+          return (!t || t==='Без коробов') ? 'Допринято' : t;
+        })();
+        const finalStatus = (typeShown === 'Допринято') ? 'Принято' : status0;
+        return `<span class="text-badge ${statusClass(finalStatus)}">${finalStatus}</span>`;
+      })()}</td>
     `;
     tbody.appendChild(tr);
     // Ленивая подзагрузка количества коробов для добавленной строки
@@ -648,7 +675,7 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
     const rows = Array.from(document.querySelectorAll('#supBody tr.supply-row'));
     supAll = rows.map((tr, idx)=>{
       const tds = tr.querySelectorAll('td');
-      const statusSpan = tds[10]?.querySelector('span');
+      const statusSpan = tds[11]?.querySelector('span');
       return {
         supply_id: tds[1]?.textContent.trim(),
         type: tds[2]?.textContent.trim(),

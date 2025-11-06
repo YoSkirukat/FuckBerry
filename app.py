@@ -577,24 +577,72 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
         cached_item = cached_map.get(supply_id_str)
         
         # Если поставка в кэше и статус "Принято", используем кэшированные данные
-        if cached_item and "Принято" in str(cached_item.get("status", "")):
+        cached_status = str(cached_item.get("status", "")) if cached_item else ""
+        if cached_item and cached_status and "Принято" in cached_status:
             supplies.append(cached_item)
             continue
             
-        # Для остальных поставок получаем актуальные данные
+        # Для остальных поставок получаем актуальные данные (включая обновление статусов)
         _supplies_api_throttle()
         details = fetch_fbw_supply_details(token, supply_id)
+        details = details or {}  # Убеждаемся, что details - это словарь
         # Normalize fields; prefer details when available, fallback to list fields
-        create_date = (details or {}).get("createDate") or it.get("createDate")
-        supply_date = (details or {}).get("supplyDate") or it.get("supplyDate")
-        fact_date = (details or {}).get("factDate") or it.get("factDate")
-        status_name = (details or {}).get("statusName") or it.get("statusName")
-        warehouse_name = (details or {}).get("warehouseName") or it.get("warehouseName") or ""
-        box_type = (details or {}).get("boxTypeName") or (details or {}).get("boxTypeID") or ""
-        total_qty = (details or {}).get("quantity")
-        accepted_qty = (details or {}).get("acceptedQuantity")
-        acceptance_cost = (details or {}).get("acceptanceCost")
-        paid_coef = (details or {}).get("paidAcceptanceCoefficient")
+        create_date = details.get("createDate") or it.get("createDate")
+        supply_date = details.get("supplyDate") or it.get("supplyDate")
+        fact_date = details.get("factDate") or it.get("factDate")
+        # Извлекаем статус из всех возможных полей (проверяем все варианты)
+        status_name = (
+            details.get("statusName") 
+            or details.get("status") 
+            or details.get("statusText")
+            or it.get("statusName") 
+            or it.get("status")
+            or it.get("statusText")
+            or ""
+        )
+        # Если статус все еще пустой, пытаемся определить его по другим полям
+        if not status_name:
+            # Проверяем, есть ли factDate - если есть, значит поставка принята
+            if fact_date:
+                status_name = "Принято"
+            # Иначе проверяем supplyDate - если есть, значит запланировано
+            elif supply_date:
+                # Проверяем, прошла ли плановая дата
+                try:
+                    planned_dt = _parse_iso_datetime(str(supply_date))
+                    if planned_dt:
+                        planned_dt_msk = to_moscow(planned_dt) if planned_dt else None
+                        if planned_dt_msk:
+                            today = datetime.now(MOSCOW_TZ).date()
+                            planned_date = planned_dt_msk.date()
+                            if planned_date < today:
+                                status_name = "Отгрузка разрешена"
+                            else:
+                                status_name = "Запланировано"
+                except Exception:
+                    status_name = "Запланировано"
+            else:
+                status_name = "Не запланировано"
+        # Если статус пустой, но есть кэшированный статус (кроме "Принято"), используем его
+        if not status_name and cached_item:
+            cached_status_val = str(cached_item.get("status", "")).strip()
+            if cached_status_val and "Принято" not in cached_status_val:
+                status_name = cached_status_val
+        warehouse_name = details.get("warehouseName") or it.get("warehouseName") or ""
+        # Обработка типа поставки: если boxTypeName отсутствует, используем boxTypeID и преобразуем в читаемое название
+        box_type = details.get("boxTypeName") or it.get("boxTypeName")
+        if not box_type:
+            box_type_id = details.get("boxTypeID") or it.get("boxTypeID")
+            if box_type_id is not None:
+                # Преобразуем ID в название
+                box_type_map = {1: "Без коробов", 2: "Короба"}
+                box_type = box_type_map.get(int(box_type_id), str(box_type_id))
+            else:
+                box_type = ""
+        total_qty = details.get("quantity")
+        accepted_qty = details.get("acceptedQuantity")
+        acceptance_cost = details.get("acceptanceCost")
+        paid_coef = details.get("paidAcceptanceCoefficient")
         
         # Если есть кэшированное количество коробок, сохраняем его
         package_count = None
@@ -646,23 +694,71 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
         cached_item = cached_map.get(supply_id_str)
         
         # Если поставка в кэше и статус "Принято", используем кэшированные данные
-        if cached_item and "Принято" in str(cached_item.get("status", "")):
+        cached_status = str(cached_item.get("status", "")) if cached_item else ""
+        if cached_item and cached_status and "Принято" in cached_status:
             supplies.append(cached_item)
             continue
             
-        # Для остальных поставок получаем актуальные данные
+        # Для остальных поставок получаем актуальные данные (включая обновление статусов)
         _supplies_api_throttle()
         details = fetch_fbw_supply_details(token, supply_id)
-        create_date = (details or {}).get("createDate") or it.get("createDate")
-        supply_date = (details or {}).get("supplyDate") or it.get("supplyDate")
-        fact_date = (details or {}).get("factDate") or it.get("factDate")
-        status_name = (details or {}).get("statusName") or it.get("statusName")
-        warehouse_name = (details or {}).get("warehouseName") or it.get("warehouseName") or ""
-        box_type = (details or {}).get("boxTypeName") or (details or {}).get("boxTypeID") or ""
-        total_qty = (details or {}).get("quantity")
-        accepted_qty = (details or {}).get("acceptedQuantity")
-        acceptance_cost = (details or {}).get("acceptanceCost")
-        paid_coef = (details or {}).get("paidAcceptanceCoefficient")
+        details = details or {}  # Убеждаемся, что details - это словарь
+        create_date = details.get("createDate") or it.get("createDate")
+        supply_date = details.get("supplyDate") or it.get("supplyDate")
+        fact_date = details.get("factDate") or it.get("factDate")
+        # Извлекаем статус из всех возможных полей (проверяем все варианты)
+        status_name = (
+            details.get("statusName") 
+            or details.get("status") 
+            or details.get("statusText")
+            or it.get("statusName") 
+            or it.get("status")
+            or it.get("statusText")
+            or ""
+        )
+        # Если статус все еще пустой, пытаемся определить его по другим полям
+        if not status_name:
+            # Проверяем, есть ли factDate - если есть, значит поставка принята
+            if fact_date:
+                status_name = "Принято"
+            # Иначе проверяем supplyDate - если есть, значит запланировано
+            elif supply_date:
+                # Проверяем, прошла ли плановая дата
+                try:
+                    planned_dt = _parse_iso_datetime(str(supply_date))
+                    if planned_dt:
+                        planned_dt_msk = to_moscow(planned_dt) if planned_dt else None
+                        if planned_dt_msk:
+                            today = datetime.now(MOSCOW_TZ).date()
+                            planned_date = planned_dt_msk.date()
+                            if planned_date < today:
+                                status_name = "Отгрузка разрешена"
+                            else:
+                                status_name = "Запланировано"
+                except Exception:
+                    status_name = "Запланировано"
+            else:
+                status_name = "Не запланировано"
+        # Если статус пустой, но есть кэшированный статус (кроме "Принято"), используем его
+        if not status_name and cached_item:
+            cached_status_val = str(cached_item.get("status", "")).strip()
+            if cached_status_val and "Принято" not in cached_status_val:
+                status_name = cached_status_val
+        warehouse_name = details.get("warehouseName") or it.get("warehouseName") or ""
+        # Обработка типа поставки: если boxTypeName отсутствует, используем boxTypeID и преобразуем в читаемое название
+        box_type = details.get("boxTypeName") or it.get("boxTypeName")
+        if not box_type:
+            box_type_id = details.get("boxTypeID") or it.get("boxTypeID")
+            if box_type_id is not None:
+                # Преобразуем ID в название
+                box_type_map = {1: "Без коробов", 2: "Короба"}
+                box_type = box_type_map.get(int(box_type_id), str(box_type_id))
+            else:
+                box_type = ""
+        total_qty = details.get("quantity")
+        accepted_qty = details.get("acceptedQuantity")
+        acceptance_cost = details.get("acceptanceCost")
+        paid_coef = details.get("paidAcceptanceCoefficient")
         
         # Если есть кэшированное количество коробок, сохраняем его
         package_count = None
@@ -4089,23 +4185,35 @@ def fbw_supplies_page():
     supplies: list[dict[str, Any]] = []
     generated_at = ""
     # Load from cache first; only refresh by button
+    # Но всегда обновляем статусы через fetch_fbw_last_supplies, чтобы они были актуальными
     cached = load_fbw_supplies_cache() or {}
     if cached and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None):
-        supplies = cached.get("items", [])
+        # Используем кэш только как fallback, но всегда обновляем через API для актуальных статусов
         generated_at = cached.get("updated_at", "")
-    if not supplies:
-        if token:
-            try:
-                # On first ever load: fetch first 15 and cache them
-                supplies = fetch_fbw_last_supplies(token, limit=15)
-                generated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
-                save_fbw_supplies_cache({"items": supplies, "updated_at": generated_at, "next_offset": 15})
-            except requests.HTTPError as http_err:
-                error = f"Ошибка API: {http_err.response.status_code}"
-            except Exception as exc:  # noqa: BLE001
-                error = f"Ошибка: {exc}"
-        else:
-            error = "Укажите API токен в профиле"
+    if token:
+        try:
+            # Всегда получаем актуальные данные с обновленными статусами
+            supplies = fetch_fbw_last_supplies(token, limit=15)
+            generated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
+            save_fbw_supplies_cache({"items": supplies, "updated_at": generated_at, "next_offset": 15, "_user_id": current_user.id if current_user.is_authenticated else None})
+        except requests.HTTPError as http_err:
+            error = f"Ошибка API: {http_err.response.status_code}"
+            # В случае ошибки используем кэш как fallback
+            if not supplies and cached:
+                supplies = cached.get("items", [])
+                generated_at = cached.get("updated_at", "")
+        except Exception as exc:  # noqa: BLE001
+            error = f"Ошибка: {exc}"
+            # В случае ошибки используем кэш как fallback
+            if not supplies and cached:
+                supplies = cached.get("items", [])
+                generated_at = cached.get("updated_at", "")
+    else:
+        error = "Укажите API токен в профиле"
+        # Если нет токена, используем кэш
+        if cached:
+            supplies = cached.get("items", [])
+            generated_at = cached.get("updated_at", "")
 
     return render_template(
         "fbw_supplies.html",
@@ -6530,21 +6638,25 @@ def api_report_orders():
     req_from = (request.args.get("date_from") or "").strip()
     req_to = (request.args.get("date_to") or "").strip()
     warehouse = (request.args.get("warehouse") or "").strip() or None
+    # Параметр force_refresh указывает, что нужно загрузить свежие данные, игнорируя кэш
+    force_refresh = request.args.get("force_refresh") == "1" or request.args.get("force_refresh") == "true"
+    
     try:
         if req_from and req_to and token:
-            if (
+            # Если запрошено принудительное обновление или кэш не соответствует, загружаем свежие данные
+            if force_refresh or not (
                 cached
                 and current_user.is_authenticated
                 and cached.get("_user_id") == current_user.id
                 and cached.get("date_from") == req_from
                 and cached.get("date_to") == req_to
             ):
-                orders = cached.get("orders", [])
+                raw_orders = fetch_orders_range(token, req_from, req_to)
+                orders = to_rows(raw_orders, req_from, req_to)
                 date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
                 date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
             else:
-                raw_orders = fetch_orders_range(token, req_from, req_to)
-                orders = to_rows(raw_orders, req_from, req_to)
+                orders = cached.get("orders", [])
                 date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
                 date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
         else:

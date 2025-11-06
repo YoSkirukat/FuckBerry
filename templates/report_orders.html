@@ -727,6 +727,8 @@
         // При загрузке отчёта всегда запрашиваем агрегат по всем складам,
         // а затем фильтруем локально при смене склада
         params.set('warehouse', '');
+        // Добавляем параметр force_refresh для получения свежих данных при каждом нажатии кнопки "Загрузить"
+        params.set('force_refresh', '1');
         console.log('DEBUG: reloadReport params:', params.toString());
         const res = await fetch(`/api/report/orders?${params.toString()}`);
         const data = await res.json();
