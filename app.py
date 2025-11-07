@@ -3347,15 +3347,17 @@ def check_version_updates():
 
 # Global variable to track monitoring state
 _monitoring_started = False
+_last_cache_refresh_hour = None
 
 def start_notification_monitoring():
     """Start background monitoring for notifications"""
-    global _monitoring_started
+    global _monitoring_started, _last_cache_refresh_hour
     
     if _monitoring_started:
         return
     
     def monitor_loop():
+        global _last_cache_refresh_hour
         while True:
             try:
                 current_time = datetime.now()
@@ -3376,6 +3378,19 @@ def start_notification_monitoring():
                         auto_refresh_stocks_for_all_users()
                     except Exception as e:
                         print(f"Error in auto stocks refresh: {e}")
+                
+                # Auto-refresh supplies and orders cache every 2 hours (at 0:00, 2:00, 4:00, etc.)
+                if current_time.hour % 2 == 0 and current_time.minute == 0 and _last_cache_refresh_hour != current_time.hour:
+                    _last_cache_refresh_hour = current_time.hour
+                    print(f"Triggering auto cache refresh (supplies & orders) at {current_time.strftime('%H:%M:%S')}")
+                    try:
+                        auto_refresh_supplies_cache_for_all_users()
+                    except Exception as e:
+                        print(f"Error in auto supplies cache refresh: {e}")
+                    try:
+                        auto_refresh_orders_cache_for_all_users()
+                    except Exception as e:
+                        print(f"Error in auto orders cache refresh: {e}")
                     
             except Exception as e:
                 print(f"Error in monitoring loop: {e}")
@@ -3455,6 +3470,121 @@ def auto_refresh_stocks_for_all_users():
         
     except Exception as e:
         print(f"Error in auto_refresh_stocks_for_all_users: {e}")
+
+
+def auto_refresh_supplies_cache_for_all_users():
+    """Автоматически обновляет кэш поставок для всех пользователей с токенами"""
+    try:
+        with app.app_context():
+            users_with_tokens = User.query.filter(User.wb_token.isnot(None), User.wb_token != '').all()
+            
+            if not users_with_tokens:
+                print("No users with tokens found for auto supplies cache refresh")
+                return
+            
+            print(f"Auto-refreshing supplies cache for {len(users_with_tokens)} users")
+            
+            for i, user in enumerate(users_with_tokens):
+                try:
+                    # Проверяем, нужно ли обновлять кэш (если он устарел)
+                    cached = load_fbw_supplies_detailed_cache(user.id)
+                    should_refresh = True
+                    
+                    if cached:
+                        last_updated = cached.get("last_updated")
+                        if last_updated:
+                            try:
+                                last_update_dt = datetime.fromisoformat(last_updated)
+                                # Если кэш обновлялся менее 1.5 часов назад, пропускаем
+                                if (datetime.now(MOSCOW_TZ) - last_update_dt).total_seconds() < 5400:  # 1.5 часа
+                                    should_refresh = False
+                                    print(f"Skipping auto-refresh supplies cache for user {user.id} - cache is fresh")
+                            except Exception:
+                                pass
+                    
+                    if should_refresh:
+                        print(f"Auto-refreshing supplies cache for user {user.id}")
+                        
+                        # Добавляем задержку между запросами
+                        if i > 0:
+                            time.sleep(2)
+                        
+                        has_cache = bool(cached)
+                        cache_data = build_supplies_detailed_cache(
+                            user.wb_token,
+                            user.id,
+                            batch_size=10,
+                            pause_seconds=2.0,
+                            force_full=not has_cache,
+                            days_back=(180 if not has_cache else 10),
+                        )
+                        save_fbw_supplies_detailed_cache(cache_data, user.id)
+                        print(f"Auto-refresh supplies cache completed for user {user.id}")
+                    
+                except Exception as e:
+                    print(f"Error auto-refreshing supplies cache for user {user.id}: {e}")
+                    continue
+            
+            print("Auto supplies cache refresh cycle completed")
+        
+    except Exception as e:
+        print(f"Error in auto_refresh_supplies_cache_for_all_users: {e}")
+
+
+def auto_refresh_orders_cache_for_all_users():
+    """Автоматически обновляет кэш заказов для всех пользователей с токенами"""
+    try:
+        with app.app_context():
+            users_with_tokens = User.query.filter(User.wb_token.isnot(None), User.wb_token != '').all()
+            
+            if not users_with_tokens:
+                print("No users with tokens found for auto orders cache refresh")
+                return
+            
+            print(f"Auto-refreshing orders cache for {len(users_with_tokens)} users")
+            
+            for i, user in enumerate(users_with_tokens):
+                try:
+                    # Проверяем, нужно ли обновлять кэш (если он устарел)
+                    cached_path = _orders_cache_meta_path_for_user(user.id)
+                    should_refresh = True
+                    
+                    if os.path.isfile(cached_path):
+                        try:
+                            with open(cached_path, "r", encoding="utf-8") as f:
+                                cached = json.load(f)
+                                last_updated = cached.get("last_updated")
+                                if last_updated:
+                                    try:
+                                        last_update_dt = datetime.fromisoformat(last_updated)
+                                        # Если кэш обновлялся менее 1.5 часов назад, пропускаем
+                                        if (datetime.now(MOSCOW_TZ) - last_update_dt).total_seconds() < 5400:  # 1.5 часа
+                                            should_refresh = False
+                                            print(f"Skipping auto-refresh orders cache for user {user.id} - cache is fresh")
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    
+                    if should_refresh:
+                        print(f"Auto-refreshing orders cache for user {user.id}")
+                        
+                        # Добавляем задержку между запросами
+                        if i > 0:
+                            time.sleep(2)
+                        
+                        meta = build_orders_warm_cache(user.wb_token, user.id)
+                        save_orders_cache_meta(meta, user.id)
+                        print(f"Auto-refresh orders cache completed for user {user.id}")
+                    
+                except Exception as e:
+                    print(f"Error auto-refreshing orders cache for user {user.id}: {e}")
+                    continue
+            
+            print("Auto orders cache refresh cycle completed")
+        
+    except Exception as e:
+        print(f"Error in auto_refresh_orders_cache_for_all_users: {e}")
 
 
 def load_auto_update_settings() -> Dict[str, Any]:
