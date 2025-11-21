@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  {% include '_header.html' %}
+</head>
+<body>
+  {# Навбар #}
+  {% include '_navbar.html' %}
+  
+  {# Контент страницы #}
+  {% block content %}{% endblock %}
+  
+  {# Футер #}
+  {% include '_footer.html' %}
+  
+  {# Bootstrap JS #}
+  <script src="/static/bootstrap/js/bootstrap.bundle.min.js" defer></script>
+  
+  {# Скрипты навбара (уведомления) - должны загружаться после Bootstrap #}
+  <script>
+// Ждем полной загрузки DOM и Bootstrap
+(function() {
+  'use strict';
+  
+  // Функция для проверки загрузки Bootstrap
+  function waitForBootstrap(callback) {
+    if (typeof bootstrap !== 'undefined' && bootstrap.Dropdown) {
+      callback();
+    } else {
+      setTimeout(function() {
+        waitForBootstrap(callback);
+      }, 50);
+    }
+  }
+
+// Notification system
+let notificationCheckInterval;
+let lastNotificationCount = 0;
+let lastNotifications = [];
+let shownNotificationIds = new Set(); // Track which notifications have been shown
+
+// Function to check for new notifications and update UI
+function checkForNewNotifications() {
+    // First get the count to check for new notifications
+    fetch('/api/notifications/count')
+        .then(response => response.json())
+        .then(data => {
+            const currentCount = data.count || 0;
+            
+            console.log('Checking notifications count:', {
+                current: currentCount,
+                last: lastNotificationCount
+            });
+            
+            // Check if count increased (new notifications)
+            if (currentCount > lastNotificationCount && lastNotificationCount >= 0) {
+                console.log('New notifications detected! Count increased from', lastNotificationCount, 'to', currentCount);
+                
+                // Only show alerts if this is not the first load
+                if (lastNotificationCount > 0) {
+                    // Play notification sound
+                    playNotificationSound();
+                    
+                    // Show browser notification
+                    if (Notification.permission === 'granted') {
+                        new Notification('Новое уведомление', {
+                            body: `У вас ${currentCount - lastNotificationCount} новое уведомление`,
+                            icon: '/logo.png'
+                        });
+                    }
+                    
+                    // Add pulse and shake animation to badge
+                    const badge = document.getElementById('notificationBadge');
+                    const mobileBadge = document.getElementById('mobileNotificationBadge');
+                    
+                    if (badge) {
+                        badge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            badge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                    if (mobileBadge) {
+                        mobileBadge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            mobileBadge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                } else {
+                    console.log('First load - not showing notification alerts');
+                }
+            }
+            
+            // Update last notification count
+            lastNotificationCount = currentCount;
+            
+            // Update the UI if dropdown is open
+            const dropdown = document.getElementById('notificationsDropdown');
+            const mobileDropdown = document.getElementById('mobileNotificationsDropdown');
+            
+            if ((dropdown && dropdown.classList.contains('show')) || 
+                (mobileDropdown && mobileDropdown.classList.contains('show'))) {
+                loadNotifications();
+            }
+        })
+        .catch(error => {
+            console.error('Error checking notifications count:', error);
+            console.error('Error details:', error.message, error.stack);
+        });
+}
+
+// Function to play notification sound
+function playNotificationSound() {
+    try {
+        // Create a simple beep sound using Web Audio API
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+        
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.2);
+    } catch (e) {
+        // Fallback: try to play a system sound if available
+        console.log('Audio notification not available');
+    }
+}
+
+function updateNotificationBadge() {
+    fetch('/api/notifications/count')
+        .then(response => response.json())
+        .then(data => {
+            const badge = document.getElementById('notificationBadge');
+            const mobileBadge = document.getElementById('mobileNotificationBadge');
+            const deleteAllBtn = document.getElementById('deleteAllBtn');
+            const mobileDeleteAllBtn = document.getElementById('mobileDeleteAllBtn');
+            const markAllReadBtn = document.getElementById('markAllReadBtn');
+            const mobileMarkAllReadBtn = document.getElementById('mobileMarkAllReadBtn');
+            
+            // Check if count increased (new notifications)
+            if (data.count > lastNotificationCount && lastNotificationCount >= 0) {
+                console.log('Badge count increased from', lastNotificationCount, 'to', data.count);
+                
+                // Only show alerts if this is not the first load (lastNotificationCount > 0)
+                if (lastNotificationCount > 0) {
+                    // Play notification sound
+                    playNotificationSound();
+                    
+                    // Show browser notification
+                    if (Notification.permission === 'granted') {
+                        new Notification('Новое уведомление', {
+                            body: `У вас ${data.count - lastNotificationCount} новое уведомление`,
+                            icon: '/logo.png'
+                        });
+                    }
+                    
+                    // Add pulse and shake animation to both badges
+                    if (badge) {
+                        badge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            badge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                    if (mobileBadge) {
+                        mobileBadge.classList.add('notification-badge-pulse', 'notification-badge-shake');
+                        setTimeout(() => {
+                            mobileBadge.classList.remove('notification-badge-pulse', 'notification-badge-shake');
+                        }, 500);
+                    }
+                } else {
+                    console.log('First load - not showing notification alerts');
+                }
+            }
+            
+            if (data.count > 0) {
+                // Update desktop badge
+                if (badge) {
+                    badge.textContent = data.count;
+                    badge.style.display = 'inline-block';
+                }
+                // Update mobile badge
+                if (mobileBadge) {
+                    mobileBadge.textContent = data.count;
+                    mobileBadge.style.display = 'inline-block';
+                }
+                
+                // Show buttons
+                if (deleteAllBtn) deleteAllBtn.style.display = 'inline-block';
+                if (mobileDeleteAllBtn) mobileDeleteAllBtn.style.display = 'inline-block';
+                if (markAllReadBtn) markAllReadBtn.style.display = 'inline-block';
+                if (mobileMarkAllReadBtn) mobileMarkAllReadBtn.style.display = 'inline-block';
+            } else {
+                // Hide badges
+                if (badge) badge.style.display = 'none';
+                if (mobileBadge) mobileBadge.style.display = 'none';
+                
+                // Show delete buttons but hide read buttons
+                if (deleteAllBtn) deleteAllBtn.style.display = 'inline-block';
+                if (mobileDeleteAllBtn) mobileDeleteAllBtn.style.display = 'inline-block';
+                if (markAllReadBtn) markAllReadBtn.style.display = 'none';
+                if (mobileMarkAllReadBtn) mobileMarkAllReadBtn.style.display = 'none';
+            }
+            
+            lastNotificationCount = data.count;
+        })
+        .catch(error => {
+            console.error('Error fetching notification count:', error);
+            console.error('Error details:', error.message, error.stack);
+        });
+}
+
+function loadNotifications() {
+    fetch('/api/notifications?limit=10')
+        .then(response => response.json())
+        .then(data => {
+            const container = document.getElementById('notificationsList');
+            const mobileContainer = document.getElementById('mobileNotificationsList');
+            
+            // Initialize lastNotifications and shownNotificationIds if empty
+            if (lastNotifications.length === 0) {
+                lastNotifications = data.notifications || [];
+                // Mark all existing notifications as shown to prevent alerts on first load
+                if (data.notifications && data.notifications.length > 0) {
+                    data.notifications.forEach(notification => {
+                        shownNotificationIds.add(notification.id);
+                    });
+                }
+                console.log('Initial notifications loaded:', lastNotifications.length, lastNotifications.map(n => n.id));
+            }
+            
+            // Function to create notification item HTML
+            function createNotificationItem(notif, index) {
+                const item = document.createElement('li');
+                item.className = `dropdown-item notification-item ${notif.is_read ? '' : 'bg-primary bg-opacity-10'}`;
+                item.style.cursor = 'pointer';
+               
+               // Add animation for new notifications (first few items)
+               if (index < 3 && !notif.is_read) {
+                   item.classList.add('new-notification');
+               }
+               
+                // Используем уже отформатированную дату из API
+                const timeAgo = notif.created_at;
+               
+               // Get icon based on notification type
+               let icon = '🔔';
+               if (notif.type === 'fbs_new_order') {
+                   icon = '📦';
+               } else if (notif.type === 'version_update') {
+                   icon = '🔄';
+               } else if (notif.type === 'system') {
+                   icon = 'ℹ️';
+               }
+               
+               item.innerHTML = `
+                   <div class="d-flex align-items-center" style="position: relative;" onmouseover="this.querySelector('.delete-btn').style.opacity='1';" onmouseout="this.querySelector('.delete-btn').style.opacity='0.3';">
+                       <div class="flex-grow-1" style="cursor: pointer; padding-right: 40px;">
+                            <div class="fw-bold d-flex align-items-center gap-2">
+                                <span>${icon}</span>
+                                <span>${notif.title}</span>
+                            </div>
+                            <div class="small text-muted" style="word-wrap: break-word;">${notif.message.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g, '$2')}</div>
+                            ${notif.type === 'version_update' ? '<div class="mt-1"><a href="/changelog" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
+                            ${notif.type === 'fbs_new_order' ? '<div class="mt-1"><a href="/fbs" class="btn btn-sm btn-outline-primary" style="font-size: 10px; padding: 2px 8px;">Подробнее</a></div>' : ''}
+                           <div class="small text-muted" style="font-size: 11px; color: gray !important; margin-top: 5px;">${timeAgo}</div>
+                       </div>
+                       <div class="d-flex align-items-center gap-2" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%);">
+                           <button class="delete-btn btn btn-sm btn-outline-danger p-1" onclick="deleteNotification(${notif.id}, event)" title="Удалить уведомление" style="width: 20px; height: 20px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid #dc3545; background: #fff; transition: all 0.2s ease; opacity: 0.3;" onmouseover="this.style.opacity='1'; this.style.background='#dc3545'; this.style.color='#fff';" onmouseout="this.style.opacity='0.3'; this.style.background='#fff'; this.style.color='#dc3545';">
+                               ✕
+                           </button>
+                       </div>
+                   </div>
+               `;
+               
+               // Add click handler to the content area (not the delete button)
+               const contentArea = item.querySelector('.flex-grow-1');
+               contentArea.addEventListener('click', (e) => {
+                   // Don't handle click if it's on the "Подробнее" button
+                   if (e.target.tagName === 'A' || e.target.closest('a')) {
+                       return;
+                   }
+                   
+                   // Prevent dropdown from closing
+                   e.stopPropagation();
+                   
+                   if (!notif.is_read) {
+                       markNotificationAsRead(notif.id);
+                   }
+               });
+               
+               // Set message with innerHTML to support HTML links
+               const messageDiv = item.querySelector('.small.text-muted');
+               if (messageDiv && notif.message) {
+                   messageDiv.innerHTML = notif.message;
+               }
+               
+               return item;
+            }
+            
+            // Clear containers
+            if (container) container.innerHTML = '';
+            if (mobileContainer) mobileContainer.innerHTML = '';
+            
+            if (!data.notifications || data.notifications.length === 0) {
+                const emptyMessage = '<li class="dropdown-item-text text-center text-muted">Нет уведомлений</li>';
+                if (container) container.innerHTML = emptyMessage;
+                if (mobileContainer) mobileContainer.innerHTML = emptyMessage;
+                return;
+            }
+            
+            // Populate containers (create separate elements to preserve listeners)
+            data.notifications.forEach((notif, index) => {
+                if (container) {
+                    const desktopItem = createNotificationItem(notif, index);
+                    container.appendChild(desktopItem);
+                }
+                if (mobileContainer) {
+                    const mobileItem = createNotificationItem(notif, index);
+                    mobileContainer.appendChild(mobileItem);
+                }
+            });
+        })
+        .catch(error => {
+            console.error('Error loading notifications:', error);
+            console.error('Error details:', error.message, error.stack);
+            const errorMessage = '<li class="dropdown-item-text text-center text-danger">Ошибка загрузки</li>';
+            if (document.getElementById('notificationsList')) {
+                document.getElementById('notificationsList').innerHTML = errorMessage;
+            }
+            if (document.getElementById('mobileNotificationsList')) {
+                document.getElementById('mobileNotificationsList').innerHTML = errorMessage;
+            }
+        });
+}
+
+ function markNotificationAsRead(notificationId) {
+     fetch(`/api/notifications/${notificationId}/read`, {
+         method: 'POST',
+         headers: {
+             'Content-Type': 'application/json',
+         }
+     })
+     .then(response => response.json())
+     .then(data => {
+         if (data.success) {
+             // Find the notification item and update its background in both lists
+             const notificationItems = document.querySelectorAll('.notification-item');
+             notificationItems.forEach(item => {
+                 const deleteBtn = item.querySelector(`[onclick*="${notificationId}"]`);
+                 if (deleteBtn) {
+                     // Remove the blue background and make it standard
+                     item.classList.remove('bg-primary', 'bg-opacity-10');
+                     item.classList.add('bg-light');
+                 }
+             });
+             
+             updateNotificationBadge();
+             loadNotifications();
+         }
+     })
+     .catch(error => console.error('Error marking notification as read:', error));
+ }
+
+
+function deleteNotification(notificationId, event) {
+    // Prevent event bubbling to avoid triggering the notification click
+    event.stopPropagation();
+    
+    // Find the notification item and add fade out animation
+    const notificationItem = event.target.closest('.dropdown-item');
+    if (notificationItem) {
+        notificationItem.style.transition = 'opacity 0.2s ease-out, transform 0.2s ease-out';
+        notificationItem.style.opacity = '0.3';
+        notificationItem.style.transform = 'translateX(10px)';
+    }
+    
+    fetch(`/api/notifications/${notificationId}/delete`, {
+        method: 'DELETE',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            updateNotificationBadge();
+            loadNotifications();
+        } else {
+            // Restore opacity if deletion failed
+            if (notificationItem) {
+                notificationItem.style.opacity = '1';
+                notificationItem.style.transform = 'translateX(0)';
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting notification:', error);
+        // Restore opacity if deletion failed
+        if (notificationItem) {
+            notificationItem.style.opacity = '1';
+            notificationItem.style.transform = 'translateX(0)';
+        }
+    });
+}
+
+function markAllNotificationsAsRead() {
+    fetch('/api/notifications/read-all', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            updateNotificationBadge();
+            loadNotifications();
+        } else {
+            alert('Ошибка при отметке уведомлений как прочитанных');
+        }
+    })
+    .catch(error => {
+        console.error('Error marking all notifications as read:', error);
+        alert('Ошибка при отметке уведомлений как прочитанных');
+    });
+}
+
+function deleteAllNotifications() {
+    fetch('/api/notifications/delete-all', {
+        method: 'DELETE',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            updateNotificationBadge();
+            loadNotifications();
+        } else {
+            alert('Ошибка при удалении уведомлений');
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting all notifications:', error);
+        alert('Ошибка при удалении уведомлений');
+    });
+}
+
+
+// Initialize notification system - ждем загрузки DOM и Bootstrap
+function initNotificationSystem() {
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+    
+    // Load initial data
+    updateNotificationBadge();
+    loadNotifications();
+    
+    // Set up event listeners
+    // Note: markAllReadBtn was removed from UI
+    
+    // Set up dropdown event listeners
+    const dropdown = document.getElementById('notificationsDropdown');
+    const mobileDropdown = document.getElementById('mobileNotificationsDropdown');
+    
+    if (dropdown) {
+        dropdown.addEventListener('show.bs.dropdown', function() {
+            loadNotifications();
+        });
+    }
+    
+    if (mobileDropdown) {
+        mobileDropdown.addEventListener('show.bs.dropdown', function() {
+            loadNotifications();
+        });
+        
+        // Close mobile dropdown when clicking outside
+        document.addEventListener('click', function(event) {
+            const mobileDropdownMenu = document.querySelector('#mobileNotificationsDropdown + .dropdown-menu');
+            if (mobileDropdownMenu && 
+                !mobileDropdown.contains(event.target) && 
+                !mobileDropdownMenu.contains(event.target)) {
+                // Проверяем, что Bootstrap загружен
+                if (typeof bootstrap !== 'undefined' && bootstrap.Dropdown) {
+                    const bsDropdown = new bootstrap.Dropdown(mobileDropdown);
+                    bsDropdown.hide();
+                }
+            }
+        });
+    }
+    
+    // Check for new notifications every 1 minute
+    notificationCheckInterval = setInterval(function() {
+        console.log('Interval check - updating badge and checking notifications');
+        updateNotificationBadge();
+        checkForNewNotifications();
+    }, 60000);
+    
+    // Also check when user returns to the tab
+    window.addEventListener('focus', function() {
+        updateNotificationBadge();
+        checkForNewNotifications();
+    });
+}
+
+// Ждем загрузки DOM и Bootstrap перед инициализацией
+// Используем window.onload для гарантии загрузки всех скриптов
+window.addEventListener('load', function() {
+    waitForBootstrap(initNotificationSystem);
+});
+
+// Clean up interval when page unloads
+window.addEventListener('beforeunload', function() {
+    if (notificationCheckInterval) {
+        clearInterval(notificationCheckInterval);
+    }
+});
+
+// Экспортируем функции, которые вызываются из HTML (onclick)
+window.deleteNotification = deleteNotification;
+window.markAllNotificationsAsRead = markAllNotificationsAsRead;
+window.deleteAllNotifications = deleteAllNotifications;
+
+// Test function for debugging - can be called from browser console
+window.testNotifications = function() {
+    console.log('Testing notifications...');
+    console.log('Last notifications:', lastNotifications);
+    updateNotificationBadge();
+    checkForNewNotifications();
+};
+
+// Function to create test notification
+window.createTestNotification = function() {
+    fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            console.log('Test notification created');
+            // Force update after a short delay to allow server to process
+            setTimeout(() => {
+                updateNotificationBadge();
+                checkForNewNotifications();
+            }, 1000);
+        } else {
+            console.error('Error creating test notification:', data.error);
+        }
+    })
+    .catch(error => {
+        console.error('Error creating test notification:', error);
+    });
+};
+})(); // Закрываем IIFE
+  </script>
+  
+  {# Дополнительные скрипты страницы #}
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>
+
+

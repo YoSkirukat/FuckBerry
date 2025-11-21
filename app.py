@@ -6110,6 +6110,7 @@ def profile():
     seller_info: Dict[str, Any] | None = None
     token_info: Dict[str, Any] | None = None
     supplies_cache_info: Dict[str, Any] | None = None
+    orders_cache_info: Dict[str, Any] | None = None
     token = current_user.wb_token or ""
     if token:
         try:
