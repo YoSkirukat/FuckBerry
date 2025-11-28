@@ -9,6 +9,13 @@
   <div class="container mt-3">
     <h1 class="mb-4" style="font-size:1.6rem;">Профиль</h1>
 
+    {% if current_user.display_name %}
+    <div class="card mb-3"><div class="card-body">
+      <h6 class="mb-2">Имя пользователя</h6>
+      <div>{{ current_user.display_name }}</div>
+    </div></div>
+    {% endif %}
+
     <div class="row g-3">
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">

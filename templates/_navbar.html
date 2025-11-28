@@ -228,9 +228,14 @@
             </ul>
           </li>
           
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle {% if request.path.startswith('/profile') %}active{% endif %}" href="#" id="profileDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-              {{ organization_name }}
+          <li class="nav-item dropdown" style="margin-left: 1rem;">
+            <a class="nav-link dropdown-toggle {% if request.path.startswith('/profile') %}active{% endif %}" href="#" id="profileDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false" style="display: inline-flex; align-items: center; gap: 0.75rem;">
+              <span style="display: inline-flex; flex-direction: column; line-height: 1.2;">
+                <span>{{ organization_name }}</span>
+                {% if user_display_name %}
+                <span class="small text-muted" style="font-size: 0.75rem;">{{ user_display_name }}</span>
+                {% endif %}
+              </span>
             </a>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="profileDropdown">
               <li><a class="dropdown-item {% if request.path.startswith('/profile') %}active{% endif %}" href="/profile">Настройки</a></li>

@@ -311,6 +311,10 @@ def _ensure_schema_users_validity_columns() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_person VARCHAR(255)"))
                 except Exception:
                     pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"))
+                except Exception:
+                    pass
             elif dialect in ("mysql", "mariadb"):
                 # MySQL 8.0+ supports IF NOT EXISTS
                 try:
@@ -1728,6 +1732,7 @@ class User(UserMixin, db.Model):
     shipper_name = db.Column(db.String(255), nullable=True)
     shipper_address = db.Column(db.String(255), nullable=True)
     contact_person = db.Column(db.String(255), nullable=True)
+    display_name = db.Column(db.String(255), nullable=True)
 
 
 class Notification(db.Model):
@@ -4043,6 +4048,10 @@ auto_update_thread.start()
 @app.context_processor
 def inject_organization_info():
     """Add organization information to all templates for navbar"""
+    user_display_name = None
+    if current_user.is_authenticated:
+        user_display_name = current_user.display_name
+    
     if current_user.is_authenticated and current_user.wb_token:
         try:
             seller_info = fetch_seller_info(current_user.wb_token)
@@ -4051,10 +4060,10 @@ def inject_organization_info():
                                    seller_info.get('companyName') or 
                                    seller_info.get('supplierName') or 
                                    'Организация')
-                return {'organization_name': organization_name}
+                return {'organization_name': organization_name, 'user_display_name': user_display_name}
         except Exception:
             pass
-    return {'organization_name': 'Профиль'}
+    return {'organization_name': 'Профиль', 'user_display_name': user_display_name}
 
 @app.route("/", methods=["GET", "POST"]) 
 def root():
@@ -11525,6 +11534,7 @@ def admin_users_create():
         return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
+    display_name = request.form.get("display_name", "").strip() or None
     is_admin = bool(request.form.get("is_admin"))
     vf = request.form.get("valid_from") or None
     vt = request.form.get("valid_to") or None
@@ -11548,7 +11558,7 @@ def admin_users_create():
                 vt_d = datetime.strptime(vt, "%Y-%m-%d").date()
             except Exception:
                 vt_d = None
-        u = User(username=username, password=password, is_admin=is_admin, is_active=True, valid_from=vf_d, valid_to=vt_d)
+        u = User(username=username, password=password, display_name=display_name, is_admin=is_admin, is_active=True, valid_from=vf_d, valid_to=vt_d)
         db.session.add(u)
         db.session.commit()
         flash("Пользователь создан")
@@ -11675,6 +11685,29 @@ def admin_users_validity(user_id: int):
                 pass
             app.logger.exception("admin_users_validity failed")
             flash(f"Ошибка обновления срока: {exc}")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/display_name", methods=["POST"]) 
+@login_required
+def admin_users_display_name(user_id: int):
+    # Проверяем права администратора
+    if not current_user.is_authenticated or not current_user.is_admin:
+        return jsonify({"success": False, "error": "У вас нет прав для выполнения этого действия"}), 403
+    display_name = request.form.get("display_name", "").strip() or None
+    u = db.session.get(User, user_id)
+    if u:
+        try:
+            u.display_name = display_name
+            db.session.commit()
+            flash("Имя пользователя обновлено")
+        except Exception as exc:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            app.logger.exception("admin_users_display_name failed")
+            flash(f"Ошибка обновления имени пользователя: {exc}")
     return redirect(url_for("admin_users"))
 
 

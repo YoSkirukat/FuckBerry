@@ -29,10 +29,13 @@
     <div class="card mb-4"><div class="card-body">
       <h6 class="mb-3">Создать пользователя</h6>
       <form method="post" action="/admin/users/create" class="row g-2">
-        <div class="col-md-3">
+        <div class="col-md-2">
           <input name="username" class="form-control" placeholder="Логин" required />
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
+          <input name="display_name" class="form-control" placeholder="Имя пользователя" />
+        </div>
+        <div class="col-md-2">
           <input name="password" type="password" class="form-control" placeholder="Пароль" required />
         </div>
         <div class="col-md-2">
@@ -54,13 +57,19 @@
     <div class="table-responsive">
       <table class="table table-sm table-striped">
         <thead><tr>
-          <th>ID</th><th>Логин</th><th>Админ</th><th>Активен</th><th>Срок с</th><th>Срок по</th><th>Создан</th><th class="text-end">Действия</th>
+          <th>ID</th><th>Логин</th><th>Имя пользователя</th><th>Админ</th><th>Активен</th><th>Срок с</th><th>Срок по</th><th>Создан</th><th class="text-end">Действия</th>
         </tr></thead>
         <tbody>
           {% for u in users %}
             <tr>
               <td>{{ u.id }}</td>
               <td>{{ u.username }}</td>
+              <td>
+                <form method="post" action="/admin/users/{{u.id}}/display_name" class="d-inline">
+                  <input name="display_name" type="text" class="form-control form-control-sm d-inline w-auto" value="{{ u.display_name or '' }}" placeholder="Имя пользователя" />
+                  <button class="btn btn-sm btn-outline-info" type="submit">Имя</button>
+                </form>
+              </td>
               <td>{{ 'да' if u.is_admin else 'нет' }}</td>
               <td>{{ 'да' if u.is_active else 'нет' }}</td>
               <td>{{ u.valid_from.strftime('%d.%m.%Y') if u.valid_from else '' }}</td>
