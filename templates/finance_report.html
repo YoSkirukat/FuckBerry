@@ -668,6 +668,21 @@
             const paidDeliveryEl0 = document.getElementById('finPaidDeliveryVal'); if (paidDeliveryEl0) paidDeliveryEl0.textContent = ((Number(data.total_paid_delivery)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const commissionEl = document.getElementById('finCommissionVal'); if (commissionEl) commissionEl.textContent = ((Number(data.total_commission)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
             const wbRealEl = document.getElementById('finWbRealizedVal'); if (wbRealEl) wbRealEl.textContent = ((Number(data.total_wb_realized)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+            // Отображение налога при загрузке из кэша
+            const taxInfoEl = document.getElementById('finTaxInfo');
+            const taxTextEl = document.getElementById('finTaxText');
+            const taxLinkEl = document.getElementById('finTaxLink');
+            if (taxInfoEl && taxTextEl && taxLinkEl) {
+              const taxRate = data.tax_rate;
+              const taxAmount = Number(data.tax_amount) || 0;
+              if (taxRate !== null && taxRate !== undefined) {
+                taxTextEl.textContent = `Налог: ${taxAmount.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2})} руб. (${taxRate.toLocaleString('ru-RU', {minimumFractionDigits: 1, maximumFractionDigits: 1})}%)`;
+                taxLinkEl.style.display = 'none';
+              } else {
+                taxTextEl.textContent = 'Не указана налоговая ставка';
+                taxLinkEl.style.display = 'inline';
+              }
+            }
             const wbDed = ((Number(data.total_commission)||0) + (Number(data.total_acquiring)||0) + (Number(data.total_logistics)||0) + (Number(data.total_storage)||0) + (Number(data.total_other_deductions)||0) + (Number(data.total_acceptance)||0) - (Number(data.total_defect_compensation)||0) - (Number(data.total_damage_compensation)||0) - (Number(data.total_paid_delivery)||0) + (Number(data.total_penalties)||0) + (Number(data.total_additional_payment)||0));
             const wbDedEl = document.getElementById('finWbDedTotal'); if (wbDedEl) wbDedEl.textContent = Number(wbDed).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
             const forPayEl2 = document.getElementById('finForPayVal'); if (forPayEl2) forPayEl2.textContent = (Number(data.total_for_transfer || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
@@ -726,6 +741,21 @@
           if (returnsQtyEl) returnsQtyEl.textContent = (Number(returnsQty).toLocaleString('ru-RU'));
           const wbRealEl = document.getElementById('finWbRealizedVal');
           if (wbRealEl) wbRealEl.textContent = ((Number(data.total_wb_realized)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
+          // Отображение налога
+          const taxInfoEl = document.getElementById('finTaxInfo');
+          const taxTextEl = document.getElementById('finTaxText');
+          const taxLinkEl = document.getElementById('finTaxLink');
+          if (taxInfoEl && taxTextEl && taxLinkEl) {
+            const taxRate = data.tax_rate;
+            const taxAmount = Number(data.tax_amount) || 0;
+            if (taxRate !== null && taxRate !== undefined) {
+              taxTextEl.textContent = `Налог: ${taxAmount.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2})} руб. (${taxRate.toLocaleString('ru-RU', {minimumFractionDigits: 1, maximumFractionDigits: 1})}%)`;
+              taxLinkEl.style.display = 'none';
+            } else {
+              taxTextEl.textContent = 'Не указана налоговая ставка';
+              taxLinkEl.style.display = 'inline';
+            }
+          }
           const logisticsEl = document.getElementById('finLogisticsVal');
           if (logisticsEl) logisticsEl.textContent = ((Number(data.total_logistics)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.');
           const logisticsPctEl = document.getElementById('finLogisticsPct');
@@ -926,6 +956,12 @@
           <div class="card h-100"><div class="card-body">
             <div class="text-muted">WB реализовал</div>
             <div class="fs-6"><strong id="finWbRealizedVal">0</strong></div>
+            <div class="text-muted small mt-2" id="finTaxInfo">
+              <span id="finTaxText">Не указана налоговая ставка</span>
+              <span id="finTaxLink">
+                <a href="/profile">Указать в профиле</a>
+              </span>
+            </div>
           </div></div>
         </div>
         <div class="col-12 col-md-3">

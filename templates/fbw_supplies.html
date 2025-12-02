@@ -159,12 +159,8 @@
                 </td>
                 <td class="text-center text-nowrap">{{ s.fact_date.split(' ')|first if s.fact_date else '' }}</td>
                 <td class="text-center">
-                  {# Вычисляем отображаемый статус с учётом типа "Допринято" #}
-                  {% set _raw_status = s.status or '' %}
-                  {% set _type_tmp = s.type or '' %}
-                  {% if 'Не запланировано' in _raw_status %}{% set _type_tmp = '' %}{% endif %}
-                  {% if (_type_tmp == 'Без коробов') or (not _type_tmp) and ('Не запланировано' not in _raw_status) %}{% set _type_tmp = 'Допринято' %}{% endif %}
-                  {% set st = 'Принято' if _type_tmp == 'Допринято' else _raw_status %}
+                  {# Отображаем реальный статус от WB, а тип "Допринято" выводим отдельным столбцом #}
+                  {% set st = s.status or '' %}
                   {% set cls = '' %}
                   {% if 'Принято' in st %}{% set cls = 'status-accepted' %}{% endif %}
                   {% if 'Отгрузка разрешена' in st %}{% set cls = 'status-allowed' %}{% endif %}
@@ -213,6 +209,8 @@
 // Источник API: https://dev.wildberries.ru/openapi/orders-fbw#tag/Informaciya-o-postavkah/paths/~1api~1v1~1supplies/post
 let supAll = [];
 let rendered = 0;
+// Отступ в "сырых" данных на сервере (учитывает в том числе скрытые черновики)
+let fbwNextOffset = 15; // первая страница всегда строится из первых 15 записей на сервере
 
 // Ленивая подзагрузка количества коробов с ограничением параллелизма
 let __pkgQueue = [];
@@ -355,13 +353,8 @@ function renderChunk(count){
       <td class="text-center text-nowrap">${onlyDate(s.fact_date)}</td>
       <td class="text-center">${(function(){
         const status0 = String(s.status||'');
-        const typeShown = (function(){
-          if (status0.includes('Не запланировано')) return '';
-          const t = String(s.type||'').trim();
-          return (!t || t==='Без коробов') ? 'Допринято' : t;
-        })();
-        const finalStatus = (typeShown === 'Допринято') ? 'Принято' : status0;
-        return `<span class="text-badge ${statusClass(finalStatus)}">${finalStatus}</span>`;
+        // Используем реальный статус от WB для отображения
+        return `<span class="text-badge ${statusClass(status0)}">${status0}</span>`;
       })()}</td>
     `;
     tbody.appendChild(tr);
@@ -395,16 +388,20 @@ function renderChunk(count){
   try{ recomputeStats(); }catch(_){}
 }
 
-async function refresh(){
+async function refresh(silent = false){
   const btn = document.getElementById('refreshBtn');
   const overlay = document.getElementById('loadingOverlay');
   const table = document.getElementById('supTable');
   
-  // Показываем индикатор загрузки
-  btn.disabled = true; 
-  btn.textContent = 'Обновляем...';
+  // Показываем индикатор загрузки всегда (и при автоматическом, и при ручном обновлении)
   if (overlay) overlay.style.display = 'flex';
   if (table) table.classList.add('table-blurred');
+  
+  // Меняем состояние кнопки только при ручном обновлении
+  if (!silent) {
+    btn.disabled = true; 
+    btn.textContent = 'Обновляем...';
+  }
   
   try{
     // Добавляем таймаут для запроса
@@ -440,6 +437,12 @@ async function refresh(){
     renderChunk(15);
     document.getElementById('lastUpdated').textContent = data.updated_at||'';
     try{ recomputeStats(); }catch(_){}
+    // Обновляем серверное смещение для последующей подгрузки
+    if (typeof data.next_offset === 'number') {
+      fbwNextOffset = data.next_offset;
+    } else {
+      fbwNextOffset = supAll.length;
+    }
     // Для уже отрисованных строк: если колонка с коробами '-', запускаем ленивую подгрузку
     try{
       const rows = Array.from(document.querySelectorAll('#supBody tr.supply-row'));
@@ -461,9 +464,12 @@ async function refresh(){
     }
   }
   finally{ 
-    btn.disabled = false; 
-    btn.textContent = 'Обновить';
-    // Скрываем индикатор загрузки
+    // Восстанавливаем состояние кнопки только при ручном обновлении
+    if (!silent) {
+      btn.disabled = false; 
+      btn.textContent = 'Обновить';
+    }
+    // Скрываем индикатор загрузки всегда
     if (overlay) overlay.style.display = 'none';
     if (table) table.classList.remove('table-blurred');
   }
@@ -490,7 +496,7 @@ document.getElementById('loadMoreBtn')?.addEventListener('click', ()=>{
   }
   if (table) table.classList.add('table-blurred');
   
-  const nextOffset = rendered;
+  const nextOffset = fbwNextOffset;
   
   // Добавляем таймаут для запроса
   const controller = new AbortController();
@@ -517,12 +523,28 @@ document.getElementById('loadMoreBtn')?.addEventListener('click', ()=>{
       throw new Error(data.error);
     }
     const items = data.items||[];
-    // Добавляем в общий массив и отрисовываем ровно полученную порцию
-    supAll = supAll.concat(items);
-    renderChunk(items.length);
+    // Проверяем дубликаты по supply_id перед добавлением
+    const existingIds = new Set(supAll.map(s => String(s.supply_id || '')));
+    const newItems = items.filter(item => {
+      const id = String(item.supply_id || '');
+      if (!id || existingIds.has(id)) {
+        return false; // Пропускаем дубликаты и пустые ID
+      }
+      existingIds.add(id); // Добавляем в Set для следующих итераций
+      return true;
+    });
+    // Добавляем только новые записи в общий массив
+    supAll = supAll.concat(newItems);
+    renderChunk(newItems.length);
     try{ recomputeStats(); }catch(_){}
     // Если сервер вернул пусто — дальше блокируем кнопку
     if (items.length === 0) btn.disabled = true;
+    // Обновляем смещение по данным сервера для следующего запроса
+    if (typeof data.next_offset === 'number') {
+      fbwNextOffset = data.next_offset;
+    } else {
+      fbwNextOffset = nextOffset + items.length;
+    }
   }).catch(e=>{ 
     console.error('Ошибка загрузки дополнительных данных:', e);
     alert(`Ошибка загрузки данных: ${e.message}`);
@@ -709,6 +731,10 @@ document.getElementById('supBody')?.addEventListener('click', async (e)=>{
       if (data && Array.isArray(data.items)) {
         supAll = data.items;
         if (moreBtn) moreBtn.disabled = false; // всегда активна, даже если в кэше только 10
+        // Сохраняем next_offset от сервера для корректной подгрузки
+        if (typeof data.next_offset === 'number') {
+          fbwNextOffset = data.next_offset;
+        }
       }
     }).catch(()=>{});
     // Ленивая подзагрузка количества коробов для уже отрисованных строк
@@ -765,6 +791,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Функция для загрузки кэшированных данных
 async function loadCachedData() {
+  let hasCachedData = false;
   try {
     const res = await fetch('/api/fbw/supplies?cached=1', {
       method: 'GET',
@@ -784,15 +811,18 @@ async function loadCachedData() {
         renderChunk(15);
         document.getElementById('lastUpdated').textContent = data.updated_at || '';
         try { recomputeStats(); } catch(_) {}
-        return; // Успешно загрузили кэшированные данные
+        hasCachedData = true;
       }
     }
   } catch (e) {
     console.log('Не удалось загрузить кэшированные данные:', e);
   }
   
-  // Если кэшированные данные недоступны, делаем полное обновление
-  refresh();
+  // Всегда запускаем обновление в фоне для получения актуальных данных
+  // Если кэш был загружен, пользователь увидит его сразу, а затем данные обновятся
+  // Если кэша не было, refresh() загрузит данные с сервера
+  // Используем silent=true для автоматического обновления, чтобы не показывать overlay
+  refresh(true);
 }
 
 </script>

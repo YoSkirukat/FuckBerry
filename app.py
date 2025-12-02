@@ -279,6 +279,10 @@ def _ensure_schema_users_validity_columns() -> None:
                         conn.execute(text("ALTER TABLE users ADD COLUMN shipper_address VARCHAR(255)"))
                     if "contact_person" not in cols:
                         conn.execute(text("ALTER TABLE users ADD COLUMN contact_person VARCHAR(255)"))
+                    if "display_name" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR(255)"))
+                    if "tax_rate" not in cols:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN tax_rate REAL"))
                 except Exception:
                     pass
             elif dialect in ("postgresql", "postgres"):
@@ -315,6 +319,10 @@ def _ensure_schema_users_validity_columns() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"))
                 except Exception:
                     pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS tax_rate FLOAT"))
+                except Exception:
+                    pass
             elif dialect in ("mysql", "mariadb"):
                 # MySQL 8.0+ supports IF NOT EXISTS
                 try:
@@ -341,6 +349,18 @@ def _ensure_schema_users_validity_columns() -> None:
                     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS shipper_address VARCHAR(255)"))
                 except Exception:
                     pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS contact_person VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS tax_rate FLOAT"))
+                except Exception:
+                    pass
             else:
                 # Best-effort generic
                 try:
@@ -353,6 +373,10 @@ def _ensure_schema_users_validity_columns() -> None:
                     pass
                 try:
                     conn.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(64)"))
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN tax_rate FLOAT"))
                 except Exception:
                     pass
                 try:
@@ -473,6 +497,33 @@ def _fmt_dt_moscow(value: str | None, with_time: bool = True) -> str:
     return msk.strftime("%d.%m.%Y %H:%M") if with_time else msk.strftime("%d.%m.%Y")
 
 
+def _fbw_status_from_id(status_id: Any) -> str | None:
+    """
+    Преобразует statusID из API Wildberries в текстовый статус согласно документации:
+    1 — Не запланировано
+    2 — Запланировано
+    3 — Отгрузка разрешена
+    4 — Идёт приёмка
+    5 — Принято
+    6 — Отгружено на воротах
+    """
+    if status_id is None:
+        return None
+    try:
+        sid = int(status_id)
+        status_map = {
+            1: "Не запланировано",
+            2: "Запланировано",
+            3: "Отгрузка разрешена",
+            4: "Идёт приёмка",
+            5: "Принято",
+            6: "Отгружено на воротах",
+        }
+        return status_map.get(sid)
+    except (ValueError, TypeError):
+        return None
+
+
 def fetch_fbw_supplies_list(token: str, days_back: int = 90) -> list[dict[str, Any]]:
     if not token:
         return []
@@ -564,29 +615,25 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
     base_list = fetch_fbw_supplies_list(token)
     supplies: list[dict[str, Any]] = []
     
-    # Загружаем кэшированные данные для оптимизации
+    # Загружаем кэшированные данные для оптимизации (используем только вспомогательные поля, не статус)
     cached = load_fbw_supplies_cache() or {}
     cached_items = cached.get("items") or []
-    cached_map = {}
+    cached_map: dict[str, dict[str, Any]] = {}
     for item in cached_items:
         sid = str(item.get("supply_id") or item.get("supplyID") or item.get("supplyId") or item.get("id") or "")
         if sid:
             cached_map[sid] = item
-    
-    for it in base_list[: max(0, int(limit))]:
+    # Идём по всему списку, но набираем не больше `limit` поставок для отображения
+    for it in base_list:
+        if len(supplies) >= max(0, int(limit)):
+            break
         supply_id = it.get("supplyID") or it.get("supplyId") or it.get("id")
         supply_id_str = str(supply_id or "")
         
-        # Проверяем кэш для оптимизации
+        # Проверяем кэш для оптимизации (только вспомогательные поля, статус всегда берём из деталей)
         cached_item = cached_map.get(supply_id_str)
         
-        # Если поставка в кэше и статус "Принято", используем кэшированные данные
-        cached_status = str(cached_item.get("status", "")) if cached_item else ""
-        if cached_item and cached_status and "Принято" in cached_status:
-            supplies.append(cached_item)
-            continue
-            
-        # Для остальных поставок получаем актуальные данные (включая обновление статусов)
+        # Всегда получаем актуальные данные (включая обновление статусов)
         _supplies_api_throttle()
         details = fetch_fbw_supply_details(token, supply_id)
         details = details or {}  # Убеждаемся, что details - это словарь
@@ -594,17 +641,22 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
         create_date = details.get("createDate") or it.get("createDate")
         supply_date = details.get("supplyDate") or it.get("supplyDate")
         fact_date = details.get("factDate") or it.get("factDate")
-        # Извлекаем статус из всех возможных полей (проверяем все варианты)
-        status_name = (
-            details.get("statusName") 
-            or details.get("status") 
-            or details.get("statusText")
-            or it.get("statusName") 
-            or it.get("status")
-            or it.get("statusText")
-            or ""
-        )
-        # Если статус все еще пустой, пытаемся определить его по другим полям
+        # Приоритетно используем statusID из API (самый надёжный источник)
+        status_id = details.get("statusID") or it.get("statusID")
+        status_name = _fbw_status_from_id(status_id)
+        
+        # Если statusID не дал результата, пробуем текстовые поля
+        if not status_name:
+            status_name = (
+                details.get("statusName") 
+                or details.get("status") 
+                or details.get("statusText")
+                or it.get("statusName") 
+                or it.get("status")
+                or it.get("statusText")
+                or ""
+            )
+        # Если статус всё ещё пустой, пытаемся определить его по другим полям
         if not status_name:
             # Проверяем, есть ли factDate - если есть, значит поставка принята
             if fact_date:
@@ -627,11 +679,15 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
                     status_name = "Запланировано"
             else:
                 status_name = "Не запланировано"
-        # Если статус пустой, но есть кэшированный статус (кроме "Принято"), используем его
+        # Если статус пустой, но есть кэшированный статус, можно использовать его как fallback
         if not status_name and cached_item:
             cached_status_val = str(cached_item.get("status", "")).strip()
-            if cached_status_val and "Принято" not in cached_status_val:
+            if cached_status_val:
                 status_name = cached_status_val
+        # Скрываем черновики ("Не запланировано") из результата
+        if "Не запланировано" in str(status_name or ""):
+            continue
+
         warehouse_name = details.get("warehouseName") or it.get("warehouseName") or ""
         # Обработка типа поставки: если boxTypeName отсутствует, используем boxTypeID и преобразуем в читаемое название
         box_type = details.get("boxTypeName") or it.get("boxTypeName")
@@ -677,14 +733,16 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
     base_list = fetch_fbw_supplies_list(token)
     if offset < 0:
         offset = 0
+    # offset/limit считаются по *исходному* списку (включая черновики),
+    # но для отображения мы будем отбрасывать "Не запланировано".
     end = offset + max(0, int(limit))
     slice_ids = base_list[offset:end]
     supplies: list[dict[str, Any]] = []
     
-    # Загружаем кэшированные данные для оптимизации
+    # Загружаем кэшированные данные для оптимизации (используем только вспомогательные поля, не статус)
     cached = load_fbw_supplies_cache() or {}
     cached_items = cached.get("items") or []
-    cached_map = {}
+    cached_map: dict[str, dict[str, Any]] = {}
     for item in cached_items:
         sid = str(item.get("supply_id") or item.get("supplyID") or item.get("supplyId") or item.get("id") or "")
         if sid:
@@ -694,33 +752,32 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
         supply_id = it.get("supplyID") or it.get("supplyId") or it.get("id")
         supply_id_str = str(supply_id or "")
         
-        # Проверяем кэш для оптимизации
+        # Проверяем кэш для оптимизации (только вспомогательные поля, статус всегда берём из деталей)
         cached_item = cached_map.get(supply_id_str)
         
-        # Если поставка в кэше и статус "Принято", используем кэшированные данные
-        cached_status = str(cached_item.get("status", "")) if cached_item else ""
-        if cached_item and cached_status and "Принято" in cached_status:
-            supplies.append(cached_item)
-            continue
-            
-        # Для остальных поставок получаем актуальные данные (включая обновление статусов)
+        # Всегда получаем актуальные данные (включая обновление статусов)
         _supplies_api_throttle()
         details = fetch_fbw_supply_details(token, supply_id)
         details = details or {}  # Убеждаемся, что details - это словарь
         create_date = details.get("createDate") or it.get("createDate")
         supply_date = details.get("supplyDate") or it.get("supplyDate")
         fact_date = details.get("factDate") or it.get("factDate")
-        # Извлекаем статус из всех возможных полей (проверяем все варианты)
-        status_name = (
-            details.get("statusName") 
-            or details.get("status") 
-            or details.get("statusText")
-            or it.get("statusName") 
-            or it.get("status")
-            or it.get("statusText")
-            or ""
-        )
-        # Если статус все еще пустой, пытаемся определить его по другим полям
+        # Приоритетно используем statusID из API (самый надёжный источник)
+        status_id = details.get("statusID") or it.get("statusID")
+        status_name = _fbw_status_from_id(status_id)
+        
+        # Если statusID не дал результата, пробуем текстовые поля
+        if not status_name:
+            status_name = (
+                details.get("statusName") 
+                or details.get("status") 
+                or details.get("statusText")
+                or it.get("statusName") 
+                or it.get("status")
+                or it.get("statusText")
+                or ""
+            )
+        # Если статус всё ещё пустой, пытаемся определить его по другим полям
         if not status_name:
             # Проверяем, есть ли factDate - если есть, значит поставка принята
             if fact_date:
@@ -743,10 +800,10 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
                     status_name = "Запланировано"
             else:
                 status_name = "Не запланировано"
-        # Если статус пустой, но есть кэшированный статус (кроме "Принято"), используем его
+        # Если статус пустой, но есть кэшированный статус, можно использовать его как fallback
         if not status_name and cached_item:
             cached_status_val = str(cached_item.get("status", "")).strip()
-            if cached_status_val and "Принято" not in cached_status_val:
+            if cached_status_val:
                 status_name = cached_status_val
         warehouse_name = details.get("warehouseName") or it.get("warehouseName") or ""
         # Обработка типа поставки: если boxTypeName отсутствует, используем boxTypeID и преобразуем в читаемое название
@@ -1733,6 +1790,7 @@ class User(UserMixin, db.Model):
     shipper_address = db.Column(db.String(255), nullable=True)
     contact_person = db.Column(db.String(255), nullable=True)
     display_name = db.Column(db.String(255), nullable=True)
+    tax_rate = db.Column(db.Float, nullable=True)
 
 
 class Notification(db.Model):
@@ -4316,43 +4374,50 @@ def index():
         # Cache info
         cache_info=cache_info,
     )
+def _filter_fbw_display_items(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """
+    Фильтрует список поставок FBW для отображения в UI:
+    - скрываем поставки со статусом "Не запланировано" (черновики).
+    """
+    if not items:
+        return []
+    result: list[dict[str, Any]] = []
+    for it in items:
+        try:
+            status = str((it or {}).get("status") or "")
+            if "Не запланировано" in status:
+                continue
+            result.append(it)
+        except Exception:
+            # На всякий случай не скрываем запись, если что-то пошло не так
+            result.append(it)
+    return result
+
+
 @app.route("/fbw", methods=["GET"]) 
 @login_required
 def fbw_supplies_page():
+    """
+    Рендерит страницу поставок FBW сразу, без ожидания API запросов.
+    Данные загружаются в фоне через JavaScript после открытия страницы.
+    """
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     error = None
     supplies: list[dict[str, Any]] = []
     generated_at = ""
-    # Load from cache first; only refresh by button
-    # Но всегда обновляем статусы через fetch_fbw_last_supplies, чтобы они были актуальными
+    
+    # Загружаем только кэш для быстрого начального отображения (если есть)
+    # Не делаем синхронных запросов к API - это будет делаться в фоне через JavaScript
     cached = load_fbw_supplies_cache() or {}
     if cached and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None):
-        # Используем кэш только как fallback, но всегда обновляем через API для актуальных статусов
+        supplies = cached.get("items", [])
         generated_at = cached.get("updated_at", "")
-    if token:
-        try:
-            # Всегда получаем актуальные данные с обновленными статусами
-            supplies = fetch_fbw_last_supplies(token, limit=15)
-            generated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
-            save_fbw_supplies_cache({"items": supplies, "updated_at": generated_at, "next_offset": 15, "_user_id": current_user.id if current_user.is_authenticated else None})
-        except requests.HTTPError as http_err:
-            error = f"Ошибка API: {http_err.response.status_code}"
-            # В случае ошибки используем кэш как fallback
-            if not supplies and cached:
-                supplies = cached.get("items", [])
-                generated_at = cached.get("updated_at", "")
-        except Exception as exc:  # noqa: BLE001
-            error = f"Ошибка: {exc}"
-            # В случае ошибки используем кэш как fallback
-            if not supplies and cached:
-                supplies = cached.get("items", [])
-                generated_at = cached.get("updated_at", "")
-    else:
+    
+    if not token:
         error = "Укажите API токен в профиле"
-        # Если нет токена, используем кэш
-        if cached:
-            supplies = cached.get("items", [])
-            generated_at = cached.get("updated_at", "")
+
+    # Скрываем черновики ("Не запланировано") из списка для отображения
+    supplies = _filter_fbw_display_items(supplies)
 
     return render_template(
         "fbw_supplies.html",
@@ -5447,8 +5512,11 @@ def api_fbw_supplies():
     if request.args.get("cached"):
         cached = load_fbw_supplies_cache() or {}
         items = cached.get("items") or []
+        # Скрываем черновики ("Не запланировано") из ответа API
+        items = _filter_fbw_display_items(items)
         updated_at = cached.get("updated_at", "")
-        return jsonify({"items": items, "updated_at": updated_at})
+        next_offset = cached.get("next_offset", len(items))
+        return jsonify({"items": items, "updated_at": updated_at, "next_offset": next_offset})
 
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
@@ -5473,6 +5541,9 @@ def api_fbw_supplies():
         # Это делаем только для первой страницы, чтобы не замедлять загрузку
         if offset <= 0:
             items = _preload_package_counts(token, items)
+
+        # Скрываем черновики ("Не запланировано") из списка
+        items = _filter_fbw_display_items(items)
         
         updated_at = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M")
         if offset <= 0:
@@ -6233,6 +6304,29 @@ def profile_shipping():
     except Exception:
         db.session.rollback()
         flash("Ошибка сохранения реквизитов")
+    return redirect(url_for("profile"))
+
+
+@app.route("/profile/tax-rate", methods=["POST"]) 
+@login_required
+def profile_tax_rate():
+    tax_rate_str = request.form.get("tax_rate", "").strip()
+    try:
+        if tax_rate_str:
+            tax_rate = float(tax_rate_str)
+            if tax_rate < 0 or tax_rate > 100:
+                flash("Налоговая ставка должна быть от 0 до 100%")
+                return redirect(url_for("profile"))
+            current_user.tax_rate = tax_rate
+        else:
+            current_user.tax_rate = None
+        db.session.commit()
+        flash("Налоговая ставка сохранена")
+    except ValueError:
+        flash("Ошибка: неверное значение налоговой ставки")
+    except Exception:
+        db.session.rollback()
+        flash("Ошибка сохранения налоговой ставки")
     return redirect(url_for("profile"))
 
 
@@ -7809,38 +7903,6 @@ def api_report_finance():
                 pass
         date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
         date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
-        # Save last viewed period and last computed metrics/rows to restore on page reload
-        try:
-            save_last_results({
-                "finance_date_from": req_from,
-                "finance_date_to": req_to,
-                "finance_rows": raw,
-                "finance_metrics": {
-                    "total_qty": int(total_qty),
-                    "total_sum": round(total_sum, 2),
-                    "total_logistics": round(total_logistics, 2),
-                    "total_storage": round(total_storage, 2),
-                    "total_acceptance": round(total_acceptance, 2),
-                    "total_for_pay": round(total_for_pay, 2),
-                    "total_buyouts": round(total_buyouts, 2),
-                    "total_returns": round(total_returns, 2),
-                    "revenue": round(revenue_calc, 2),
-                    "total_commission": round(commission_total, 2),
-                    "total_acquiring": round(total_acquiring, 2),
-                    "total_other_deductions": round(total_other_deductions, 2),
-                    "total_penalties": round(total_penalties, 2),
-                    "total_defect_compensation": round(defect_comp, 2),
-                    "total_damage_compensation": round(damage_comp, 2),
-                    "total_paid_delivery": round(total_paid_delivery, 2),
-                    "total_additional_payment": round(total_additional_payment, 2),
-                    "total_deductions": round(total_deductions, 2),
-                    "total_for_transfer": round(total_for_transfer, 2),
-                    "date_from_fmt": date_from_fmt,
-                    "date_to_fmt": date_to_fmt,
-                }
-            })
-        except Exception:
-            pass
         revenue_calc = total_buyouts - total_returns
         defect_comp = x1 + x2 - x3 - x4 + x5 - x6 + x7 - x8
         total_wb_realized = wbr_plus - wbr_minus
@@ -7882,6 +7944,49 @@ def api_report_finance():
         
         total_for_transfer = revenue_calc - total_deductions + e3_correction
         
+        # Расчет налога от суммы "WB реализовал"
+        tax_amount = 0.0
+        tax_rate = None
+        if current_user.tax_rate is not None:
+            tax_rate = float(current_user.tax_rate)
+            tax_amount = (total_wb_realized * tax_rate) / 100.0
+        
+        # Save last viewed period and last computed metrics/rows to restore on page reload
+        try:
+            save_last_results({
+                "finance_date_from": req_from,
+                "finance_date_to": req_to,
+                "finance_rows": raw,
+                "finance_metrics": {
+                    "total_qty": int(total_qty),
+                    "total_sum": round(total_sum, 2),
+                    "total_logistics": round(total_logistics, 2),
+                    "total_storage": round(total_storage, 2),
+                    "total_acceptance": round(total_acceptance, 2),
+                    "total_for_pay": round(total_for_pay, 2),
+                    "total_buyouts": round(total_buyouts, 2),
+                    "total_returns": round(total_returns, 2),
+                    "revenue": round(revenue_calc, 2),
+                    "total_wb_realized": round(total_wb_realized, 2),
+                    "total_commission": round(commission_total, 2),
+                    "total_acquiring": round(total_acquiring, 2),
+                    "total_other_deductions": round(total_other_deductions, 2),
+                    "total_penalties": round(total_penalties, 2),
+                    "total_defect_compensation": round(defect_comp, 2),
+                    "total_damage_compensation": round(damage_comp, 2),
+                    "total_paid_delivery": round(total_paid_delivery, 2),
+                    "total_additional_payment": round(total_additional_payment, 2),
+                    "total_deductions": round(total_deductions, 2),
+                    "total_for_transfer": round(total_for_transfer, 2),
+                    "tax_amount": round(tax_amount, 2),
+                    "tax_rate": tax_rate,
+                    "date_from_fmt": date_from_fmt,
+                    "date_to_fmt": date_to_fmt,
+                }
+            })
+        except Exception:
+            pass
+        
         return jsonify({
             "rows": raw,
             "total_qty": int(total_qty),
@@ -7905,6 +8010,8 @@ def api_report_finance():
             "total_additional_payment": round(total_additional_payment, 2),
             "total_deductions": round(total_deductions, 2),
             "total_for_transfer": round(total_for_transfer, 2),
+            "tax_amount": round(tax_amount, 2),
+            "tax_rate": tax_rate,
             "date_from_fmt": date_from_fmt,
             "date_to_fmt": date_to_fmt,
         }), 200
