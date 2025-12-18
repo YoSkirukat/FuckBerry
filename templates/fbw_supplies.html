@@ -466,8 +466,8 @@ async function refresh(silent = false){
   finally{ 
     // Восстанавливаем состояние кнопки только при ручном обновлении
     if (!silent) {
-      btn.disabled = false; 
-      btn.textContent = 'Обновить';
+    btn.disabled = false; 
+    btn.textContent = 'Обновить';
     }
     // Скрываем индикатор загрузки всегда
     if (overlay) overlay.style.display = 'none';

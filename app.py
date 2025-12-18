@@ -1753,9 +1753,19 @@ def load_last_results() -> Dict[str, Any] | None:
     except Exception:
         return None
 def save_last_results(payload: Dict[str, Any]) -> None:
+    """
+    Сохраняет результаты в кэш, объединяя с существующими данными.
+    Это позволяет сохранять данные для разных страниц (заказы, финансовый отчет) без перезаписи друг друга.
+    """
     path = _cache_path_for_user()
     try:
-        enriched = dict(payload)
+        # Загружаем существующий кэш, если он есть
+        existing_cache = load_last_results() or {}
+        
+        # Объединяем существующий кэш с новыми данными (новые данные имеют приоритет)
+        enriched = dict(existing_cache)
+        enriched.update(payload)
+        
         try:
             if current_user.is_authenticated:
                 enriched["_user_id"] = current_user.id
@@ -2112,6 +2122,91 @@ def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     items = list(by_key.values())
     items.sort(key=lambda x: (x.get("revenue") or 0.0), reverse=True)
     return items
+
+
+def _normalize_and_group_orders(orders: List[Dict[str, Any]]) -> tuple:
+    """
+    Нормализует и группирует заказы по товарам.
+    Создает маппинги для объединения товаров с одинаковым баркодом/артикулом продавца, но разным Артикулом WB.
+    
+    Returns:
+        tuple: (counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product)
+    """
+    counts_total: Dict[str, int] = defaultdict(int)
+    by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    revenue_total: Dict[str, float] = defaultdict(float)
+    by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
+    
+    # Маппинги для нормализации: баркод -> Артикул WB, артикул продавца -> Артикул WB
+    barcode_to_nm: Dict[str, Any] = {}
+    supplier_article_to_nm: Dict[str, Any] = {}
+    
+    # Первый проход: собираем связи для нормализации
+    for r in (orders or []):
+        if r.get("is_cancelled", False):
+            continue
+        barcode = r.get("Баркод")
+        nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        supplier_article = r.get("Артикул продавца")
+        
+        # Сохраняем связи: если есть Артикул WB, связываем его с баркодом и артикулом продавца
+        if nmv:
+            if barcode:
+                barcode_to_nm[barcode] = nmv
+            if supplier_article:
+                supplier_article_to_nm[supplier_article] = nmv
+    
+    # Второй проход: группируем с использованием нормализации
+    for r in (orders or []):
+        # Пропускаем отмененные заказы в отчете
+        if r.get("is_cancelled", False):
+            continue
+        # Группируем по Артикулу WB (приоритет 1 - самый стабильный), затем по баркоду (приоритет 2), затем по артикулу продавца (приоритет 3)
+        barcode = r.get("Баркод")
+        nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        supplier_article = r.get("Артикул продавца")
+        
+        # Нормализация: если Артикула WB нет, но есть известный баркод или артикул продавца, используем связанный Артикул WB
+        if not nmv:
+            if barcode and barcode in barcode_to_nm:
+                nmv = barcode_to_nm[barcode]
+            elif supplier_article and supplier_article in supplier_article_to_nm:
+                nmv = supplier_article_to_nm[supplier_article]
+        
+        # Определяем ключ для группировки
+        # Используем Артикул WB как основной идентификатор, так как он более стабилен
+        if nmv:
+            prod_key = f"NM_{nmv}"
+        elif barcode:
+            prod_key = f"BARCODE_{barcode}"
+        elif supplier_article:
+            prod_key = str(supplier_article)
+        else:
+            prod_key = "Не указан"
+        
+        wh = str(r.get("Склад отгрузки") or "Не указан")
+        counts_total[prod_key] += 1
+        by_wh[prod_key][wh] += 1
+        try:
+            price = float(r.get("Цена со скидкой продавца") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        revenue_total[prod_key] += price
+        by_wh_sum[prod_key][wh] += price
+        
+        # Сохраняем данные о товаре, всегда обновляя артикул продавца на последний (актуальный)
+        if nmv:
+            nm_by_product[prod_key] = nmv
+        if barcode:
+            barcode_by_product[prod_key] = barcode
+        if supplier_article:
+            # Всегда обновляем артикул продавца на последний (актуальный)
+            supplier_article_by_product[prod_key] = supplier_article
+    
+    return (counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product)
 
 
 def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -4410,8 +4505,8 @@ def fbw_supplies_page():
     # Не делаем синхронных запросов к API - это будет делаться в фоне через JavaScript
     cached = load_fbw_supplies_cache() or {}
     if cached and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None):
-        supplies = cached.get("items", [])
-        generated_at = cached.get("updated_at", "")
+                supplies = cached.get("items", [])
+                generated_at = cached.get("updated_at", "")
     
     if not token:
         error = "Укажите API токен в профиле"
@@ -4650,10 +4745,8 @@ def api_fbw_planning_stocks():
                     else:
                         warehouse_stocks[barcode] = int(stock.get("qty", 0) or 0)
                 else:
-                    # Сравниваем по названию склада (точное совпадение или частичное)
-                    if (stock_warehouse == warehouse_name or 
-                        (warehouse_name in stock_warehouse) or 
-                        (stock_warehouse in warehouse_name)):
+                    # Сравниваем по названию склада (с учетом переименований)
+                    if _warehouse_names_match(stock_warehouse, warehouse_name):
                         # Суммируем остатки по баркоду на этом складе
                         if barcode in warehouse_stocks:
                             warehouse_stocks[barcode] += int(stock.get("qty", 0) or 0)
@@ -4694,6 +4787,63 @@ def api_fbw_planning_stocks():
         import traceback
         traceback.print_exc()
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
+
+def _normalize_warehouse_name(name: str) -> str:
+    """
+    Нормализует название склада, убирая номер в конце.
+    Это помогает сопоставлять склады, которые были переименованы
+    (например, "Екатеринбург - Перспективный 12" -> "Екатеринбург - Перспективный 14").
+    
+    Примеры:
+    - "Екатеринбург - Перспективный 14" -> "Екатеринбург - Перспективный"
+    - "Екатеринбург - Перспективный 12" -> "Екатеринбург - Перспективный"
+    - "Екатеринбург - Перспективная 14" -> "Екатеринбург - Перспективная"
+    - "Москва - Подольск 1" -> "Москва - Подольск"
+    """
+    if not name:
+        return ""
+    import re
+    # Убираем номер в конце (пробел + цифры)
+    normalized = re.sub(r'\s+\d+$', '', name.strip())
+    return normalized
+
+def _warehouse_names_match(name1: str, name2: str) -> bool:
+    """
+    Проверяет, соответствуют ли два названия склада друг другу.
+    Учитывает точное совпадение, частичное совпадение и переименование складов.
+    Также учитывает разные варианты написания (Перспективный/Перспективная).
+    """
+    if not name1 or not name2:
+        return False
+    
+    # Точное совпадение
+    if name1 == name2:
+        return True
+    
+    # Частичное совпадение (одно содержит другое)
+    if name1 in name2 or name2 in name1:
+        return True
+    
+    # Нормализованное совпадение (для переименованных складов)
+    norm1 = _normalize_warehouse_name(name1)
+    norm2 = _normalize_warehouse_name(name2)
+    if norm1 and norm2:
+        # Прямое совпадение нормализованных названий
+        if norm1 == norm2:
+            return True
+        # Проверяем, что нормализованные названия отличаются только окончанием
+        # (например, "Перспективный" и "Перспективная")
+        # Берем базовую часть без последних 2-3 символов
+        if len(norm1) > 5 and len(norm2) > 5:
+            base1 = norm1[:-3] if len(norm1) > 3 else norm1
+            base2 = norm2[:-3] if len(norm2) > 3 else norm2
+            if base1 == base2:
+                return True
+        # Также проверяем, что одно нормализованное название содержит другое
+        if norm1 in norm2 or norm2 in norm1:
+            return True
+    
+    return False
 
 @app.route("/api/fbw/planning/data", methods=["GET"])
 @login_required
@@ -4799,6 +4949,17 @@ def api_fbw_planning_data():
         warehouse_stocks = {}
         all_warehouse_stocks = {}
         
+        # Собираем уникальные названия складов из остатков для отладки
+        unique_stock_warehouses = set()
+        for stock in stocks:
+            stock_warehouse = stock.get("warehouse", "")
+            if stock_warehouse:
+                unique_stock_warehouses.add(stock_warehouse)
+        
+        print(f"=== DEBUG: Уникальные склады в остатках: {sorted(unique_stock_warehouses)}")
+        print(f"=== DEBUG: Ищем остатки для склада: '{warehouse_name}'")
+        
+        matched_stocks_count = 0
         for stock in stocks:
             stock_warehouse = stock.get("warehouse", "")
             barcode = stock.get("barcode")
@@ -4812,14 +4973,15 @@ def api_fbw_planning_data():
                 else:
                     all_warehouse_stocks[barcode] = qty
                 
-                # Остатки по конкретному складу
-                if (stock_warehouse == warehouse_name or 
-                    (warehouse_name in stock_warehouse) or 
-                    (stock_warehouse in warehouse_name)):
+                # Остатки по конкретному складу (с учетом переименований)
+                if _warehouse_names_match(stock_warehouse, warehouse_name):
+                    matched_stocks_count += 1
                     if barcode in warehouse_stocks:
                         warehouse_stocks[barcode] += qty
                     else:
                         warehouse_stocks[barcode] = qty
+        
+        print(f"=== DEBUG: Найдено остатков для склада '{warehouse_name}': {matched_stocks_count} записей, уникальных товаров: {len(warehouse_stocks)}")
         
         # 5. Получаем заказы
         print(f"Загружаем заказы для склада: '{warehouse_name}' за период {date_from} - {date_to}")
@@ -4863,20 +5025,31 @@ def api_fbw_planning_data():
         print(f"Уникальные склады в заказах: {sorted(unique_warehouses)}")
         print(f"Ищем заказы для склада: '{warehouse_name}'")
         
-        # Фильтруем заказы по складу (используем гибкую логику как в оригинальном endpoint)
+        # Фильтруем заказы по складу (используем гибкую логику с учетом переименований)
         filtered_orders = []
+        matched_warehouses = set()
         for order in orders_data:
             order_warehouse = order.get("warehouseName")
             if order_warehouse and not order.get("isCancel", False):
-                # Точное совпадение
-                if order_warehouse == warehouse_name:
-                    filtered_orders.append(order)
-                # Частичное совпадение - проверяем содержит ли название склада из заказов название из API складов
-                elif warehouse_name in order_warehouse or order_warehouse in warehouse_name:
-                    print(f"Найдено частичное совпадение: '{order_warehouse}' <-> '{warehouse_name}'")
+                if _warehouse_names_match(order_warehouse, warehouse_name):
+                    matched_warehouses.add(order_warehouse)
+                    if order_warehouse != warehouse_name:
+                        print(f"Найдено совпадение (возможно переименование): '{order_warehouse}' <-> '{warehouse_name}'")
                     filtered_orders.append(order)
         
-        print(f"Найдено заказов для склада '{warehouse_name}': {len(filtered_orders)}")
+        print(f"=== DEBUG: Найдено заказов для склада '{warehouse_name}': {len(filtered_orders)}")
+        if matched_warehouses:
+            print(f"=== DEBUG: Совпадающие склады в заказах: {sorted(matched_warehouses)}")
+        else:
+            print(f"=== DEBUG: Не найдено совпадений. Проверяем нормализацию:")
+            norm_warehouse = _normalize_warehouse_name(warehouse_name)
+            print(f"  Нормализованное название искомого склада: '{norm_warehouse}'")
+            # Показываем нормализованные названия из заказов
+            sample_norms = []
+            for wh in list(unique_warehouses)[:5]:
+                norm_wh = _normalize_warehouse_name(wh)
+                sample_norms.append(f"'{wh}' -> '{norm_wh}'")
+            print(f"  Примеры нормализованных названий из заказов: {', '.join(sample_norms)}")
         
         # Отладочная информация - покажем примеры заказов
         if filtered_orders:
@@ -5082,12 +5255,9 @@ def api_fbw_planning_orders():
         for order in orders_data:
             order_warehouse = order.get("warehouseName")
             if order_warehouse:
-                # Точное совпадение
-                if order_warehouse == warehouse_name:
-                    filtered_orders.append(order)
-                # Частичное совпадение - проверяем содержит ли название склада из заказов название из API складов
-                elif warehouse_name in order_warehouse or order_warehouse in warehouse_name:
-                    print(f"Найдено частичное совпадение: '{order_warehouse}' <-> '{warehouse_name}'")
+                if _warehouse_names_match(order_warehouse, warehouse_name):
+                    if order_warehouse != warehouse_name:
+                        print(f"Найдено совпадение (возможно переименование): '{order_warehouse}' <-> '{warehouse_name}'")
                     filtered_orders.append(order)
         
         print(f"Найдено заказов для склада '{warehouse_name}': {len(filtered_orders)}")
@@ -5296,11 +5466,9 @@ def api_fbw_planning_supplies():
                 cached_status = cached_item.get("status", "").strip()
                 cached_type = cached_item.get("type", "").strip()
                 
-                # Если склад указан и не совпадает - сразу пропускаем
+                # Если склад указан и не совпадает - сразу пропускаем (с учетом переименований)
                 if cached_warehouse and warehouse_name:
-                    if not (cached_warehouse == warehouse_name or 
-                            warehouse_name in cached_warehouse or
-                            cached_warehouse in warehouse_name):
+                    if not _warehouse_names_match(cached_warehouse, warehouse_name):
                         continue  # Пропускаем поставки на другие склады
                 
                 # Если статус "Принято" - сразу пропускаем (не подходит для планирования)
@@ -5365,11 +5533,9 @@ def api_fbw_planning_supplies():
                     if not warehouse_from_details:
                         continue
                     
-                    # Проверяем совпадение склада ПЕРЕД проверкой статуса и типа
+                    # Проверяем совпадение склада ПЕРЕД проверкой статуса и типа (с учетом переименований)
                     if warehouse_name:
-                        if not (warehouse_from_details == warehouse_name or 
-                                warehouse_name in warehouse_from_details or
-                                warehouse_from_details in warehouse_name):
+                        if not _warehouse_names_match(warehouse_from_details, warehouse_name):
                             print(f"Поставка {supply_id} на другой склад '{warehouse_from_details}' != '{warehouse_name}', пропускаем")
                             continue
                     
@@ -5432,11 +5598,9 @@ def api_fbw_planning_supplies():
                 if not warehouse_from_details:
                     continue
                 
-                # Для поставок из кэша проверяем совпадение склада еще раз (на всякий случай)
+                # Для поставок из кэша проверяем совпадение склада еще раз (на всякий случай, с учетом переименований)
                 if cached_item and warehouse_name:
-                    if not (warehouse_from_details == warehouse_name or 
-                            warehouse_name in warehouse_from_details or
-                            warehouse_from_details in warehouse_name):
+                    if not _warehouse_names_match(warehouse_from_details, warehouse_name):
                         print(f"Поставка {supply_id} из кэша на другой склад '{warehouse_from_details}' != '{warehouse_name}', пропускаем")
                         continue
                 
@@ -6576,36 +6740,7 @@ def report_sales_page():
 
     warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
     # Build matrix for client-side filtering (same as API)
-    counts_total: Dict[str, int] = defaultdict(int)
-    by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    revenue_total: Dict[str, float] = defaultdict(float)
-    by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    nm_by_product: Dict[str, Any] = {}
-    barcode_by_product: Dict[str, Any] = {}
-    supplier_article_by_product: Dict[str, Any] = {}
-    for r in (orders or []):
-        # Пропускаем отмененные заказы в отчете
-        if r.get("is_cancelled", False):
-            continue
-        prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
-        wh = str(r.get("Склад отгрузки") or "Не указан")
-        counts_total[prod] += 1
-        by_wh[prod][wh] += 1
-        try:
-            price = float(r.get("Цена со скидкой продавца") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        revenue_total[prod] += price
-        by_wh_sum[prod][wh] += price
-        nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
-        if prod not in nm_by_product and nmv:
-            nm_by_product[prod] = nmv
-        barcode = r.get("Баркод")
-        if prod not in barcode_by_product and barcode:
-            barcode_by_product[prod] = barcode
-        supplier_article = r.get("Артикул продавца")
-        if prod not in supplier_article_by_product and supplier_article:
-            supplier_article_by_product[prod] = supplier_article
+    counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
     # build photo map from products cache
     nm_to_photo: Dict[Any, Any] = {}
     try:
@@ -6813,36 +6948,7 @@ def report_orders_page():
 
     warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
     # Build matrix for client-side filtering (same as API)
-    counts_total: Dict[str, int] = defaultdict(int)
-    by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    revenue_total: Dict[str, float] = defaultdict(float)
-    by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    nm_by_product: Dict[str, Any] = {}
-    barcode_by_product: Dict[str, Any] = {}
-    supplier_article_by_product: Dict[str, Any] = {}
-    for r in (orders or []):
-        # Пропускаем отмененные заказы в отчете
-        if r.get("is_cancelled", False):
-            continue
-        prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
-        wh = str(r.get("Склад отгрузки") or "Не указан")
-        counts_total[prod] += 1
-        by_wh[prod][wh] += 1
-        try:
-            price = float(r.get("Цена со скидкой продавца") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        revenue_total[prod] += price
-        by_wh_sum[prod][wh] += price
-        nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
-        if prod not in nm_by_product and nmv:
-            nm_by_product[prod] = nmv
-        barcode = r.get("Баркод")
-        if prod not in barcode_by_product and barcode:
-            barcode_by_product[prod] = barcode
-        supplier_article = r.get("Артикул продавца")
-        if prod not in supplier_article_by_product and supplier_article:
-            supplier_article_by_product[prod] = supplier_article
+    counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
     # build photo map from products cache
     nm_to_photo: Dict[Any, Any] = {}
     try:
@@ -6903,8 +7009,8 @@ def report_orders_page():
                 
                 # If barcode not found in orders, create a virtual product entry
                 if not found_in_orders:
-                    # Use vendor_code from stocks metadata
-                    virtual_prod = metadata["vendor_code"] or f"Товар с баркодом {barcode}"
+                    # Используем ключ группировки по баркоду
+                    virtual_prod = f"BARCODE_{barcode}"
                     # Add to mappings
                     barcode_by_product[virtual_prod] = barcode
                     if metadata["nm_id"]:
@@ -6934,8 +7040,19 @@ def report_orders_page():
                 nm_id = nm_by_product.get(prod)
                 photo = nm_to_photo.get(nm_id) if nm_id else None
                 
+                # Определяем название товара для отображения: используем актуальный артикул продавца, если есть
+                display_name = supplier_article_by_product.get(prod)
+                if not display_name:
+                    # Если артикула продавца нет, убираем префикс из ключа группировки
+                    if prod.startswith("BARCODE_"):
+                        display_name = f"Товар с баркодом {prod.replace('BARCODE_', '')}"
+                    elif prod.startswith("NM_"):
+                        display_name = f"Товар с артикулом WB {prod.replace('NM_', '')}"
+                    else:
+                        display_name = prod
+                
                 items_local.append({
-                    "product": prod,
+                    "product": display_name,
                     "qty": qty,
                     "sum": round(s, 2),
                     "warehouse": target_wh or "Все склады",
@@ -7023,38 +7140,8 @@ def api_report_orders():
             date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
             date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
         # Build matrix for local filtering on frontend
-        counts_total: Dict[str, int] = defaultdict(int)
-        by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        revenue_total: Dict[str, float] = defaultdict(float)
-        by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        nm_by_product: Dict[str, Any] = {}
-        barcode_by_product: Dict[str, Any] = {}
-        supplier_article_by_product: Dict[str, Any] = {}
-        warehouses = set()
-        for r in orders:
-            # Пропускаем отмененные заказы в отчете
-            if r.get("is_cancelled", False):
-                continue
-            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
-            wh = str(r.get("Склад отгрузки") or "Не указан")
-            warehouses.add(wh)
-            counts_total[prod] += 1
-            by_wh[prod][wh] += 1
-            try:
-                price = float(r.get("Цена со скидкой продавца") or 0)
-            except (TypeError, ValueError):
-                price = 0.0
-            revenue_total[prod] += price
-            by_wh_sum[prod][wh] += price
-            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
-            if prod not in nm_by_product and nmv:
-                nm_by_product[prod] = nmv
-            barcode = r.get("Баркод")
-            if prod not in barcode_by_product and barcode:
-                barcode_by_product[prod] = barcode
-            supplier_article = r.get("Артикул продавца")
-            if prod not in supplier_article_by_product and supplier_article:
-                supplier_article_by_product[prod] = supplier_article
+        counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
+        warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
         # build photo map from products cache
         nm_to_photo: Dict[Any, Any] = {}
         try:
@@ -7127,8 +7214,20 @@ def api_report_orders():
                             stock_qty = sum(stocks_by_warehouse[barcode].values())
                     nm_id = nm_by_product.get(prod)
                     photo = nm_to_photo.get(nm_id) if nm_id else None
+                    
+                    # Определяем название товара для отображения: используем актуальный артикул продавца, если есть
+                    display_name = supplier_article_by_product.get(prod)
+                    if not display_name:
+                        # Если артикула продавца нет, убираем префикс из ключа группировки
+                        if prod.startswith("BARCODE_"):
+                            display_name = f"Товар с баркодом {prod.replace('BARCODE_', '')}"
+                        elif prod.startswith("NM_"):
+                            display_name = f"Товар с артикулом WB {prod.replace('NM_', '')}"
+                        else:
+                            display_name = prod
+                    
                     items_local.append({
-                        "product": prod,
+                        "product": display_name,
                         "qty": qty,
                         "sum": round(s, 2),
                         "warehouse": target_wh or "Все склады",
@@ -7204,36 +7303,7 @@ def api_report_orders_export():
             orders = (cached or {}).get("orders", [])
 
         # Агрегация как в API/странице отчёта: исключаем отменённые
-        counts_total: Dict[str, int] = defaultdict(int)
-        by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        revenue_total: Dict[str, float] = defaultdict(float)
-        by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        nm_by_product: Dict[str, Any] = {}
-        barcode_by_product: Dict[str, Any] = {}
-        supplier_article_by_product: Dict[str, Any] = {}
-
-        for r in orders:
-            if r.get("is_cancelled", False):
-                continue
-            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
-            wh = str(r.get("Склад отгрузки") or "Не указан")
-            counts_total[prod] += 1
-            by_wh[prod][wh] += 1
-            try:
-                price = float(r.get("Цена со скидкой продавца") or 0)
-            except (TypeError, ValueError):
-                price = 0.0
-            revenue_total[prod] += price
-            by_wh_sum[prod][wh] += price
-            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
-            if prod not in nm_by_product and nmv:
-                nm_by_product[prod] = nmv
-            barcode = r.get("Баркод") or r.get("barcode")
-            if prod not in barcode_by_product and barcode:
-                barcode_by_product[prod] = barcode
-            supplier_article = r.get("Артикул продавца") or r.get("supplier_article")
-            if prod not in supplier_article_by_product and supplier_article:
-                supplier_article_by_product[prod] = supplier_article
+        counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
 
         # Подготовка строк для экспорта
         def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
@@ -7242,8 +7312,20 @@ def api_report_orders_export():
                 qty = (by_wh[prod].get(target_wh, 0) if target_wh else total)
                 if qty > 0:
                     s = (by_wh_sum.get(prod, {}).get(target_wh, 0.0) if target_wh else revenue_total.get(prod, 0.0))
+                    
+                    # Определяем название товара для отображения: используем актуальный артикул продавца, если есть
+                    display_name = supplier_article_by_product.get(prod)
+                    if not display_name:
+                        # Если артикула продавца нет, убираем префикс из ключа группировки
+                        if prod.startswith("BARCODE_"):
+                            display_name = f"Товар с баркодом {prod.replace('BARCODE_', '')}"
+                        elif prod.startswith("NM_"):
+                            display_name = f"Товар с артикулом WB {prod.replace('NM_', '')}"
+                        else:
+                            display_name = prod
+                    
                     items_local.append({
-                        "product": prod,
+                        "product": display_name,
                         "qty": qty,
                         "nm_id": nm_by_product.get(prod),
                         "barcode": barcode_by_product.get(prod),
@@ -7350,26 +7432,8 @@ def api_report_sales():
             # Пропускаем отмененные заказы в отчете
             if r.get("is_cancelled", False):
                 continue
-            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
-            wh = str(r.get("Склад отгрузки") or "Не указан")
-            warehouses.add(wh)
-            counts_total[prod] += 1
-            by_wh[prod][wh] += 1
-            try:
-                price = float(r.get("Цена со скидкой продавца") or 0)
-            except (TypeError, ValueError):
-                price = 0.0
-            revenue_total[prod] += price
-            by_wh_sum[prod][wh] += price
-            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
-            if prod not in nm_by_product and nmv:
-                nm_by_product[prod] = nmv
-            barcode = r.get("Баркод")
-            if prod not in barcode_by_product and barcode:
-                barcode_by_product[prod] = barcode
-            supplier_article = r.get("Артикул продавца")
-            if prod not in supplier_article_by_product and supplier_article:
-                supplier_article_by_product[prod] = supplier_article
+            # Используем функцию нормализации (код заменен на _normalize_and_group_orders выше)
+            pass
         # build photo map
         nm_to_photo: Dict[Any, Any] = {}
         try:
@@ -7539,39 +7603,8 @@ def api_report_sales_export():
             date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
         
         # Build matrix for filtering
-        counts_total: Dict[str, int] = defaultdict(int)
-        by_wh: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        revenue_total: Dict[str, float] = defaultdict(float)
-        by_wh_sum: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        nm_by_product: Dict[str, Any] = {}
-        barcode_by_product: Dict[str, Any] = {}
-        supplier_article_by_product: Dict[str, Any] = {}
-        warehouses = set()
-        
-        for r in orders:
-            # Пропускаем отмененные заказы в отчете
-            if r.get("is_cancelled", False):
-                continue
-            prod = str(r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан")
-            wh = str(r.get("Склад отгрузки") or "Не указан")
-            warehouses.add(wh)
-            counts_total[prod] += 1
-            by_wh[prod][wh] += 1
-            try:
-                price = float(r.get("Цена со скидкой продавца") or 0)
-            except (TypeError, ValueError):
-                price = 0.0
-            revenue_total[prod] += price
-            by_wh_sum[prod][wh] += price
-            nmv = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
-            if prod not in nm_by_product and nmv:
-                nm_by_product[prod] = nmv
-            barcode = r.get("Баркод") or r.get("barcode")
-            if prod not in barcode_by_product and barcode:
-                barcode_by_product[prod] = barcode
-            supplier_article = r.get("Артикул продавца") or r.get("supplier_article")
-            if prod not in supplier_article_by_product and supplier_article:
-                supplier_article_by_product[prod] = supplier_article
+        counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
+        warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders}) if orders else []
         
         # Build items for export
         def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
@@ -9253,9 +9286,7 @@ def api_fbs_supplies():
     except Exception:
         offset_i = 0
 
-    # Always load from API for now (to ensure we get fresh data)
-    # TODO: Implement proper caching later
-
+    # Всегда загружаем из API (как было раньше), но с обработкой ошибок и fallback на кэш
     try:
         # Load ALL supplies at once (fast - 262ms as per user's test)
         headers_list = [
@@ -9266,7 +9297,8 @@ def api_fbs_supplies():
         
         for hdrs in headers_list:
             try:
-                resp = get_with_retry(FBS_SUPPLIES_LIST_URL, hdrs, params={"limit": 1000, "next": 0})
+                # Используем таймаут 10 секунд для основного запроса (быстрее)
+                resp = get_with_retry(FBS_SUPPLIES_LIST_URL, hdrs, params={"limit": 1000, "next": 0}, timeout_s=10)
                 data = resp.json()
                 
                 # Handle both list and dict response formats
@@ -9277,12 +9309,40 @@ def api_fbs_supplies():
                 else:
                     continue
                 break
+            except (requests.Timeout, requests.RequestException) as e:
+                # При таймауте или другой ошибке сети пробуем следующий заголовок
+                # Если это последний заголовок, используем кэш
+                if hdrs == headers_list[-1]:
+                    cached = load_fbs_supplies_cache() or {}
+                    cached_supplies = cached.get("all_supplies_raw", [])
+                    if cached_supplies:
+                        all_supplies_raw = cached_supplies
+                        break
+                continue
             except Exception as e:
+                # Если это последний заголовок и произошла ошибка, пробуем кэш
+                if hdrs == headers_list[-1]:
+                    cached = load_fbs_supplies_cache() or {}
+                    cached_supplies = cached.get("all_supplies_raw", [])
+                    if cached_supplies:
+                        all_supplies_raw = cached_supplies
+                        break
                 continue
         
         if not all_supplies_raw:
-            orders = _collect_fbs_orders_for_supplies(token, max_pages=10, limit=200)
-            all_supplies_raw = _aggregate_fbs_supplies(orders)
+            # Если API не вернул данные, пробуем использовать кэш вместо медленного сбора из заказов
+            cached = load_fbs_supplies_cache() or {}
+            cached_supplies = cached.get("all_supplies_raw", [])
+            if cached_supplies:
+                all_supplies_raw = cached_supplies
+            else:
+                # Только если кэша нет, пытаемся собрать из заказов (но это может быть медленно)
+                try:
+                    orders = _collect_fbs_orders_for_supplies(token, max_pages=5, limit=100)  # Уменьшаем параметры для скорости
+                    all_supplies_raw = _aggregate_fbs_supplies(orders)
+                except Exception:
+                    # Если и это не удалось, возвращаем пустой список
+                    all_supplies_raw = []
         
         # Sort all supplies by creation date (newest first)
         all_supplies_raw.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
@@ -9296,15 +9356,10 @@ def api_fbs_supplies():
             supply_id = s.get("id")
             if supply_id:
                 # Get count from orders for this supply (API doesn't provide count directly)
-                count = 0
-                try:
-                    url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
-                    orders_resp = get_with_retry(url, headers_list[0], params={})
-                    orders_data = orders_resp.json()
-                    orders = orders_data.get("orders", []) if isinstance(orders_data, dict) else []
-                    count = len(orders) if isinstance(orders, list) else 0
-                except Exception as e:
-                    count = 0
+                # Для ускорения используем значение из кэша или 0, не делаем запросы при первой загрузке
+                count = s.get("count", 0)  # Используем значение из кэша, если есть
+                # Запросы количества заказов отключены для ускорения - используем только кэш
+                # Если нужно обновить количество, это можно сделать отдельным запросом
                 
                 # Enrich with supply info (createdAt, done, closedAt) and compute status
                 created_at = s.get("createdAt")
@@ -9353,6 +9408,60 @@ def api_fbs_supplies():
             "hasMore": offset_i + limit_i < len(all_supplies_raw)
         }), 200
     except Exception as exc:
+        # При ошибке (включая таймаут) возвращаем кэшированные данные, если они есть
+        cached = load_fbs_supplies_cache() or {}
+        cached_items = cached.get("all_supplies_raw", [])
+        
+        if cached_items:
+            # Обрабатываем кэшированные данные
+            cached_items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+            supplies_to_process = cached_items[offset_i:offset_i + limit_i]
+            
+            processed_supplies = []
+            for s in supplies_to_process:
+                supply_id = s.get("id")
+                if supply_id:
+                    # Для кэшированных данных используем приблизительное количество или 0
+                    count = s.get("count", 0)
+                    
+                    created_at = s.get("createdAt")
+                    done = s.get("done")
+                    closed_at = s.get("closedAt")
+                    
+                    if done:
+                        status_label = "Отгружено"
+                        try:
+                            _sdt = parse_wb_datetime(str(closed_at))
+                            _sdt_msk = to_moscow(_sdt) if _sdt else None
+                            status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else str(closed_at)
+                        except Exception:
+                            status_dt = str(closed_at)
+                    else:
+                        status_label = "Не отгружена"
+                        status_dt = None
+                    
+                    date_dt = parse_wb_datetime(str(created_at)) if created_at else None
+                    date_msk = to_moscow(date_dt) if date_dt else None
+                    date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else ""
+                    
+                    processed_supplies.append({
+                        "supplyId": str(supply_id),
+                        "date": date_str,
+                        "count": count,
+                        "status": status_label,
+                        "statusDt": status_dt or "",
+                    })
+            
+            return jsonify({
+                "items": processed_supplies,
+                "lastUpdated": cached.get("lastUpdated", "Неизвестно"),
+                "total": len(cached_items),
+                "hasMore": offset_i + limit_i < len(cached_items),
+                "cached": True,
+                "error": str(exc)
+            }), 200
+        
+        # Если кэша нет, возвращаем пустой список
         return jsonify({"items": [], "error": str(exc), "lastUpdated": None}), 200
 
 

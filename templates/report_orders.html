@@ -707,6 +707,7 @@
 
     // eslint-disable-next-line
     let reportMatrix = {{ (matrix or []) | tojson | safe }}; // cached matrix for client-side filtering (server-side if уже есть)
+    let productPhotos = {}; // Кэш фото товаров: product -> photo
     async function reloadReport(){
       const form = document.querySelector('form[action="/report/orders"]');
       const btn = document.getElementById('reportLoadBtn');
@@ -733,6 +734,51 @@
         const data = await res.json();
         console.log('DEBUG: reloadReport response:', data);
         reportMatrix = data.matrix || reportMatrix || null;
+        
+        // Сохраняем фото товаров для использования при фильтрации
+        // Сохраняем по ключу группировки из матрицы
+        productPhotos = {};
+        if (reportMatrix) {
+          const nm_by_product = reportMatrix.nm_by_product || {};
+          const barcode_by_product = reportMatrix.barcode_by_product || {};
+          const counts_total = reportMatrix.counts_total || {};
+          
+          // Создаем обратные маппинги: nm_id -> ключ группировки, barcode -> ключ группировки
+          const nm_to_groupKey = {};
+          const barcode_to_groupKey = {};
+          Object.keys(counts_total).forEach(groupKey => {
+            const nm_id = nm_by_product[groupKey];
+            const barcode = barcode_by_product[groupKey];
+            if (nm_id) {
+              // Сохраняем как строку и как число для надежности
+              nm_to_groupKey[String(nm_id)] = groupKey;
+              nm_to_groupKey[Number(nm_id)] = groupKey;
+            }
+            if (barcode) {
+              barcode_to_groupKey[String(barcode)] = groupKey;
+            }
+          });
+          
+          // Сохраняем фото по ключу группировки
+          (data.items || []).forEach(it => {
+            if (it.photo) {
+              // Находим ключ группировки из матрицы
+              let groupKey = null;
+              if (it.nm_id) {
+                // Пробуем найти по nm_id как строке и как числу
+                groupKey = nm_to_groupKey[String(it.nm_id)] || nm_to_groupKey[Number(it.nm_id)];
+              }
+              if (!groupKey && it.barcode) {
+                groupKey = barcode_to_groupKey[String(it.barcode)];
+              }
+              
+              if (groupKey) {
+                productPhotos[groupKey] = it.photo;
+              }
+            }
+          });
+        }
+        
         const tbody = document.getElementById('reportBody');
         tbody.innerHTML = '';
         
@@ -852,30 +898,79 @@
         const dateFrom = form.querySelector('input[name="date_from"]')?.value || '';
         const dateTo = form.querySelector('input[name="date_to"]')?.value || '';
         
-        const items = reportMatrix.map(row => {
-          const bywh = row.by_wh || {};
-          const qty = target ? (bywh[target] || 0) : (row.total || 0);
-          const bywhSum = row.by_wh_sum || {};
-          const sum = target ? (bywhSum[target] || 0) : (row.total_sum || 0);
+        // Преобразуем матрицу в массив товаров
+        const counts_total = reportMatrix.counts_total || {};
+        const by_wh = reportMatrix.by_wh || {};
+        const revenue_total = reportMatrix.revenue_total || {};
+        const by_wh_sum = reportMatrix.by_wh_sum || {};
+        const nm_by_product = reportMatrix.nm_by_product || {};
+        const barcode_by_product = reportMatrix.barcode_by_product || {};
+        const supplier_article_by_product = reportMatrix.supplier_article_by_product || {};
+        const stocks_by_warehouse = reportMatrix.stocks_by_warehouse || {};
+        
+        // Получаем все товары из counts_total
+        const allProducts = Object.keys(counts_total);
+        
+        const items = allProducts.map(product => {
+          // Получаем количество для выбранного склада или общее
+          const bywh = by_wh[product] || {};
+          const qty = target ? (bywh[target] || 0) : (counts_total[product] || 0);
           
-          // Calculate stock quantity for the target warehouse
+          // Получаем сумму для выбранного склада или общую
+          const bywhSum = by_wh_sum[product] || {};
+          const sum = target ? (bywhSum[target] || 0) : (revenue_total[product] || 0);
+          
+          // Получаем остатки для выбранного склада
           let stock_qty = 0;
-          const bywhStock = row.by_wh_stock || {};
-          if (target) {
-            // If specific warehouse selected, sum only for that warehouse
-            for (const [wh_name, wh_qty] of Object.entries(bywhStock)) {
-              if (wh_name === target || 
-                  wh_name.includes(target) || 
-                  target.includes(wh_name)) {
-                stock_qty += wh_qty;
-              }
+          const barcode = barcode_by_product[product];
+          if (barcode && stocks_by_warehouse[barcode]) {
+            if (target) {
+              // Если выбран конкретный склад, берем остаток только с этого склада
+              stock_qty = stocks_by_warehouse[barcode][target] || 0;
+            } else {
+              // Если не выбран склад, суммируем остатки по всем складам
+              stock_qty = Object.values(stocks_by_warehouse[barcode]).reduce((a, b) => a + b, 0);
             }
-          } else {
-            // If no warehouse selected, sum all warehouses
-            stock_qty = Object.values(bywhStock).reduce((a, b) => a + b, 0);
           }
           
-          return { product: row.product, nm_id: row.nm_id, barcode: row.barcode, supplier_article: row.supplier_article, qty, sum, photo: row.photo, stock_qty };
+          // Получаем фото из кэша по ключу группировки
+          // Если не найдено, пробуем найти по nm_id или barcode с префиксами
+          let photo = productPhotos[product] || null;
+          if (!photo && nm_id) {
+            // Пробуем найти фото по nm_id с префиксом NM_
+            photo = productPhotos[`NM_${nm_id}`] || productPhotos[`NM_${String(nm_id)}`] || null;
+          }
+          if (!photo && barcode) {
+            // Пробуем найти фото по barcode с префиксом BARCODE_
+            photo = productPhotos[`BARCODE_${barcode}`] || productPhotos[`BARCODE_${String(barcode)}`] || null;
+          }
+          
+          // Получаем nm_id из матрицы
+          const nm_id = nm_by_product[product] || null;
+          
+          // Определяем название товара для отображения: используем актуальный артикул продавца, если есть
+          let display_name = supplier_article_by_product[product];
+          if (!display_name) {
+            // Если артикула продавца нет, убираем префикс из ключа группировки
+            if (product.startsWith('BARCODE_')) {
+              display_name = `Товар с баркодом ${product.replace('BARCODE_', '')}`;
+            } else if (product.startsWith('NM_')) {
+              display_name = `Товар с артикулом WB ${product.replace('NM_', '')}`;
+            } else {
+              display_name = product;
+            }
+          }
+          
+          return {
+            product: display_name,
+            nm_id: nm_id,
+            barcode: barcode,
+            supplier_article: supplier_article_by_product[product],
+            qty: qty,
+            sum: sum,
+            photo: photo,
+            stock_qty: stock_qty
+          };
         }).filter(it => {
           // Show only items with orders (local filtering doesn't handle show_all)
           return (it.qty || 0) > 0;
