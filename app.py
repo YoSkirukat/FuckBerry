@@ -30,6 +30,7 @@ from collections import defaultdict
 # Long-running progress
 # -----------------------
 ORDERS_PROGRESS: dict[int, dict[str, object]] = {}
+FINANCE_PROGRESS: dict[int, dict[str, object]] = {}
 
 def _set_orders_progress(user_id: int, total: int, done: int, key: str | None = None) -> None:
     try:
@@ -54,11 +55,27 @@ def _clear_orders_progress(user_id: int, key: str | None = None) -> None:
             del ORDERS_PROGRESS[user_id]
     except Exception:
         pass
+
+def _set_finance_progress(user_id: int, current: int, total: int, period: str = "") -> None:
+    try:
+        FINANCE_PROGRESS[user_id] = {"current": current, "total": total, "period": period}
+    except Exception:
+        pass
+
+def _get_finance_progress(user_id: int) -> dict[str, object]:
+    return FINANCE_PROGRESS.get(user_id) or {"current": 0, "total": 0, "period": ""}
+
+def _clear_finance_progress(user_id: int) -> None:
+    try:
+        if user_id in FINANCE_PROGRESS:
+            del FINANCE_PROGRESS[user_id]
+    except Exception:
+        pass
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Tuple
 
 import requests
-from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory, has_request_context
+from flask import Flask, render_template, request, send_file, redirect, url_for, session, flash, jsonify, send_from_directory, has_request_context, Response
 import xlwt
 import jwt
 from io import BytesIO
@@ -1747,10 +1764,21 @@ def load_last_results() -> Dict[str, Any] | None:
     path = _cache_path_for_user()
     if not os.path.isfile(path):
         return None
+    
+    # Проверяем размер файла - если больше 10MB, не загружаем (может быть поврежден или слишком большой)
+    try:
+        file_size = os.path.getsize(path)
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            print(f"Файл кэша слишком большой ({file_size / 1024 / 1024:.1f}MB), пропускаем загрузку")
+            return None
+    except Exception:
+        pass
+    
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка загрузки кэша: {e}")
         return None
 def save_last_results(payload: Dict[str, Any]) -> None:
     """
@@ -1916,14 +1944,24 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
             resp = requests.get(url, headers=headers, params=params, timeout=timeout_s)
             last_resp = resp
             if resp.status_code in (429, 500, 502, 503, 504):
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after is not None:
-                    try:
-                        sleep_s = float(retry_after)
-                    except ValueError:
-                        sleep_s = 1.0
-                else:
-                    sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
+                sleep_s = None
+                if resp.status_code == 429:
+                    # Для ошибки 429 проверяем заголовки X-Ratelimit-Retry (WB API) и Retry-After (стандартный)
+                    retry_header = resp.headers.get("X-Ratelimit-Retry") or resp.headers.get("Retry-After")
+                    if retry_header is not None:
+                        try:
+                            sleep_s = float(retry_header)
+                        except ValueError:
+                            sleep_s = None
+                
+                if sleep_s is None:
+                    # Если заголовков нет, используем экспоненциальную задержку
+                    if resp.status_code == 429:
+                        # Для 429 используем более длительную задержку
+                        sleep_s = min(120, 30 * (attempt + 1))
+                    else:
+                        sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
+                
                 time.sleep(sleep_s)
                 continue
             resp.raise_for_status()
@@ -2056,42 +2094,220 @@ def fetch_sales_range(token: str, start_date: str, end_date: str) -> List[Dict[s
     return collected
 
 
-def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 100000) -> List[Dict[str, Any]]:
+def _split_date_range(date_from: str, date_to: str, days_per_chunk: int = 7) -> List[tuple[str, str]]:
+    """Разбивает период на интервалы по указанному количеству дней.
+    
+    Returns:
+        List of tuples (start_date, end_date) in YYYY-MM-DD format
+    """
+    try:
+        start = datetime.strptime(date_from, "%Y-%m-%d").date()
+        end = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except Exception:
+        return [(date_from, date_to)]
+    
+    intervals = []
+    current_start = start
+    
+    while current_start <= end:
+        current_end = min(current_start + timedelta(days=days_per_chunk - 1), end)
+        intervals.append((
+            current_start.strftime("%Y-%m-%d"),
+            current_end.strftime("%Y-%m-%d")
+        ))
+        current_start = current_end + timedelta(days=1)
+    
+    return intervals
+
+
+def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 100000, progress_callback=None) -> List[Dict[str, Any]]:
     """Fetch financial report details v5 with rrdid pagination.
+    
+    Разбивает период на интервалы по 7 дней для избежания лимитов API.
 
     According to docs, start with rrdid=0 and then pass last row's rrd_id until empty list is returned.
     date_from must be RFC3339 in MSK; we'll accept YYYY-MM-DD and convert to T00:00:00.
     date_to is YYYY-MM-DD (end date).
+    
+    Args:
+        token: API token
+        date_from: Start date in YYYY-MM-DD format
+        date_to: End date in YYYY-MM-DD format
+        limit: Maximum rows per request
+        progress_callback: Optional callback function(current, total, current_period) for progress updates
     """
     headers = {"Authorization": f"Bearer {token}"}
-    # Compose RFC3339-like dateFrom in MSK start of day
-    try:
-        df_iso = datetime.strptime(date_from, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00")
-    except Exception:
-        df_iso = f"{date_from}T00:00:00"
-    params_base: Dict[str, Any] = {"dateFrom": df_iso, "dateTo": date_to, "limit": max(1, min(100000, int(limit)))}
+    
+    # Разбиваем период на интервалы по 7 дней
+    intervals = _split_date_range(date_from, date_to, days_per_chunk=7)
+    total_intervals = len(intervals)
     all_rows: List[Dict[str, Any]] = []
-    rrdid = 0
-    while True:
-        params = dict(params_base)
-        params["rrdid"] = rrdid
-        data = get_with_retry_json(FIN_REPORT_URL, headers, params, max_retries=3, timeout_s=30)
-        if not isinstance(data, list) or not data:
-            break
-        all_rows.extend(data)
+    
+    logging.info(f"Начинаем загрузку финансового отчета за период {date_from} - {date_to}, интервалов: {total_intervals}")
+    for idx, (interval_from, interval_to) in enumerate(intervals, 1):
+        logging.info(f"Загрузка интервала {idx}/{total_intervals}: {interval_from} - {interval_to}")
+        
+        # Вызываем callback для обновления прогресса
+        if progress_callback:
+            progress_callback(idx, total_intervals, f"{interval_from} - {interval_to}")
+        
+        # Compose RFC3339-like dateFrom in MSK start of day
         try:
-            last = data[-1]
-            rrdid = int(last.get("rrd_id") or last.get("rrdid") or last.get("rrdId") or 0)
+            df_iso = datetime.strptime(interval_from, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00")
         except Exception:
-            break
-        # If received less than limit rows, it's the last page — stop without extra call (avoid long 429 waits)
-        try:
-            if len(data) < params_base.get("limit", 100000):
+            df_iso = f"{interval_from}T00:00:00"
+        
+        params_base: Dict[str, Any] = {"dateFrom": df_iso, "dateTo": interval_to, "limit": max(1, min(100000, int(limit)))}
+        interval_rows: List[Dict[str, Any]] = []
+        rrdid = 0
+        interval_error = None
+        page_count = 0
+        
+        while True:
+            page_count += 1
+            params = dict(params_base)
+            params["rrdid"] = rrdid
+            try:
+                # Используем get_with_retry напрямую для доступа к заголовкам при ошибке 429
+                resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=3, timeout_s=30)
+                data = resp.json()
+            except requests.HTTPError as e:
+                # Обрабатываем HTTP ошибки, включая 429
+                interval_error = str(e)
+                error_str = str(e)
+                is_429 = "429" in error_str or "Too Many Requests" in error_str or (hasattr(e, 'response') and e.response is not None and e.response.status_code == 429)
+                
+                if is_429:
+                    # Для ошибки 429 используем несколько попыток с увеличивающейся паузой
+                    # Пытаемся получить время ожидания из заголовка ответа
+                    retry_after = 60  # По умолчанию 60 секунд
+                    if hasattr(e, 'response') and e.response is not None:
+                        retry_header = e.response.headers.get('X-Ratelimit-Retry') or e.response.headers.get('Retry-After')
+                        if retry_header:
+                            try:
+                                retry_after = int(float(retry_header))
+                                logging.info(f"Получено время ожидания из заголовка: {retry_after} секунд")
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    # Делаем несколько попыток с увеличивающейся паузой
+                    max_429_retries = 3
+                    retry_success = False
+                    for retry_attempt in range(1, max_429_retries + 1):
+                        wait_time = retry_after * retry_attempt  # Увеличиваем паузу с каждой попыткой
+                        logging.warning(f"Ошибка 429 (лимит API) для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}). Попытка {retry_attempt}/{max_429_retries}, пауза {wait_time} секунд...")
+                        time.sleep(wait_time)
+                        
+                        # Повторяем попытку
+                        try:
+                            resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=1, timeout_s=30)
+                            data = resp.json()
+                            logging.info(f"Повторная попытка {retry_attempt} после 429 успешна для интервала {interval_from} - {interval_to}")
+                            interval_error = None  # Сбрасываем ошибку, так как повторная попытка успешна
+                            retry_success = True
+                            break  # Выходим из цикла повторных попыток
+                        except Exception as e2:
+                            error_str2 = str(e2)
+                            is_429_2 = "429" in error_str2 or "Too Many Requests" in error_str2 or (hasattr(e2, 'response') and e2.response is not None and e2.response.status_code == 429)
+                            if retry_attempt < max_429_retries:
+                                logging.warning(f"Повторная попытка {retry_attempt} после 429 не удалась, продолжаем...")
+                                continue
+                            else:
+                                logging.error(f"Все {max_429_retries} попытки после 429 не удались для интервала {interval_from} - {interval_to}: {e2}")
+                                interval_error = str(e2)
+                    
+                    if not retry_success:
+                        # Если все попытки не удались, пропускаем интервал
+                        if rrdid == 0:
+                            logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки 429 при первой загрузке после {max_429_retries} попыток")
+                            break
+                        # Если это не первая страница, пробуем продолжить
+                        time.sleep(5)
+                        continue
+                else:
+                    # Для других ошибок
+                    logging.warning(f"Ошибка загрузки данных для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}): {e}")
+                    # Если это первая страница (rrdid=0), пропускаем весь интервал
+                    if rrdid == 0:
+                        logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки при первой загрузке")
+                        break
+                    # Если это не первая страница, пробуем продолжить (может быть временная ошибка)
+                    time.sleep(2)  # Пауза перед повторной попыткой
+                    continue
+            except Exception as e:
+                # Обрабатываем другие исключения
+                interval_error = str(e)
+                logging.warning(f"Ошибка загрузки данных для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}): {e}")
+                # Если это первая страница (rrdid=0), пропускаем весь интервал
+                if rrdid == 0:
+                    logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки при первой загрузке")
+                    break
+                # Если это не первая страница, пробуем продолжить
+                time.sleep(2)
+                continue
+            
+            if not isinstance(data, list) or not data:
+                logging.info(f"Интервал {interval_from} - {interval_to}: получен пустой ответ на странице {page_count}")
                 break
-        except Exception:
-            pass
-        # Небольшая пауза между страницами (обычно не требуется, т.к. limit=100000 закрывает весь период одной страницей)
-        time.sleep(0.5)
+            interval_rows.extend(data)
+            logging.debug(f"Интервал {interval_from} - {interval_to}, страница {page_count}: загружено {len(data)} записей")
+            
+            try:
+                last = data[-1]
+                rrdid = int(last.get("rrd_id") or last.get("rrdid") or last.get("rrdId") or 0)
+            except Exception:
+                logging.warning(f"Интервал {interval_from} - {interval_to}: не удалось получить rrd_id из последней записи")
+                break
+            # If received less than limit rows, it's the last page
+            try:
+                if len(data) < params_base.get("limit", 100000):
+                    logging.info(f"Интервал {interval_from} - {interval_to}: получено меньше записей чем лимит ({len(data)} < {params_base.get('limit', 100000)}), это последняя страница")
+                    break
+            except Exception:
+                pass
+            # Небольшая пауза между страницами
+            time.sleep(0.5)
+        
+        if interval_rows:
+            all_rows.extend(interval_rows)
+            # Проверяем диапазон дат в загруженных данных
+            dates_in_interval = set()
+            for row in interval_rows:
+                try:
+                    # Пытаемся найти дату в различных полях
+                    date_str = row.get("doc_date") or row.get("date") or row.get("operation_date")
+                    if date_str:
+                        dates_in_interval.add(str(date_str)[:10])
+                except Exception:
+                    pass
+            
+            logging.info(f"Интервал {interval_from} - {interval_to}: загружено {len(interval_rows)} записей за {page_count} страниц(ы)")
+            if dates_in_interval:
+                min_date = min(dates_in_interval) if dates_in_interval else "неизвестно"
+                max_date = max(dates_in_interval) if dates_in_interval else "неизвестно"
+                logging.info(f"Интервал {interval_from} - {interval_to}: даты в данных от {min_date} до {max_date}")
+        elif interval_error:
+            logging.error(f"ВНИМАНИЕ: Интервал {interval_from} - {interval_to} не загружен из-за ошибки: {interval_error}")
+        else:
+            logging.warning(f"Интервал {interval_from} - {interval_to}: не загружено ни одной записи")
+        
+        # Пауза между интервалами для избежания лимитов
+        # Увеличиваем паузу, особенно после интервалов с большим количеством данных
+        if idx < total_intervals:
+            # Чем больше данных загружено, тем больше пауза
+            if interval_rows and len(interval_rows) > 15000:
+                pause_time = 5  # Большая пауза после интервалов с большим объемом данных
+            elif interval_rows and len(interval_rows) > 10000:
+                pause_time = 3
+            elif interval_rows and len(interval_rows) > 5000:
+                pause_time = 2.5
+            else:
+                pause_time = 2
+            logging.debug(f"Пауза {pause_time} сек перед следующим интервалом (загружено {len(interval_rows) if interval_rows else 0} записей)")
+            time.sleep(pause_time)
+    
+    logging.info(f"Загрузка финансового отчета завершена. Всего загружено {len(all_rows)} записей за {total_intervals} интервалов")
+    
     return all_rows
 def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Aggregate rows by product (nm_id + supplierArticle) to qty and revenue.
@@ -7686,23 +7902,17 @@ def api_report_sales_export():
 @app.route("/report/finance", methods=["GET"]) 
 @login_required
 def report_finance_page():
-    # initial render without data
+    # initial render without data - всегда показываем пустую страницу
     if not request.args.get("date_from") and not request.args.get("date_to"):
-        # Try restore last viewed period and data for this user
-        cached = load_last_results() or {}
-        dfv = cached.get("finance_date_from") or ""
-        dtv = cached.get("finance_date_to") or ""
-        metrics = cached.get("finance_metrics") or {}
-        rows = cached.get("finance_rows") or []
         return render_template(
             "finance_report.html",
             error=None,
-            rows=rows,
-            date_from_fmt=(metrics.get("date_from_fmt") or ""),
-            date_to_fmt=(metrics.get("date_to_fmt") or ""),
-            date_from_val=dfv,
-            date_to_val=dtv,
-            finance_metrics=metrics,
+            rows=[],
+            date_from_fmt="",
+            date_to_fmt="",
+            date_from_val="",
+            date_to_val="",
+            finance_metrics={},
         ), 200
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
@@ -7740,17 +7950,42 @@ def report_finance_page():
         date_from_val=req_from,
         date_to_val=req_to,
     ), 200
+@app.route("/api/report/finance/progress", methods=["GET"])
+@login_required
+def api_report_finance_progress():
+    """Endpoint для получения прогресса загрузки финансового отчета"""
+    if not current_user.is_authenticated:
+        return jsonify({"current": 0, "total": 0, "period": ""}), 200
+    progress = _get_finance_progress(current_user.id)
+    return jsonify(progress), 200
+
 @app.route("/api/report/finance", methods=["GET"]) 
 @login_required
 def api_report_finance():
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     req_from = (request.args.get("date_from") or "").strip()
     req_to = (request.args.get("date_to") or "").strip()
+    
     if not (token and req_from and req_to):
         return jsonify({"items": [], "error": None}), 200
+    
+    # Очищаем предыдущий прогресс
+    if current_user.is_authenticated:
+        _clear_finance_progress(current_user.id)
+    
     try:
+        # Создаем callback для обновления прогресса
+        def progress_callback(current, total, period):
+            if current_user.is_authenticated:
+                _set_finance_progress(current_user.id, current, total, period)
+        
         # Always fetch fresh report for the period (не кэшируем данные отчёта)
-        raw = fetch_finance_report(token, req_from, req_to)
+        # Теперь с разбиением на интервалы по 7 дней
+        raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+        
+        # Очищаем прогресс после завершения
+        if current_user.is_authenticated:
+            _clear_finance_progress(current_user.id)
         total_qty = 0
         total_sum = 0.0
         # WB реализовал (по retail_amount с фильтрами по основаниям оплаты)
@@ -7984,41 +8219,7 @@ def api_report_finance():
             tax_rate = float(current_user.tax_rate)
             tax_amount = (total_wb_realized * tax_rate) / 100.0
         
-        # Save last viewed period and last computed metrics/rows to restore on page reload
-        try:
-            save_last_results({
-                "finance_date_from": req_from,
-                "finance_date_to": req_to,
-                "finance_rows": raw,
-                "finance_metrics": {
-                    "total_qty": int(total_qty),
-                    "total_sum": round(total_sum, 2),
-                    "total_logistics": round(total_logistics, 2),
-                    "total_storage": round(total_storage, 2),
-                    "total_acceptance": round(total_acceptance, 2),
-                    "total_for_pay": round(total_for_pay, 2),
-                    "total_buyouts": round(total_buyouts, 2),
-                    "total_returns": round(total_returns, 2),
-                    "revenue": round(revenue_calc, 2),
-                    "total_wb_realized": round(total_wb_realized, 2),
-                    "total_commission": round(commission_total, 2),
-                    "total_acquiring": round(total_acquiring, 2),
-                    "total_other_deductions": round(total_other_deductions, 2),
-                    "total_penalties": round(total_penalties, 2),
-                    "total_defect_compensation": round(defect_comp, 2),
-                    "total_damage_compensation": round(damage_comp, 2),
-                    "total_paid_delivery": round(total_paid_delivery, 2),
-                    "total_additional_payment": round(total_additional_payment, 2),
-                    "total_deductions": round(total_deductions, 2),
-                    "total_for_transfer": round(total_for_transfer, 2),
-                    "tax_amount": round(tax_amount, 2),
-                    "tax_rate": tax_rate,
-                    "date_from_fmt": date_from_fmt,
-                    "date_to_fmt": date_to_fmt,
-                }
-            })
-        except Exception:
-            pass
+        # Кэширование отключено - не сохраняем данные финансового отчета
         
         return jsonify({
             "rows": raw,

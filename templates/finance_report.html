@@ -702,19 +702,55 @@
         e.preventDefault();
         if (!loadBtn) return;
         if (!validateDates()) return; // stop if dates invalid
+        
+        // Объявляем переменные в области видимости функции
+        let progressInterval = null;
+        const overlay = document.getElementById('loadingOverlay');
+        const content = document.querySelector('.container');
+        const loadingText = overlay?.querySelector('.loading-text');
+        
         try{
-          loadBtn.disabled = true; const prev = loadBtn.textContent; loadBtn.textContent = 'Загрузка...';
+          loadBtn.disabled = true; 
+          const prev = loadBtn.textContent; 
+          loadBtn.textContent = 'Загрузка...';
           
           // Показываем индикатор загрузки и размываем контент
-          const overlay = document.getElementById('loadingOverlay');
-          const content = document.querySelector('.container');
-          const loadingText = overlay?.querySelector('.loading-text');
           if (overlay) overlay.style.display = 'flex';
           if (content) content.classList.add('content-blurred');
           if (loadingText) loadingText.textContent = 'Загрузка данных...';
           
+          // Запускаем периодический опрос прогресса
+          const updateProgress = async () => {
+            try {
+              const progressRes = await fetch('/api/report/finance/progress');
+              const progressData = await progressRes.json();
+              if (progressData && progressData.total > 0) {
+                const percent = Math.round((progressData.current / progressData.total) * 100);
+                let progressText = `Загружено периодов: ${progressData.current} из ${progressData.total} (${percent}%)`;
+                if (progressData.period) {
+                  progressText += `<br>Загружаю период: ${progressData.period}`;
+                }
+                if (loadingText) {
+                  loadingText.innerHTML = `Загрузка данных...<br><small>${progressText}</small>`;
+                }
+              }
+            } catch (e) {
+              // Игнорируем ошибки при запросе прогресса
+            }
+          };
+          
+          // Обновляем прогресс каждые 0.5 секунды
+          progressInterval = setInterval(updateProgress, 500);
+          
           const params = new URLSearchParams(new FormData(form));
           const res = await fetch(`/api/report/finance?${params.toString()}`);
+          
+          // Останавливаем опрос прогресса
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+          
           const data = await res.json();
           // error handling
           if (data && data.error){
@@ -859,11 +895,36 @@
           // Скрываем индикатор загрузки и убираем размытие
           if (overlay) overlay.style.display = 'none';
           if (content) content.classList.remove('content-blurred');
+          
+          // Останавливаем опрос прогресса
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+          
+          if (loadBtn) {
+            loadBtn.disabled = false;
+            loadBtn.textContent = prev;
+          }
         } catch(err){
           console.error(err);
           const alertBox = document.getElementById('finAlert');
           if (alertBox){ alertBox.textContent = 'Ошибка загрузки отчёта'; alertBox.style.display = 'block'; }
-          if (loadBtn){ loadBtn.disabled = false; }
+          
+          // Останавливаем опрос прогресса при ошибке
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+          
+          // Скрываем индикатор загрузки и убираем размытие
+          if (overlay) overlay.style.display = 'none';
+          if (content) content.classList.remove('content-blurred');
+          
+          if (loadBtn) {
+            loadBtn.disabled = false;
+            loadBtn.textContent = prev;
+          }
           
           // Скрываем индикатор загрузки и убираем размытие при ошибке
           if (overlay) overlay.style.display = 'none';
