@@ -25,12 +25,15 @@ import random
 import threading
 import logging
 from collections import defaultdict
+from typing import Any
 
 # -----------------------
 # Long-running progress
 # -----------------------
 ORDERS_PROGRESS: dict[int, dict[str, object]] = {}
 FINANCE_PROGRESS: dict[int, dict[str, object]] = {}
+FINANCE_RESULTS: dict[int, dict[str, Any]] = {}  # Хранит результаты финансового отчета по user_id
+FINANCE_LOADING: dict[int, bool] = {}  # Флаг загрузки финансового отчета
 
 def _set_orders_progress(user_id: int, total: int, done: int, key: str | None = None) -> None:
     try:
@@ -2309,6 +2312,265 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
     logging.info(f"Загрузка финансового отчета завершена. Всего загружено {len(all_rows)} записей за {total_intervals} интервалов")
     
     return all_rows
+
+def _process_finance_data(raw: List[Dict[str, Any]], req_from: str, req_to: str, user_id: int = None) -> Dict[str, Any]:
+    """Обрабатывает сырые данные финансового отчета и возвращает вычисленные метрики.
+    
+    Args:
+        raw: Список сырых записей из API
+        req_from: Начальная дата периода
+        req_to: Конечная дата периода
+        user_id: ID пользователя (для получения tax_rate)
+    
+    Returns:
+        Словарь с обработанными данными и метриками
+    """
+    from flask_login import current_user
+    
+    total_qty = 0
+    total_sum = 0.0
+    wbr_plus = 0.0
+    wbr_minus = 0.0
+    total_logistics = 0.0
+    total_storage = 0.0
+    total_acceptance = 0.0
+    total_for_pay = 0.0
+    total_buyouts = 0.0
+    total_returns = 0.0
+    total_acquiring = 0.0
+    total_commission_wb = 0.0
+    total_other_deductions = 0.0
+    total_penalties = 0.0
+    total_additional_payment = 0.0
+    total_paid_delivery = 0.0
+    x1 = x2 = x3 = x4 = x5 = x6 = x7 = x8 = 0.0
+    k1 = k2 = k3 = k4 = k5 = k6 = k7 = k8 = k9 = 0.0
+    u1 = u2 = u3 = u4 = u5 = u6 = u7 = u8 = u9 = u10 = u11 = u12 = u13 = u14 = 0.0
+    buyout_oper_values_lower = {"продажа", "сторно возвратов", "корректная продажа", "коррекция продаж"}
+    
+    for r in raw:
+        try:
+            total_qty += int(r.get("quantity") or 0)
+        except Exception:
+            pass
+        try:
+            total_sum += float(r.get("retail_amount") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_logistics += float(r.get("delivery_rub") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_storage += float(r.get("storage_fee") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_acceptance += float(r.get("acceptance") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_for_pay += float(r.get("ppvz_for_pay") or 0.0)
+        except Exception:
+            pass
+        try:
+            oper = (r.get("supplier_oper_name") or "").strip()
+            if oper and oper.lower() in buyout_oper_values_lower:
+                total_buyouts += float(r.get("retail_price") or 0.0)
+        except Exception:
+            pass
+        try:
+            oper_lc = (r.get("supplier_oper_name") or "").strip().lower()
+            amt = float(r.get("retail_amount") or 0.0)
+            if oper_lc in {"продажа","сторно возвратов","корректная продажа","коррекция продаж"}:
+                wbr_plus += amt
+            elif oper_lc in {"возврат","сторно продаж","корректный возврат"}:
+                wbr_minus += amt
+        except Exception:
+            pass
+        try:
+            oper = (r.get("supplier_oper_name") or "").strip()
+            if oper == "Возврат":
+                total_returns += float(r.get("retail_price") or 0.0)
+        except Exception:
+            pass
+        try:
+            dt_name = (r.get("doc_type_name") or "").strip()
+            acq_pct = float(r.get("acquiring_percent") or 0.0)
+            afee = float(r.get("acquiring_fee") or 0.0)
+            if dt_name == "Продажа" and acq_pct > 0:
+                total_acquiring += afee
+            elif dt_name == "Возврат" and acq_pct > 0:
+                total_acquiring -= afee
+        except Exception:
+            pass
+        try:
+            total_commission_wb += float(r.get("ppvz_vw") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_other_deductions += float(r.get("deduction") or 0.0)
+            total_other_deductions += float(r.get("additional_payment") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_penalties += float(r.get("penalty") or 0.0)
+        except Exception:
+            pass
+        try:
+            total_additional_payment += float(r.get("additional_payment") or 0.0)
+        except Exception:
+            pass
+        try:
+            oper_l = (r.get("supplier_oper_name") or "").strip().lower()
+            doc_l = (r.get("doc_type_name") or "").strip().lower()
+            pay_val = float(r.get("ppvz_for_pay") or 0.0)
+            if oper_l == "услуга платная доставка":
+                total_paid_delivery += pay_val
+            if oper_l == "компенсация брака" and doc_l == "продажа":
+                x1 += pay_val
+            if oper_l == "оплата брака" and doc_l == "продажа":
+                x2 += pay_val
+            if oper_l == "компенсация брака" and doc_l == "возврат":
+                x3 += pay_val
+            if oper_l == "оплата брака" and doc_l == "возврат":
+                x4 += pay_val
+            if oper_l == "частичная компенсация брака" and doc_l == "продажа":
+                x5 += pay_val
+            if oper_l == "частичная компенсация брака" and doc_l == "возврат":
+                x6 += pay_val
+            if oper_l == "добровольная компенсация при возврате" and doc_l == "продажа":
+                x7 += pay_val
+            if oper_l == "добровольная компенсация при возврате" and doc_l == "возврат":
+                x8 += pay_val
+            if oper_l == "продажа":
+                k1 += pay_val
+            if oper_l == "сторно возвратов":
+                k2 += pay_val
+            if oper_l == "корректная продажа":
+                k3 += pay_val
+            if oper_l == "коррекция продаж" and doc_l == "продажа":
+                k4 += pay_val
+            if oper_l == "возврат":
+                k5 += pay_val
+            if oper_l == "сторно продаж":
+                k6 += pay_val
+            if oper_l == "коррекция продаж" and doc_l == "возврат":
+                k7 += pay_val
+            if oper_l == "корректный возврат":
+                k8 += pay_val
+            if oper_l == "корректировка эквайринга":
+                k9 += pay_val
+            if oper_l == "оплата потерянного товара" and doc_l == "продажа":
+                u1 += pay_val
+            if oper_l == "компенсация потерянного товара" and doc_l == "продажа":
+                u2 += pay_val
+            if oper_l == "оплата потерянного товара" and doc_l == "возврат":
+                u3 += pay_val
+            if oper_l == "компенсация потерянного товара" and doc_l == "возврат":
+                u4 += pay_val
+            if oper_l == "авансовая оплата за товар без движения" and doc_l == "продажа":
+                u5 += pay_val
+            if oper_l == "авансовая оплата за товар без движения" and doc_l == "возврат":
+                u6 += pay_val
+            if oper_l == "компенсация подмененного товара" and doc_l == "продажа":
+                u7 += pay_val
+            if oper_l == "компенсация подмененного товара" and doc_l == "возврат":
+                u8 += pay_val
+            if oper_l == "компенсация подмененного товара" and doc_l == "продажа":
+                u9 += pay_val
+            if oper_l == "компенсация подмененного товара" and doc_l == "возврат":
+                u10 += pay_val
+            if oper_l == "компенсация ущерба" and doc_l == "продажа":
+                u11 += pay_val
+            if oper_l == "компенсация ущерба" and doc_l == "возврат":
+                u12 += pay_val
+            if oper_l == "компенсация подмен" and doc_l == "продажа":
+                u13 += pay_val
+            if oper_l == "компенсация подмен" and doc_l == "возврат":
+                u14 += pay_val
+        except Exception:
+            pass
+    
+    date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+    date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+    revenue_calc = total_buyouts - total_returns
+    defect_comp = x1 + x2 - x3 - x4 + x5 - x6 + x7 - x8
+    total_wb_realized = wbr_plus - wbr_minus
+    commission_total = (
+        revenue_calc
+        - (k1 + k2 + k3 + k4)
+        + (k5 + k6 + k7 + k8)
+        - total_acquiring
+    )
+    damage_comp = u1 + u2 - u3 - u4 + u5 - u6 + u7 + u8 - u9 - u10 + u11 - u12 + u13 - u14
+    
+    total_deductions = (
+        commission_total + 
+        total_acquiring + 
+        total_logistics + 
+        total_storage + 
+        total_other_deductions + 
+        total_acceptance - 
+        defect_comp - 
+        damage_comp - 
+        total_paid_delivery + 
+        total_penalties + 
+        total_additional_payment
+    )
+    
+    e3_correction = 0
+    for r in raw:
+        try:
+            oper_name = (r.get("supplier_oper_name") or "").strip()
+            if oper_name == "Корректировка эквайринга":
+                e3_correction += float(r.get("ppvz_for_pay") or 0.0)
+        except Exception:
+            pass
+    
+    total_for_transfer = revenue_calc - total_deductions + e3_correction
+    
+    # Расчет налога
+    tax_amount = 0.0
+    tax_rate = None
+    if user_id:
+        try:
+            user = User.query.get(user_id)
+            if user and user.tax_rate is not None:
+                tax_rate = float(user.tax_rate)
+                tax_amount = (total_wb_realized * tax_rate) / 100.0
+        except Exception:
+            pass
+    
+    return {
+        "rows": raw,
+        "total_qty": int(total_qty),
+        "total_sum": round(total_sum, 2),
+        "total_logistics": round(total_logistics, 2),
+        "total_storage": round(total_storage, 2),
+        "total_acceptance": round(total_acceptance, 2),
+        "total_for_pay": round(total_for_pay, 2),
+        "total_buyouts": round(total_buyouts, 2),
+        "total_returns": round(total_returns, 2),
+        "revenue": round(revenue_calc, 2),
+        "total_wb_realized": round(total_wb_realized, 2),
+        "total_commission": round(commission_total, 2),
+        "total_acquiring": round(total_acquiring, 2),
+        "total_commission_wb": round(total_commission_wb, 2),
+        "total_other_deductions": round(total_other_deductions, 2),
+        "total_penalties": round(total_penalties, 2),
+        "total_defect_compensation": round(defect_comp, 2),
+        "total_damage_compensation": round(damage_comp, 2),
+        "total_paid_delivery": round(total_paid_delivery, 2),
+        "total_additional_payment": round(total_additional_payment, 2),
+        "total_deductions": round(total_deductions, 2),
+        "total_for_transfer": round(total_for_transfer, 2),
+        "tax_amount": round(tax_amount, 2),
+        "tax_rate": tax_rate,
+        "date_from_fmt": date_from_fmt,
+        "date_to_fmt": date_to_fmt,
+    }
+
 def aggregate_finance_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Aggregate rows by product (nm_id + supplierArticle) to qty and revenue.
     Fields per docs: realize/prices/quantities. We'll use 'quantity' and 'retail_amount' if present.
@@ -7955,9 +8217,29 @@ def report_finance_page():
 def api_report_finance_progress():
     """Endpoint для получения прогресса загрузки финансового отчета"""
     if not current_user.is_authenticated:
-        return jsonify({"current": 0, "total": 0, "period": ""}), 200
+        return jsonify({"current": 0, "total": 0, "period": "", "ready": False}), 200
     progress = _get_finance_progress(current_user.id)
+    # Проверяем, готовы ли результаты
+    user_id = current_user.id
+    results_ready = user_id in FINANCE_RESULTS and not FINANCE_LOADING.get(user_id, False)
+    progress["ready"] = results_ready
+    if results_ready:
+        progress["has_results"] = True
     return jsonify(progress), 200
+
+@app.route("/api/report/finance/result", methods=["GET"])
+@login_required
+def api_report_finance_result():
+    """Endpoint для получения результатов финансового отчета после асинхронной загрузки"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    user_id = current_user.id
+    if user_id in FINANCE_RESULTS:
+        result = FINANCE_RESULTS[user_id]
+        # Удаляем результаты после получения
+        del FINANCE_RESULTS[user_id]
+        return jsonify(result), 200
+    return jsonify({"error": "Results not ready"}), 404
 
 @app.route("/api/report/finance", methods=["GET"]) 
 @login_required
@@ -7965,10 +8247,72 @@ def api_report_finance():
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     req_from = (request.args.get("date_from") or "").strip()
     req_to = (request.args.get("date_to") or "").strip()
+    async_mode = request.args.get("async", "0") == "1"  # Параметр для асинхронной загрузки
     
     if not (token and req_from and req_to):
         return jsonify({"items": [], "error": None}), 200
     
+    user_id = current_user.id if current_user.is_authenticated else None
+    
+    # Если запрошена асинхронная загрузка или период большой (более 60 дней), используем фоновую задачу
+    from datetime import datetime as dt
+    try:
+        date_from_obj = dt.strptime(req_from, "%Y-%m-%d")
+        date_to_obj = dt.strptime(req_to, "%Y-%m-%d")
+        days_diff = (date_to_obj - date_from_obj).days
+        use_async = async_mode or days_diff > 60
+    except Exception:
+        use_async = async_mode
+    
+    if use_async and user_id:
+        # Асинхронная загрузка через фоновую задачу
+        # Проверяем, не идет ли уже загрузка
+        if FINANCE_LOADING.get(user_id, False):
+            return jsonify({"loading": True, "message": "Загрузка уже выполняется"}), 200
+        
+        # Очищаем предыдущие результаты и прогресс
+        if user_id in FINANCE_RESULTS:
+            del FINANCE_RESULTS[user_id]
+        _clear_finance_progress(user_id)
+        FINANCE_LOADING[user_id] = True
+        
+        # Запускаем загрузку в фоновом потоке
+        import threading
+        def load_finance_background():
+            try:
+                # Создаем callback для обновления прогресса
+                def progress_callback(current, total, period):
+                    _set_finance_progress(user_id, current, total, period)
+                
+                # Загружаем данные
+                raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+                
+                # Обрабатываем данные (копируем логику из основного потока)
+                result = _process_finance_data(raw, req_from, req_to, user_id)
+                
+                # Сохраняем результаты
+                FINANCE_RESULTS[user_id] = result
+                
+                # Очищаем прогресс и флаг загрузки
+                _clear_finance_progress(user_id)
+                FINANCE_LOADING[user_id] = False
+                
+                logging.info(f"Фоновая загрузка финансового отчета завершена для пользователя {user_id}")
+            except Exception as e:
+                logging.error(f"Ошибка фоновой загрузки финансового отчета: {e}")
+                FINANCE_LOADING[user_id] = False
+                if user_id in FINANCE_RESULTS:
+                    del FINANCE_RESULTS[user_id]
+                _clear_finance_progress(user_id)
+        
+        thread = threading.Thread(target=load_finance_background)
+        thread.daemon = True
+        thread.start()
+        
+        # Сразу возвращаем ответ о начале загрузки
+        return jsonify({"loading": True, "message": "Загрузка начата, используйте /api/report/finance/progress для отслеживания прогресса"}), 200
+    
+    # Синхронная загрузка (для небольших периодов)
     # Очищаем предыдущий прогресс
     if current_user.is_authenticated:
         _clear_finance_progress(current_user.id)
@@ -7986,8 +8330,14 @@ def api_report_finance():
         # Очищаем прогресс после завершения
         if current_user.is_authenticated:
             _clear_finance_progress(current_user.id)
-        total_qty = 0
-        total_sum = 0.0
+        
+        # Используем функцию обработки данных
+        user_id_for_tax = current_user.id if current_user.is_authenticated else None
+        result = _process_finance_data(raw, req_from, req_to, user_id_for_tax)
+        
+        return jsonify(result), 200
+    except Exception as exc:
+        return jsonify({"items": [], "error": str(exc)}), 200
         # WB реализовал (по retail_amount с фильтрами по основаниям оплаты)
         wbr_plus = 0.0
         wbr_minus = 0.0
