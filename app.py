@@ -89,7 +89,6 @@ from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from flask_login import (
     LoginManager,
@@ -265,7 +264,11 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_NAME"] = "fuckberry_session"
 app.config["SESSION_COOKIE_PATH"] = "/"
-db = SQLAlchemy(app)
+
+# Импортируем db из models.py и инициализируем с приложением
+from models import db, User, Notification, PurchasePrice
+db.init_app(app)
+
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 login_manager.login_message = "Пожалуйста, войдите в систему для доступа к этой странице."
@@ -274,6 +277,44 @@ login_manager.session_protection = "strong"  # Защита сессии
 login_manager.refresh_view = "login"  # Страница для обновления сессии
 login_manager.needs_refresh_message = "Пожалуйста, войдите в систему для доступа к этой странице."
 login_manager.needs_refresh_message_category = "info"
+
+# --- Register Blueprints ---
+from blueprints.auth import auth_bp
+from blueprints.changelog import changelog_bp
+from blueprints.profile import profile_bp
+from blueprints.notifications import notifications_bp
+from blueprints.orders import orders_bp
+from blueprints.coefficients import coefficients_bp
+from blueprints.fbs import fbs_bp
+from blueprints.fbs_supplies import fbs_supplies_bp
+from blueprints.dbs import dbs_bp
+from blueprints.fbs_stock import fbs_stock_bp
+from blueprints.fbw import fbw_bp
+from blueprints.fbw_planning import fbw_planning_bp
+from blueprints.products import products_bp
+from blueprints.stocks import stocks_bp
+from blueprints.reports import reports_bp
+from blueprints.tools import tools_bp
+from blueprints.admin import admin_bp
+
+app.register_blueprint(auth_bp)
+app.register_blueprint(changelog_bp)
+app.register_blueprint(profile_bp)
+app.register_blueprint(notifications_bp)
+app.register_blueprint(orders_bp)
+app.register_blueprint(coefficients_bp)
+app.register_blueprint(fbs_bp)
+app.register_blueprint(fbs_supplies_bp)
+app.register_blueprint(dbs_bp)
+app.register_blueprint(fbs_stock_bp)
+app.register_blueprint(fbw_bp)
+app.register_blueprint(fbw_planning_bp)
+app.register_blueprint(products_bp)
+app.register_blueprint(stocks_bp)
+app.register_blueprint(reports_bp)
+app.register_blueprint(tools_bp)
+app.register_blueprint(admin_bp)
+
 # --- DB init helpers (portable across common DBs) ---
 def _ensure_schema_users_validity_columns() -> None:
     try:
@@ -1813,62 +1854,12 @@ def save_last_results(payload: Dict[str, Any]) -> None:
 # -------------------------
 # Models & Auth
 # -------------------------
-
-class User(UserMixin, db.Model):
-    __tablename__ = "users"
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(120), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)  # store hashed in production
-    is_admin = db.Column(db.Boolean, default=False)
-    is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    wb_token = db.Column(db.Text, nullable=True)
-    valid_from = db.Column(db.Date, nullable=True)
-    valid_to = db.Column(db.Date, nullable=True)
-    phone = db.Column(db.String(64), nullable=True)
-    email = db.Column(db.String(120), nullable=True)
-    shipper_name = db.Column(db.String(255), nullable=True)
-    shipper_address = db.Column(db.String(255), nullable=True)
-    contact_person = db.Column(db.String(255), nullable=True)
-    display_name = db.Column(db.String(255), nullable=True)
-    tax_rate = db.Column(db.Float, nullable=True)
-
-
-class Notification(db.Model):
-    __tablename__ = "notifications"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    title = db.Column(db.String(255), nullable=False)
-    message = db.Column(db.Text, nullable=False)
-    notification_type = db.Column(db.String(50), nullable=False)  # 'fbs_new_order', 'system', etc.
-    is_read = db.Column(db.Boolean, default=False)
-    data = db.Column(db.Text, nullable=True)  # JSON data for additional notification info
-    created_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ))
-
-
-class PurchasePrice(db.Model):
-    __tablename__ = "purchase_prices"
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    barcode = db.Column(db.String(50), nullable=False)
-    price = db.Column(db.Float, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ))
-    updated_at = db.Column(db.DateTime, default=datetime.now(MOSCOW_TZ), onupdate=datetime.now(MOSCOW_TZ))
-    
-    # Уникальный индекс для комбинации user_id + barcode
-    __table_args__ = (db.UniqueConstraint('user_id', 'barcode', name='unique_user_barcode'),)
-    data = db.Column(db.Text, nullable=True)  # JSON data for additional info
-    
-    user = db.relationship('User', backref=db.backref('notifications', lazy=True))
-
-    def get_id(self):  # type: ignore[override]
-        return str(self.id)
-
+# Модели импортированы из models.py выше
 
 @login_manager.user_loader
 def load_user(user_id: str):
     try:
-        return db.session.get(User, int(user_id))
+        return User.query.get(int(user_id))
     except Exception:
         return None
 
@@ -9817,9 +9808,10 @@ def _aggregate_fbs_supplies(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         })
     result.sort(key=lambda x: x.get("ts", 0), reverse=True)
     return result
-@app.route("/api/fbs/supplies", methods=["GET"]) 
-@login_required
-def api_fbs_supplies():
+# DEPRECATED: Этот роут перенесен в blueprints/fbs_supplies.py
+# @app.route("/api/fbs/supplies", methods=["GET"]) 
+# @login_required
+# def api_fbs_supplies():
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     if not token:
         return jsonify({"items": [], "lastUpdated": None}), 200
@@ -9904,43 +9896,48 @@ def api_fbs_supplies():
         # Process only the supplies we need
         processed_supplies = []
         for s in supplies_to_process:
-            supply_id = s.get("id")
-            if supply_id:
-                # Get count from orders for this supply (API doesn't provide count directly)
-                # Для ускорения используем значение из кэша или 0, не делаем запросы при первой загрузке
-                count = s.get("count", 0)  # Используем значение из кэша, если есть
-                # Запросы количества заказов отключены для ускорения - используем только кэш
-                # Если нужно обновить количество, это можно сделать отдельным запросом
-                
-                # Enrich with supply info (createdAt, done, closedAt) and compute status
-                created_at = s.get("createdAt")
-                done = s.get("done")
-                closed_at = s.get("closedAt")
-                
-            # Status per requirement
-            if done:
+            if not isinstance(s, dict):
+                continue
+            supply_id = s.get("id") or s.get("supplyId") or s.get("supply_id")
+            if not supply_id:
+                continue
+
+            # Количество товаров (если API не отдаёт явно — 0, фронт всё равно покажет состав при раскрытии)
+            count = s.get("orderCount") or s.get("ordersCount") or s.get("count") or 0
+
+            # Информация о датах и статусе
+            created_at = s.get("createdAt") or s.get("dateCreated") or s.get("date")
+            closed_at = s.get("closedAt") or s.get("doneAt")
+            raw_status = str(s.get("status") or "").upper()
+            done_flag = bool(s.get("done")) or raw_status in ("DONE", "CLOSED", "COMPLETED", "FINISHED", "SHIPPED")
+
+            # Status label for UI
+            if done_flag:
                 status_label = "Отгружено"
                 try:
-                    _sdt = parse_wb_datetime(str(closed_at))
+                    _sdt = parse_wb_datetime(str(closed_at)) if closed_at else None
                     _sdt_msk = to_moscow(_sdt) if _sdt else None
-                    status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else str(closed_at)
+                    status_dt = _sdt_msk.strftime("%d.%m.%Y %H:%M") if _sdt_msk else (str(closed_at) if closed_at else "")
                 except Exception:
-                    status_dt = str(closed_at)
+                    status_dt = str(closed_at) if closed_at else ""
             else:
                 status_label = "Не отгружена"
-                status_dt = None
+                status_dt = ""
                 
             # Date column should use createdAt
-            date_dt = parse_wb_datetime(str(created_at)) if created_at else None
-            date_msk = to_moscow(date_dt) if date_dt else None
-            date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else ""
+            try:
+                date_dt = parse_wb_datetime(str(created_at)) if created_at else None
+                date_msk = to_moscow(date_dt) if date_dt else None
+                date_str = date_msk.strftime("%d.%m.%Y %H:%M") if date_msk else ""
+            except Exception:
+                date_str = str(created_at) if created_at else ""
             
             processed_supplies.append({
                 "supplyId": str(supply_id),
                 "date": date_str,
                 "count": count,
                 "status": status_label,
-                "statusDt": status_dt or "",
+                "statusDt": status_dt,
             })
 
         # Save raw supplies to cache (for future pagination)
@@ -10016,122 +10013,134 @@ def api_fbs_supplies():
         return jsonify({"items": [], "error": str(exc), "lastUpdated": None}), 200
 
 
-@app.route("/api/fbs/supplies/<supply_id>/orders", methods=["GET"]) 
-@login_required
-def api_fbs_supply_orders(supply_id: str):
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
-    if not token:
-        return jsonify({"items": []}), 200
-    headers_list = [
-        {"Authorization": f"{token}"},
-        {"Authorization": f"Bearer {token}"},
-    ]
-    last_err = None
-    try:
-        for hdrs in headers_list:
-            try:
-                url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
-                resp = get_with_retry(url, hdrs, params={})
-                data = resp.json()
-                items = data.get("orders") if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                if not isinstance(items, list):
-                    items = []
-                # Minimal normalization for frontend: id, article, barcode, nmId, photo
-                norm = []
-                prod_cached = load_products_cache() or {}
-                by_nm: Dict[int, Dict[str, Any]] = {}
-                try:
-                    for it in (prod_cached.get("items") or []):
-                        nmv = it.get("nm_id") or it.get("nmID")
-                        if nmv:
-                            by_nm[int(nmv)] = it
-                except Exception:
-                    pass
-                for it in items:
-                    if not isinstance(it, dict):
-                        continue
-                    nm = it.get("nmId") or it.get("nmID")
-                    photo = None
-                    barcode = None
-                    # format createdAt for item
-                    created_raw = it.get("createdAt") or it.get("dateCreated") or it.get("date")
-                    try:
-                        _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
-                        _dt_msk = to_moscow(_dt) if _dt else None
-                        created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
-                    except Exception:
-                        created_str = str(created_raw) if created_raw else ""
-                    if nm:
-                        try:
-                            hit = by_nm.get(int(nm))
-                        except Exception:
-                            hit = None
-                        if hit:
-                            photo = hit.get("photo")
-                            if hit.get("barcode"):
-                                barcode = hit.get("barcode")
-                            elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
-                                barcode = str(hit.get("barcodes")[0])
-                            else:
-                                sizes = hit.get("sizes") or []
-                                if isinstance(sizes, list):
-                                    for s in sizes:
-                                        bl = s.get("skus") or s.get("barcodes")
-                                        if isinstance(bl, list) and bl:
-                                            barcode = str(bl[0])
-                                            break
-                    norm.append({
-                        "id": it.get("id") or it.get("orderId") or it.get("ID"),
-                        "article": it.get("article") or it.get("vendorCode") or "",
-                        "barcode": (it.get("skus")[0] if isinstance(it.get("skus"), list) and it.get("skus") else None) or barcode or "",
-                        "nmId": nm,
-                        "photo": photo,
-                        "createdAt": created_str,
-                    })
-                return jsonify({"items": norm}), 200
-            except Exception as e:
-                last_err = e
-                continue
-        if last_err:
-            raise last_err
-        return jsonify({"items": []}), 200
-    except Exception as exc:
-        return jsonify({"items": [], "error": str(exc)}), 200
+# DEPRECATED: Этот роут перенесен в blueprints/fbs_supplies.py
+# @app.route("/api/fbs/supplies/<supply_id>/orders", methods=["GET"]) 
+# @login_required
+# def api_fbs_supply_orders(supply_id: str):
+#     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+#     if not token:
+#         return jsonify({"items": []}), 200
+#     headers_list = [
+#         {"Authorization": f"{token}"},
+#         {"Authorization": f"Bearer {token}"},
+#     ]
+#     last_err = None
+#     try:
+#         for hdrs in headers_list:
+#             try:
+#                 url = FBS_SUPPLY_ORDERS_URL.replace("{supplyId}", str(supply_id))
+#                 resp = get_with_retry(url, hdrs, params={})
+#                 data = resp.json()
+#                 # API может вернуть список заказов напрямую или обёрнутый в словарь
+#                 if isinstance(data, dict):
+#                     items = data.get("orders")
+#                     if items is None and isinstance(data.get("data"), dict):
+#                         items = data["data"].get("orders")
+#                     if items is None and isinstance(data.get("data"), list):
+#                         items = data["data"]
+#                 elif isinstance(data, list):
+#                     items = data
+#                 else:
+#                     items = []
+#                 if not isinstance(items, list):
+#                     items = []
+#                 # Minimal normalization for frontend: id, article, barcode, nmId, photo
+#                 norm = []
+#                 prod_cached = load_products_cache() or {}
+#                 by_nm: Dict[int, Dict[str, Any]] = {}
+#                 try:
+#                     for it in (prod_cached.get("items") or []):
+#                         nmv = it.get("nm_id") or it.get("nmID")
+#                         if nmv:
+#                             by_nm[int(nmv)] = it
+#                 except Exception:
+#                     pass
+#                 for it in items:
+#                     if not isinstance(it, dict):
+#                         continue
+#                     nm = it.get("nmId") or it.get("nmID")
+#                     photo = None
+#                     barcode = None
+#                     # format createdAt for item
+#                     created_raw = it.get("createdAt") or it.get("dateCreated") or it.get("date")
+#                     try:
+#                         _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
+#                         _dt_msk = to_moscow(_dt) if _dt else None
+#                         created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
+#                     except Exception:
+#                         created_str = str(created_raw) if created_raw else ""
+#                     if nm:
+#                         try:
+#                             hit = by_nm.get(int(nm))
+#                         except Exception:
+#                             hit = None
+#                         if hit:
+#                             photo = hit.get("photo")
+#                             if hit.get("barcode"):
+#                                 barcode = hit.get("barcode")
+#                             elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+#                                 barcode = str(hit.get("barcodes")[0])
+#                             else:
+#                                 sizes = hit.get("sizes") or []
+#                                 if isinstance(sizes, list):
+#                                     for s in sizes:
+#                                         bl = s.get("skus") or s.get("barcodes")
+#                                         if isinstance(bl, list) and bl:
+#                                             barcode = str(bl[0])
+#                                             break
+#                     norm.append({
+#                         "id": it.get("id") or it.get("orderId") or it.get("ID"),
+#                         "article": it.get("article") or it.get("vendorCode") or "",
+#                         "barcode": (it.get("skus")[0] if isinstance(it.get("skus"), list) and it.get("skus") else None) or barcode or "",
+#                         "nmId": nm,
+#                         "photo": photo,
+#                         "createdAt": created_str,
+#                     })
+#                 return jsonify({"items": norm}), 200
+#             except Exception as e:
+#                 last_err = e
+#                 continue
+#         if last_err:
+#             raise last_err
+#         return jsonify({"items": []}), 200
+#     except Exception as exc:
+#         return jsonify({"items": [], "error": str(exc)}), 200
 
 
-@app.route("/api/fbs/supplies/<supply_id>/orders/<order_id>", methods=["PATCH"])
-@login_required
-def api_fbs_add_order_to_supply(supply_id: str, order_id: str):
-    """Добавить сборочное задание в поставку"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
-    if not token:
-        return jsonify({"error": "No token"}), 401
-    
-    headers_list = [
-        {"Authorization": f"{token}"},
-        {"Authorization": f"Bearer {token}"},
-    ]
-    
-    # URL для добавления задания в поставку
-    url = f"https://marketplace-api.wildberries.ru/api/v3/supplies/{supply_id}/orders/{order_id}"
-    
-    last_err = None
-    for hdrs in headers_list:
-        try:
-            resp = requests.patch(url, headers=hdrs, timeout=30)
-            if resp.status_code in [200, 204]:  # 204 = No Content (успешно)
-                return jsonify({"success": True}), 200
-            elif resp.status_code == 409:
-                # Задание уже в поставке
-                return jsonify({"error": "Order already in supply"}), 409
-            else:
-                last_err = f"HTTP {resp.status_code}: {resp.text}"
-                continue
-        except Exception as e:
-            last_err = str(e)
-            continue
-    
-    return jsonify({"error": last_err or "Unknown error"}), 500
+# DEPRECATED: Этот роут перенесен в blueprints/fbs_supplies.py
+# @app.route("/api/fbs/supplies/<supply_id>/orders/<order_id>", methods=["PATCH"])
+# @login_required
+# def api_fbs_add_order_to_supply(supply_id: str, order_id: str):
+#     """Добавить сборочное задание в поставку"""
+#     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+#     if not token:
+#         return jsonify({"error": "No token"}), 401
+#     
+#     headers_list = [
+#         {"Authorization": f"{token}"},
+#         {"Authorization": f"Bearer {token}"},
+#     ]
+#     
+#     # URL для добавления задания в поставку
+#     url = f"https://marketplace-api.wildberries.ru/api/v3/supplies/{supply_id}/orders/{order_id}"
+#     
+#     last_err = None
+#     for hdrs in headers_list:
+#         try:
+#             resp = requests.patch(url, headers=hdrs, timeout=30)
+#             if resp.status_code in [200, 204]:  # 204 = No Content (успешно)
+#                 return jsonify({"success": True}), 200
+#             elif resp.status_code == 409:
+#                 # Задание уже в поставке
+#                 return jsonify({"error": "Order already in supply"}), 409
+#             else:
+#                 last_err = f"HTTP {resp.status_code}: {resp.text}"
+#                 continue
+#         except Exception as e:
+#             last_err = str(e)
+#             continue
+#     
+#     return jsonify({"error": last_err or "Unknown error"}), 500
 
 
 @app.route("/api/fbs/supplies/create", methods=["POST"])

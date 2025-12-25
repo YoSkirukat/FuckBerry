@@ -313,10 +313,15 @@
           if (!wrap) return;
           if (wrap.getAttribute('data-loaded') === '1') return;
           try{
+            console.log(`Запрашиваем товары для поставки: ${s.supplyId}`);
             const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(s.supplyId)}/orders`);
+            console.log(`Ответ для поставки ${s.supplyId}: status=${r.status}, ok=${r.ok}`);
             const d = await r.json();
+            console.log(`Данные для поставки ${s.supplyId}:`, d);
             const items = d.items || [];
+            console.log(`Товаров в поставке ${s.supplyId}: ${items.length}`);
             if (!items.length){
+              console.log(`Нет товаров в поставке ${s.supplyId}`);
               wrap.innerHTML = '<div class="text-muted text-center">Нет товаров в поставке</div>';
             } else {
               const table = document.createElement('table');
@@ -525,10 +530,10 @@
         }
 
         if (availableSupplies.length === 1) {
-          // Если только одна поставка, добавляем сразу
-          await addTasksToSupply(availableSupplies[0].supplyId);
+          // Если только одна поставка, показываем модальное окно с вопросом
+          showSingleSupplyModal(availableSupplies[0]);
         } else {
-          // Если несколько поставок, показываем модальное окно
+          // Если несколько поставок, показываем модальное окно выбора
           showSupplySelectionModal(availableSupplies);
         }
       } catch (error) {
@@ -536,6 +541,45 @@
         showNotification('Ошибка при получении списка поставок', 'error');
       }
     });
+
+    // Показать модальное окно с вопросом для одной поставки
+    function showSingleSupplyModal(supply) {
+      const supplyInfo = document.getElementById('singleSupplyInfo');
+      const addToExistingBtn = document.getElementById('addToExistingSupply');
+      const createNewBtn = document.getElementById('createNewSupply');
+      
+      if (!supplyInfo || !addToExistingBtn || !createNewBtn) return;
+      
+      // Заполняем информацию о поставке
+      supplyInfo.innerHTML = `
+        <div class="mb-2">
+          <strong>${supply.supplyId}</strong>
+        </div>
+        <div class="text-muted small">
+          Дата создания: ${supply.date}<br>
+          Товаров: ${supply.count || 0}
+        </div>
+      `;
+      
+      // Обработчики кнопок
+      addToExistingBtn.onclick = async function() {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('singleSupplyModal'));
+        modal.hide();
+        await addTasksToSupply(supply.supplyId);
+      };
+      
+      createNewBtn.onclick = async function() {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('singleSupplyModal'));
+        modal.hide();
+        // Показываем модальное окно для создания новой поставки
+        const createModal = new bootstrap.Modal(document.getElementById('createSupplyModal'));
+        createModal.show();
+      };
+      
+      // Показываем модальное окно
+      const modal = new bootstrap.Modal(document.getElementById('singleSupplyModal'));
+      modal.show();
+    }
 
     // Показать модальное окно выбора поставки
     function showSupplySelectionModal(supplies) {
@@ -654,10 +698,11 @@
         let errorCount = 0;
 
         // Добавляем каждое задание в поставку
+        // Используем POST вместо PATCH, так как PATCH устарел
         for (const orderId of selectedTasks) {
           try {
             const response = await fetch(`/api/fbs/supplies/${supplyId}/orders/${orderId}`, {
-              method: 'PATCH',
+              method: 'POST',  // Используем POST вместо PATCH
               headers: {
                 'Content-Type': 'application/json',
               },
@@ -668,11 +713,17 @@
               successCount++;
             } else {
               errorCount++;
-              console.error(`Ошибка добавления задания ${orderId}:`, response.status);
+              const errorData = await response.json().catch(() => ({}));
+              const errorMsg = errorData.error || `HTTP ${response.status}`;
+              console.error(`Ошибка добавления задания ${orderId}: ${response.status} - ${errorMsg}`);
+              // Не показываем уведомление для каждого задания, чтобы не спамить
+              // showNotification(`Ошибка добавления задания ${orderId}: ${errorMsg}`, 'error');
             }
           } catch (error) {
             errorCount++;
             console.error(`Ошибка добавления задания ${orderId}:`, error);
+            // Не показываем уведомление для каждого задания
+            // showNotification(`Ошибка добавления задания ${orderId}: ${error.message || error}`, 'error');
           }
         }
 
@@ -687,12 +738,9 @@
           // Обновляем списки (сначала задания, потом поставки)
           try {
             console.log('=== НАЧИНАЕМ ОБНОВЛЕНИЕ СПИСКОВ ===');
-            console.log('Ждем 3 секунды для обновления API...');
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            // Без лишних ожиданий: просто дергаем оба обновления последовательно
             console.log('Обновляем список заданий...');
             await loadTasks({refresh: true});
-            console.log('Ждем еще 2 секунды...');
-            await new Promise(resolve => setTimeout(resolve, 2000));
             console.log('Обновляем список поставок...');
             await loadSupplies({refresh: true});
             console.log('=== СПИСКИ ОБНОВЛЕНЫ ===');
@@ -724,6 +772,30 @@
 
   <!-- Уведомления -->
   <div id="notifications" class="position-fixed" style="top: 20px; right: 20px; z-index: 9999;"></div>
+
+  <!-- Модальное окно для одной неотгруженной поставки -->
+  <div class="modal fade" id="singleSupplyModal" tabindex="-1" aria-labelledby="singleSupplyModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="singleSupplyModalLabel">Выбор действия</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>У вас уже есть не отгруженная поставка:</p>
+          <div id="singleSupplyInfo" class="border rounded p-2 mb-3">
+            <!-- Информация о поставке будет загружена динамически -->
+          </div>
+          <p>Что вы хотите сделать?</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" class="btn btn-primary" id="addToExistingSupply">Добавить в существующую</button>
+          <button type="button" class="btn btn-outline-primary" id="createNewSupply">Создать новую</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Модальное окно для создания новой поставки -->
   <div class="modal fade" id="createSupplyModal" tabindex="-1" aria-labelledby="createSupplyModalLabel" aria-hidden="true">

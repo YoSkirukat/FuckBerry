@@ -406,7 +406,7 @@
             </thead>
             <tbody>
               {% for product in products %}
-              <tr data-nm-id="{{ product.nm_id }}" data-barcode="{{ product.barcode }}">
+              <tr data-nm-id="{{ product.nm_id }}" data-barcode="{{ product.barcode|string }}">
                 <td class="text-center">{{ loop.index }}</td>
                 <td>
                   {% if product.photo %}
@@ -435,9 +435,9 @@
                   {% endif %}
                 </td>
                 <td class="text-center">
-                  {% set product_barcode = product.barcode %}
-                  {% set fbw = (stocks_data[product_barcode] if stocks_data and product_barcode in stocks_data else None) %}
-                  {% set fbs = (fbs_stocks_data[product_barcode] if fbs_stocks_data and product_barcode in fbs_stocks_data else None) %}
+                  {% set product_barcode = (product.barcode|string) if product.barcode else '' %}
+                  {% set fbw = (stocks_data[product_barcode] if stocks_data and product_barcode and product_barcode in stocks_data else None) %}
+                  {% set fbs = (fbs_stocks_data[product_barcode] if fbs_stocks_data and product_barcode and product_barcode in fbs_stocks_data else None) %}
                   {% if fbw is not none or fbs is not none %}
                     <span class="badge {{ 'bg-success' if (fbw or 0) > 0 else 'bg-secondary' }}" data-bs-toggle="tooltip" title="FBW">{{ fbw if fbw is not none else 0 }}</span>
                     <span>/</span>
@@ -452,8 +452,8 @@
                          placeholder="0.00" 
                          step="0.01" 
                          min="0"
-                         data-barcode="{{ product.barcode }}"
-                         value="{% if purchase_prices and product.barcode in purchase_prices %}{{ purchase_prices[product.barcode] }}{% endif %}"
+                         data-barcode="{% if product.barcode %}{{ product.barcode|string }}{% endif %}"
+                         value="{% if product.barcode %}{% set barcode_key = product.barcode|string %}{% if purchase_prices and barcode_key in purchase_prices %}{{ purchase_prices[barcode_key] }}{% endif %}{% endif %}"
                          style="display: inline-block; width: 100px;">
                 </td>
                 <td class="text-center">
@@ -538,6 +538,11 @@
   <script id="stocksDataJson" type="application/json">{{ stocks_data|tojson|safe }}</script>
   <script id="fbsStocksDataJson" type="application/json">{{ fbs_stocks_data|tojson|safe }}</script>
   <script id="purchasePricesDataJson" type="application/json">{{ purchase_prices|tojson|safe }}</script>
+  <script>
+    // Отладочная информация
+    console.log('Загруженные закупочные цены:', {{ purchase_prices|tojson|safe }});
+    console.log('Количество закупочных цен:', Object.keys({{ purchase_prices|tojson|safe }}).length);
+  </script>
   
   <!-- Модальное окно настройки колонок -->
   <div class="modal fade" id="columnsSettingsModal" tabindex="-1" aria-hidden="true">
@@ -597,11 +602,29 @@
     const purchasePricesData = JSON.parse(document.getElementById('purchasePricesDataJson').textContent || '{}');
     
     // Отладочная информация
+    console.log('Загруженные закупочные цены (purchasePricesData):', purchasePricesData);
+    console.log('Количество закупочных цен:', Object.keys(purchasePricesData).length);
+    console.log('Примеры баркодов из purchasePricesData:', Object.keys(purchasePricesData).slice(0, 5));
+    
+    // Инициализируем закупочные цены из purchasePricesData при загрузке страницы
+    let initializedCount = 0;
+    document.querySelectorAll('.purchase-price').forEach(input => {
+      const barcode = String(input.getAttribute('data-barcode') || '').trim();
+      if (barcode && purchasePricesData[barcode]) {
+        input.value = purchasePricesData[barcode];
+        initializedCount++;
+      }
+    });
+    console.log(`Инициализировано ${initializedCount} закупочных цен из purchasePricesData`);
+    
     console.log('Dimensions data loaded:', dimensionsData);
     console.log('Dimensions data keys:', Object.keys(dimensionsData));
     console.log('Warehouses data loaded:', warehousesData);
     console.log('First few products:', productsData.slice(0, 3).map(p => ({ 
-      nm_id: p.nm_id, 
+      nm_id: p.nm_id,
+      barcode: p.barcode,
+      barcode_type: typeof p.barcode,
+      barcode_string: String(p.barcode || ''),
       supplier_article: p.supplier_article,
       dimensions: p.dimensions 
     })));
@@ -1637,7 +1660,7 @@
         .then(response => response.json())
         .then(data => {
           if (data.success) {
-            showUploadStatus(`Успешно загружено ${data.updated_count} цен`, 'success');
+            showUploadStatus(`Успешно загружено ${data.updated_count} цен. Сохранение...`, 'success');
             // Обновляем поля закупочных цен
             updatePurchasePrices(data.prices);
           } else {
@@ -1659,17 +1682,31 @@
       }
       
       function updatePurchasePrices(prices) {
+        let updatedCount = 0;
         const priceInputs = document.querySelectorAll('.purchase-price');
+        
+        // Нормализуем все баркоды из prices к строкам
+        const normalizedPrices = {};
+        for (const [key, value] of Object.entries(prices)) {
+          const normalizedKey = String(key).trim();
+          normalizedPrices[normalizedKey] = value;
+        }
+        
         priceInputs.forEach(input => {
-          const barcode = input.getAttribute('data-barcode');
-          if (prices[barcode]) {
-            input.value = prices[barcode];
+          const barcode = String(input.getAttribute('data-barcode') || '').trim();
+          if (barcode && normalizedPrices[barcode]) {
+            input.value = normalizedPrices[barcode];
             input.classList.add('table-success');
+            updatedCount++;
           }
         });
         
-        // Автоматически сохраняем цены в базу данных
-        savePricesToDatabase(prices);
+        console.log(`Обновлено ${updatedCount} полей закупочных цен из ${Object.keys(prices).length} загруженных`);
+        console.log('Примеры баркодов из файла:', Object.keys(normalizedPrices).slice(0, 5));
+        console.log('Примеры баркодов в таблице:', Array.from(priceInputs).slice(0, 5).map(inp => inp.getAttribute('data-barcode')));
+        
+        // Автоматически сохраняем цены в базу данных (используем нормализованные)
+        savePricesToDatabase(normalizedPrices);
       }
       
       function savePricesToDatabase(prices) {
@@ -1693,6 +1730,10 @@
             if (saveBtn) {
               saveBtn.style.display = 'none';
             }
+            // Перезагружаем страницу через 1 секунду, чтобы обновить данные из базы
+            setTimeout(() => {
+              location.reload();
+            }, 1000);
           } else {
             console.error('Ошибка автоматического сохранения:', data.error);
             // Показываем кнопку сохранения для ручного сохранения

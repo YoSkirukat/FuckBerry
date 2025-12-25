@@ -243,27 +243,40 @@
         body.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Загрузка...</td></tr>';
         const res = await fetch(`/api/fbs-stock/warehouse/${encodeURIComponent(wid)}`);
         const data = await res.json();
-        if(!res.ok) throw new Error(data.error||'Ошибка загрузки');
+        console.log('Ответ API для склада', wid, ':', data);
+        if(!res.ok) {
+          console.error('Ошибка API:', data.error || 'Неизвестная ошибка');
+          throw new Error(data.error||'Ошибка загрузки');
+        }
         body.innerHTML = '';
-        (data.rows||[]).forEach((r, idx)=>{
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td class="text-center">${idx+1}</td>
-            <td class="text-center">${r.photo?`<img class=\"thumb\" src=\"${r.photo}\" data-src=\"${r.photo}\"/>`:'-'}</td>
-            <td class="text-start">${r.nm_id?`<a href=\"https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx\" target=\"_blank\" rel=\"noopener\">${r.vendor_code||''}</a>`:(r.vendor_code||'')}</td>
-            <td class="text-center">${r.nm_id||''}</td>
-            <td class="text-center">${r.barcode||''}</td>
-            <td class="text-center"><input type=\"number\" class=\"form-control form-control-sm stock-input\" value=\"${r.amount??0}\" data-sku=\"${r.barcode||''}\" style=\"width: 100px; margin: 0 auto;\"/></td>
-          `;
-          body.appendChild(tr);
-        });
+        const rows = data.rows || [];
+        console.log(`Загружено ${rows.length} товаров для склада ${wid}`);
+        if (rows.length === 0) {
+          body.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Нет товаров на складе</td></tr>';
+        } else {
+          rows.forEach((r, idx)=>{
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td class="text-center">${idx+1}</td>
+              <td class="text-center">${r.photo?`<img class=\"thumb\" src=\"${r.photo}\" data-src=\"${r.photo}\"/>`:'-'}</td>
+              <td class="text-start">${r.nm_id?`<a href=\"https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx\" target=\"_blank\" rel=\"noopener\">${r.vendor_code||''}</a>`:(r.vendor_code||'')}</td>
+              <td class="text-center">${r.nm_id||''}</td>
+              <td class="text-center">${r.barcode||''}</td>
+              <td class="text-center"><input type=\"number\" class=\"form-control form-control-sm stock-input\" value=\"${r.amount??0}\" data-sku=\"${r.barcode||''}\" style=\"width: 100px; margin: 0 auto;\"/></td>
+            `;
+            body.appendChild(tr);
+          });
+        }
         bindPreview();
         // remember selected warehouse and reset edits
         currentWarehouseId = wid;
         currentWarehouseName = wname;
         edited.clear(); if (applyBtn) applyBtn.disabled = true;
         bindEditTracking();
-      }catch(err){ body.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Ошибка загрузки</td></tr>'; }
+      }catch(err){ 
+        console.error('Ошибка при загрузке товаров склада:', err);
+        body.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Ошибка загрузки: ${err.message || 'Неизвестная ошибка'}</td></tr>`;
+      }
     });
 
     // Track edits and enable apply button
