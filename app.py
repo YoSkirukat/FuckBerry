@@ -1986,14 +1986,21 @@ def fetch_orders_page(token: str, date_from_iso: str, flag: int = 0) -> List[Dic
     return response.json()
 
 
-def fetch_orders_range(token: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-    """Fetch orders from WB by paginating with lastChangeDate, but filter by actual order date."""
+def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: int = 7) -> List[Dict[str, Any]]:
+    """Fetch orders from WB by paginating with lastChangeDate, but filter by actual order date.
+    
+    Args:
+        token: API токен
+        start_date: Начальная дата (YYYY-MM-DD)
+        end_date: Конечная дата (YYYY-MM-DD)
+        days_back: Количество дней назад от start_date для начала загрузки (по умолчанию 7 дней)
+    """
     start_dt = parse_date(start_date)
     end_dt = parse_date(end_date)
 
-    # Загружаем данные с запасом: начинаем за 7 дней до start_date
-    # чтобы захватить заказы, которые могли быть обновлены позже
-    extended_start = start_dt - timedelta(days=7)
+    # Загружаем данные с запасом для захвата заказов, которые могли быть обновлены позже
+    # Для отчетов можно использовать меньший запас (1 день) для ускорения
+    extended_start = start_dt - timedelta(days=days_back)
     cursor_dt = datetime.combine(extended_start.date(), datetime.min.time())
 
     collected: List[Dict[str, Any]] = []
@@ -3594,13 +3601,6 @@ def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[di
         raise ValueError("bad_args")
     url = FBS_STOCKS_BY_WAREHOUSE_URL.format(warehouseId=warehouse_id)
     
-    # Try different body formats for WB API
-    body_formats = [
-        items[:1000],  # Direct array without wrapper
-        {"stocks": items[:1000]},  # With "stocks" wrapper
-        {"data": items[:1000]},  # With "data" wrapper
-    ]
-    
     headers1 = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     headers2 = {"Authorization": f"{token}", "Content-Type": "application/json"}
     
@@ -3608,7 +3608,7 @@ def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[di
     
     # Validate items before sending
     valid_items = []
-    for item in items[:1000]:
+    for item in items:
         if isinstance(item, dict) and 'sku' in item and 'amount' in item:
             sku = str(item['sku']).strip()
             amount = int(item['amount'])
@@ -3625,46 +3625,112 @@ def update_fbs_stocks_by_warehouse(token: str, warehouse_id: int, items: list[di
     
     print(f"Valid items to update: {len(valid_items)}")
     
-    # Update body formats with valid items
+    # Split into batches to avoid rate limiting (max 200 items per batch)
+    batch_size = 200
+    batches = [valid_items[i:i + batch_size] for i in range(0, len(valid_items), batch_size)]
+    print(f"Split into {len(batches)} batches of up to {batch_size} items each")
+    
+    # Try different body formats for WB API
     body_formats = [
-        valid_items,  # Direct array without wrapper
-        {"stocks": valid_items},  # With "stocks" wrapper
-        {"data": valid_items},  # With "data" wrapper
+        lambda batch: batch,  # Direct array without wrapper
+        lambda batch: {"stocks": batch},  # With "stocks" wrapper
+        lambda batch: {"data": batch},  # With "data" wrapper
     ]
     
-    for i, body in enumerate(body_formats):
-        print(f"Trying body format {i+1}: {body}")
-        
-        try:
-            # Try with Bearer token first
-            print(f"Making PUT request to: {url}")
-            print(f"Headers: {headers1}")
-            resp = requests.put(url, headers=headers1, json=body, timeout=30)
-            print(f"Response status: {resp.status_code}")
-            if resp.status_code == 204:
-                print("Successfully updated with Bearer token")
-                return
-            else:
-                print(f"Response text: {resp.text}")
-                print(f"Response headers: {dict(resp.headers)}")
-                
-                # Try without Bearer token
-                print(f"Trying without Bearer token...")
-                resp2 = requests.put(url, headers=headers2, json=body, timeout=30)
-                print(f"Response status (no Bearer): {resp2.status_code}")
-                if resp2.status_code == 204:
-                    print("Successfully updated without Bearer token")
-                    return
-                else:
-                    print(f"Response text (no Bearer): {resp2.text}")
-                    print(f"Response headers (no Bearer): {dict(resp2.headers)}")
-                    
-        except Exception as e:
-            print(f"Error with body format {i+1}: {e}")
-            continue
+    total_updated = 0
     
-    # If all formats failed, raise the last error
-    raise requests.HTTPError("All body formats failed")
+    for batch_idx, batch in enumerate(batches):
+        print(f"Processing batch {batch_idx + 1}/{len(batches)} ({len(batch)} items)")
+        
+        success = False
+        for format_idx, format_func in enumerate(body_formats):
+            body = format_func(batch)
+            print(f"Trying body format {format_idx + 1}/3 for batch {batch_idx + 1}")
+            
+            # Try with Bearer token first
+            for attempt in range(3):  # Max 3 retries per format
+                try:
+                    print(f"Making PUT request to: {url} (attempt {attempt + 1}/3)")
+                    resp = requests.put(url, headers=headers1, json=body, timeout=30)
+                    print(f"Response status: {resp.status_code}")
+                    
+                    if resp.status_code == 204:
+                        print(f"Successfully updated batch {batch_idx + 1} with Bearer token")
+                        total_updated += len(batch)
+                        success = True
+                        break
+                    elif resp.status_code == 429:
+                        # Rate limit exceeded - wait and retry
+                        retry_after = 60  # Default wait time
+                        retry_header = resp.headers.get('X-Ratelimit-Retry') or resp.headers.get('Retry-After')
+                        if retry_header:
+                            try:
+                                retry_after = int(float(retry_header))
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        wait_time = retry_after * (attempt + 1)  # Exponential backoff
+                        print(f"Rate limit exceeded (429), waiting {wait_time} seconds before retry...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"Response text: {resp.text[:200]}")
+                        print(f"Response headers: {dict(resp.headers)}")
+                        
+                        # Try without Bearer token if Bearer failed
+                        if attempt == 0:  # Only try without Bearer on first attempt
+                            print(f"Trying without Bearer token...")
+                            resp2 = requests.put(url, headers=headers2, json=body, timeout=30)
+                            print(f"Response status (no Bearer): {resp2.status_code}")
+                            if resp2.status_code == 204:
+                                print(f"Successfully updated batch {batch_idx + 1} without Bearer token")
+                                total_updated += len(batch)
+                                success = True
+                                break
+                            elif resp2.status_code == 429:
+                                # Rate limit exceeded - wait and retry
+                                retry_after = 60
+                                retry_header = resp2.headers.get('X-Ratelimit-Retry') or resp2.headers.get('Retry-After')
+                                if retry_header:
+                                    try:
+                                        retry_after = int(float(retry_header))
+                                    except (ValueError, TypeError):
+                                        pass
+                                wait_time = retry_after * (attempt + 1)
+                                print(f"Rate limit exceeded (429), waiting {wait_time} seconds before retry...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                print(f"Response text (no Bearer): {resp2.text[:200]}")
+                        
+                except requests.RequestException as e:
+                    print(f"Request error on attempt {attempt + 1}: {e}")
+                    if attempt < 2:  # Retry on network errors
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    else:
+                        raise
+                except Exception as e:
+                    print(f"Error with body format {format_idx + 1}, attempt {attempt + 1}: {e}")
+                    if attempt < 2:
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    else:
+                        break
+            
+            if success:
+                break
+        
+        if not success:
+            raise requests.HTTPError(f"Failed to update batch {batch_idx + 1} after trying all formats")
+        
+        # Add delay between batches to avoid rate limiting
+        if batch_idx < len(batches) - 1:
+            delay = 2  # 2 seconds between batches
+            print(f"Waiting {delay} seconds before next batch...")
+            time.sleep(delay)
+    
+    print(f"Successfully updated {total_updated} stocks for warehouse {warehouse_id}")
 
 
 def _fbs_stock_cache_path_for_user() -> str:
@@ -7576,15 +7642,15 @@ def api_report_orders():
     cached = load_last_results()
     token = (current_user.wb_token or "") if current_user.is_authenticated else ""
     
-    # Обновляем остатки если нужно (если кэш устарел)
-    if token and current_user.is_authenticated:
-        update_stocks_if_needed(current_user.id, token, force_update=False)
-    
     req_from = (request.args.get("date_from") or "").strip()
     req_to = (request.args.get("date_to") or "").strip()
     warehouse = (request.args.get("warehouse") or "").strip() or None
     # Параметр force_refresh указывает, что нужно загрузить свежие данные, игнорируя кэш
     force_refresh = request.args.get("force_refresh") == "1" or request.args.get("force_refresh") == "true"
+    
+    # НЕ обновляем остатки при загрузке отчета - это занимает слишком много времени
+    # Остатки обновляются отдельно на странице /stocks или в фоне
+    # Используем существующий кэш остатков
     
     try:
         if req_from and req_to and token:
@@ -7596,7 +7662,8 @@ def api_report_orders():
                 and cached.get("date_from") == req_from
                 and cached.get("date_to") == req_to
             ):
-                raw_orders = fetch_orders_range(token, req_from, req_to)
+                # Для отчетов используем минимальный запас (1 день) для ускорения загрузки
+                raw_orders = fetch_orders_range(token, req_from, req_to, days_back=1)
                 orders = to_rows(raw_orders, req_from, req_to)
                 date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
                 date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")

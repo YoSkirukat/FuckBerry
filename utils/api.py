@@ -129,14 +129,21 @@ def fetch_orders_page(token: str, date_from_iso: str, flag: int = 0) -> List[Dic
     return response.json()
 
 
-def fetch_orders_range(token: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-    """Получает заказы за период с пагинацией"""
+def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: int = 1) -> List[Dict[str, Any]]:
+    """Получает заказы за период с пагинацией
+    
+    Args:
+        token: API токен
+        start_date: Начальная дата (YYYY-MM-DD)
+        end_date: Конечная дата (YYYY-MM-DD)
+        days_back: Количество дней назад от start_date для начала загрузки (по умолчанию 1 день)
+    """
     start_dt = parse_date(start_date)
     end_dt = parse_date(end_date)
 
-    # Загружаем данные с запасом: начинаем за 7 дней до start_date
-    # чтобы захватить заказы, которые могли быть обновлены позже
-    extended_start = start_dt - timedelta(days=7)
+    # Загружаем данные с небольшим запасом (по умолчанию 1 день) для захвата заказов, 
+    # которые могли быть обновлены позже. Для отчетов используем минимальный запас.
+    extended_start = start_dt - timedelta(days=days_back)
     cursor_dt = datetime.combine(extended_start.date(), datetime.min.time())
 
     collected: List[Dict[str, Any]] = []
@@ -292,7 +299,41 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
             params["rrdid"] = rrdid
             try:
                 resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=3, timeout_s=30)
-                data = resp.json()
+                
+                # Проверяем, что ответ не пустой и имеет правильный Content-Type
+                if not resp.text or not resp.text.strip():
+                    logging.warning(f"Пустой ответ от API для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid})")
+                    if rrdid == 0:
+                        logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за пустого ответа при первой загрузке")
+                        interval_error = "Empty response from API"
+                        break
+                    time.sleep(2)
+                    continue
+                
+                # Проверяем Content-Type
+                content_type = resp.headers.get('Content-Type', '').lower()
+                if 'application/json' not in content_type and 'text/json' not in content_type:
+                    logging.warning(f"Неожиданный Content-Type для интервала {interval_from} - {interval_to}: {content_type}, первые 200 символов: {resp.text[:200]}")
+                    if rrdid == 0:
+                        logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за неверного Content-Type")
+                        interval_error = f"Invalid Content-Type: {content_type}"
+                        break
+                    time.sleep(2)
+                    continue
+                
+                # Пытаемся распарсить JSON
+                try:
+                    data = resp.json()
+                except ValueError as json_err:
+                    logging.warning(f"Ошибка парсинга JSON для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}): {json_err}")
+                    logging.warning(f"Статус ответа: {resp.status_code}, Content-Type: {content_type}, первые 500 символов: {resp.text[:500]}")
+                    if rrdid == 0:
+                        logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки парсинга JSON при первой загрузке")
+                        interval_error = f"JSON parse error: {json_err}"
+                        break
+                    time.sleep(2)
+                    continue
+                    
             except requests.HTTPError as e:
                 interval_error = str(e)
                 error_str = str(e)
@@ -317,15 +358,47 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
                         
                         try:
                             resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=1, timeout_s=30)
-                            data = resp.json()
+                            
+                            # Проверяем, что ответ не пустой
+                            if not resp.text or not resp.text.strip():
+                                logging.warning(f"Пустой ответ от API при retry 429 для интервала {interval_from} - {interval_to}")
+                                if retry_attempt < max_429_retries:
+                                    continue
+                                else:
+                                    interval_error = "Empty response from API after 429 retries"
+                                    break
+                            
+                            # Проверяем Content-Type
+                            content_type = resp.headers.get('Content-Type', '').lower()
+                            if 'application/json' not in content_type and 'text/json' not in content_type:
+                                logging.warning(f"Неожиданный Content-Type при retry 429: {content_type}, первые 200 символов: {resp.text[:200]}")
+                                if retry_attempt < max_429_retries:
+                                    continue
+                                else:
+                                    interval_error = f"Invalid Content-Type: {content_type}"
+                                    break
+                            
+                            # Пытаемся распарсить JSON
+                            try:
+                                data = resp.json()
+                            except ValueError as json_err:
+                                logging.warning(f"Ошибка парсинга JSON при retry 429: {json_err}, первые 500 символов: {resp.text[:500]}")
+                                if retry_attempt < max_429_retries:
+                                    continue
+                                else:
+                                    interval_error = f"JSON parse error: {json_err}"
+                                    break
+                            
                             interval_error = None
                             retry_success = True
                             break
-                        except Exception:
+                        except Exception as retry_exc:
+                            logging.warning(f"Ошибка при retry 429, попытка {retry_attempt}/{max_429_retries}: {retry_exc}")
                             if retry_attempt < max_429_retries:
                                 continue
                             else:
                                 interval_error = str(e)
+                                break
                     
                     if not retry_success:
                         if rrdid == 0:
@@ -342,9 +415,11 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
                     continue
             except Exception as e:
                 interval_error = str(e)
-                logging.warning(f"Ошибка загрузки данных для интервала {interval_from} - {interval_to}: {e}")
+                logging.warning(f"Ошибка загрузки данных для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}): {e}")
+                import traceback
+                logging.debug(f"Traceback: {traceback.format_exc()}")
                 if rrdid == 0:
-                    logging.error(f"Пропускаем интервал {interval_from} - {interval_to}")
+                    logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки при первой загрузке")
                     break
                 time.sleep(2)
                 continue
@@ -366,6 +441,8 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
         if interval_rows:
             all_rows.extend(interval_rows)
             logging.info(f"Интервал {interval_from} - {interval_to}: загружено {len(interval_rows)} записей")
+        elif interval_error:
+            logging.error(f"ВНИМАНИЕ: Интервал {interval_from} - {interval_to} не загружен из-за ошибки: {interval_error}")
         
         if idx < total_intervals:
             pause_time = 2

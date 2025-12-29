@@ -25,17 +25,194 @@ stocks_bp = Blueprint("stocks", __name__)
 
 def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
     """Получает остатки с повторными попытками (снепшот всех складов)."""
+    import logging
+    import time
+    logger = logging.getLogger(__name__)
+    
     headers1 = {"Authorization": f"Bearer {token}"}
+    headers2 = {"Authorization": f"{token}"}
+    
+    # Пробуем сначала самый простой вариант (Bearer без параметров)
+    # Это самый частый случай, который должен работать
     try:
-        resp = get_with_retry(STOCKS_API_URL, headers1, params={}, max_retries=1, timeout_s=30)
-        return resp.json()
-    except requests.HTTPError as err:
-        # Если авторизация не подошла — пробуем без Bearer
-        if err.response is not None and err.response.status_code in (401, 403):
-            headers2 = {"Authorization": f"{token}"}
-            resp2 = get_with_retry(STOCKS_API_URL, headers2, params={}, max_retries=1, timeout_s=30)
-            return resp2.json()
-        raise
+        logger.info(f"Fetching stocks from {STOCKS_API_URL} with Bearer auth, no params")
+        resp = requests.get(STOCKS_API_URL, headers=headers1, params={}, timeout=30)
+        logger.info(f"Stocks API response status: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            # Успех - обрабатываем и возвращаем
+            if not resp.text or not resp.text.strip():
+                logger.warning("Empty response from Stocks API")
+                raise requests.HTTPError("Empty response from API", response=resp)
+            
+            content_type = resp.headers.get('Content-Type', '').lower()
+            if 'application/json' not in content_type and 'text/json' not in content_type:
+                logger.warning(f"Unexpected Content-Type: {content_type}. Response preview: {resp.text[:200]}")
+                raise requests.HTTPError(f"Invalid Content-Type: {content_type}. Response: {resp.text[:200]}", response=resp)
+            
+            try:
+                data = resp.json()
+                
+                # API может вернуть словарь с данными внутри
+                if isinstance(data, dict):
+                    for key in ['data', 'stocks', 'items', 'result']:
+                        if key in data and isinstance(data[key], list):
+                            logger.info(f"Found list in key '{key}', extracted {len(data[key])} items")
+                            data = data[key]
+                            break
+                    else:
+                        for value in data.values():
+                            if isinstance(value, list):
+                                logger.info(f"Found list in dict values, extracted {len(value)} items")
+                                data = value
+                                break
+                        else:
+                            raise requests.HTTPError(f"API returned dict but no list found: {list(data.keys())}", response=resp)
+                
+                if not isinstance(data, list):
+                    raise requests.HTTPError(f"API returned non-list data: {type(data)}", response=resp)
+                
+                logger.info(f"Successfully parsed stocks data, got {len(data)} items")
+                return data
+            except ValueError as json_err:
+                raise requests.HTTPError(f"JSON parse error: {json_err}. Response: {resp.text[:500]}", response=resp)
+        elif resp.status_code == 429:
+            # Rate limit - сразу возвращаем ошибку, не пробуем другие варианты
+            error_text = resp.text[:500] if resp.text else "No response body"
+            logger.warning(f"Rate limit (429): {error_text}")
+            http_err = requests.HTTPError(f"API returned status 429: {error_text}", response=resp)
+            http_err.response = resp
+            raise http_err
+        elif resp.status_code in (401, 403):
+            # Авторизация не подошла - пробуем без Bearer
+            logger.info(f"Got {resp.status_code} with Bearer auth, trying without Bearer")
+            # Продолжаем в блоке except ниже
+            raise requests.HTTPError(f"API returned status {resp.status_code}", response=resp)
+        else:
+            # Другие ошибки (400, 500 и т.д.) - пробуем с параметрами
+            error_text = resp.text[:500] if resp.text else "No response body"
+            logger.warning(f"Stocks API returned status {resp.status_code}: {error_text}")
+            # Пробуем с параметрами
+            raise requests.HTTPError(f"API returned status {resp.status_code}: {error_text}", response=resp)
+    except requests.HTTPError as first_err:
+        # Если первый вариант не сработал, пробуем альтернативы
+        if first_err.response and first_err.response.status_code == 429:
+            # 429 - сразу пробрасываем, не пробуем другие варианты
+            raise
+        
+        # Пробуем другие варианты только если это не 429
+        params_list = [
+            {"dateFrom": "1970-01-01T00:00:00", "flag": 0},  # С параметрами
+        ]
+        
+        # Если была ошибка авторизации, пробуем без Bearer
+        headers_to_try = [headers2] if (first_err.response and first_err.response.status_code in (401, 403)) else [headers1, headers2]
+        
+        last_error = first_err
+        
+        for headers in headers_to_try:
+            for params in params_list:
+                try:
+                    auth_type = "Bearer" if headers == headers1 else "no Bearer"
+                    logger.info(f"Fetching stocks from {STOCKS_API_URL} with {auth_type} auth, params: {params}")
+                    
+                    resp = requests.get(STOCKS_API_URL, headers=headers, params=params, timeout=30)
+                    logger.info(f"Stocks API response status: {resp.status_code}")
+                    
+                    if resp.status_code == 200:
+                        if not resp.text or not resp.text.strip():
+                            logger.warning("Empty response from Stocks API")
+                            last_error = requests.HTTPError("Empty response from API", response=resp)
+                            continue
+                        
+                        content_type = resp.headers.get('Content-Type', '').lower()
+                        if 'application/json' not in content_type and 'text/json' not in content_type:
+                            logger.warning(f"Unexpected Content-Type: {content_type}. Response preview: {resp.text[:200]}")
+                            last_error = requests.HTTPError(f"Invalid Content-Type: {content_type}. Response: {resp.text[:200]}", response=resp)
+                            continue
+                        
+                        try:
+                            data = resp.json()
+                            
+                            if isinstance(data, dict):
+                                for key in ['data', 'stocks', 'items', 'result']:
+                                    if key in data and isinstance(data[key], list):
+                                        logger.info(f"Found list in key '{key}', extracted {len(data[key])} items")
+                                        data = data[key]
+                                        break
+                                else:
+                                    for value in data.values():
+                                        if isinstance(value, list):
+                                            logger.info(f"Found list in dict values, extracted {len(value)} items")
+                                            data = value
+                                            break
+                                    else:
+                                        logger.warning(f"API returned dict but no list found: {list(data.keys())}")
+                                        last_error = requests.HTTPError(f"API returned dict but no list found: {list(data.keys())}", response=resp)
+                                        continue
+                            
+                            if not isinstance(data, list):
+                                logger.warning(f"API returned non-list data: {type(data)}")
+                                last_error = requests.HTTPError(f"API returned non-list data: {type(data)}", response=resp)
+                                continue
+                            
+                            logger.info(f"Successfully parsed stocks data, got {len(data)} items")
+                            return data
+                        except ValueError as json_err:
+                            logger.warning(f"JSON parse error: {json_err}. Response preview: {resp.text[:500]}")
+                            last_error = requests.HTTPError(f"JSON parse error: {json_err}. Response: {resp.text[:500]}", response=resp)
+                            continue
+                    elif resp.status_code == 429:
+                        # 429 - сразу пробрасываем, не пробуем другие варианты
+                        error_text = resp.text[:500] if resp.text else "No response body"
+                        logger.warning(f"Rate limit (429) with {auth_type} auth, params {params}: {error_text}")
+                        http_err = requests.HTTPError(f"API returned status 429: {error_text}", response=resp)
+                        http_err.response = resp
+                        raise http_err
+                    elif resp.status_code in (401, 403):
+                        logger.info(f"Got {resp.status_code} with {auth_type} auth, will try other auth method")
+                        http_err = requests.HTTPError(f"API returned status {resp.status_code}", response=resp)
+                        http_err.response = resp
+                        last_error = http_err
+                        break
+                    else:
+                        error_text = resp.text[:500] if resp.text else "No response body"
+                        logger.warning(f"Stocks API returned status {resp.status_code} with {auth_type} auth, params {params}: {error_text}")
+                        http_err = requests.HTTPError(f"API returned status {resp.status_code}: {error_text}", response=resp)
+                        http_err.response = resp
+                        last_error = http_err
+                        continue
+                        
+                except requests.HTTPError as e:
+                    # Если это 429, пробрасываем дальше
+                    if e.response and e.response.status_code == 429:
+                        raise
+                    logger.warning(f"HTTP error with {auth_type} auth, params {params}: {e}")
+                    last_error = e
+                    continue
+                except requests.RequestException as e:
+                    logger.warning(f"Request exception with {auth_type} auth, params {params}: {e}")
+                    last_error = e
+                    continue
+                except Exception as e:
+                    logger.error(f"Unexpected error with {auth_type} auth, params {params}: {e}")
+                    last_error = e
+                    continue
+    
+    # Если все варианты не сработали, пробрасываем последнюю ошибку
+    if last_error:
+        if isinstance(last_error, requests.HTTPError):
+            # Если это HTTPError с response, пробрасываем как есть
+            if last_error.response is not None:
+                raise last_error
+            # Если response нет, создаем новый HTTPError с информацией об ошибке
+            raise requests.HTTPError(f"Failed to fetch stocks: {last_error}", response=None)
+        else:
+            # Для других типов ошибок создаем HTTPError
+            raise requests.HTTPError(f"Failed to fetch stocks: {last_error}", response=None)
+    
+    # Если вообще не было ошибок, но и данных нет
+    raise RuntimeError("Failed to fetch stocks: all parameter combinations failed")
 
 
 @stocks_bp.route("/stocks", methods=["GET"])
@@ -218,19 +395,109 @@ def stocks_page():
 @login_required
 def api_stocks_refresh():
     """Обновляет кэш остатков по API и возвращает краткий статус."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     token = current_user.wb_token or ""
     if not token:
         return jsonify({"error": "no_token"}), 401
+    
     try:
+        logger.info("Starting stocks refresh for user %s", current_user.id)
         raw = fetch_stocks_resilient(token)
-        items = normalize_stocks(raw)
+        
+        # Проверяем, что получили валидные данные
+        if not isinstance(raw, list):
+            logger.error(f"Expected list from fetch_stocks_resilient, got {type(raw)}: {raw}")
+            return jsonify({"error": "invalid_data", "detail": "API returned non-list data"}), 502
+        
+        logger.info(f"Got {len(raw)} items from API, normalizing...")
+        try:
+            items = normalize_stocks(raw)
+            logger.info(f"Normalized to {len(items)} items")
+        except Exception as norm_err:
+            import traceback
+            error_trace = traceback.format_exc()
+            logger.error(f"Error in normalize_stocks: {norm_err}\n{error_trace}")
+            return jsonify({
+                "error": "normalization_error",
+                "detail": str(norm_err),
+                "trace": error_trace
+            }), 500
+        
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        save_stocks_cache({"items": items, "updated_at": now_str})
+        try:
+            save_stocks_cache({"items": items, "updated_at": now_str, "_user_id": current_user.id})
+            logger.info("Stocks cache saved successfully")
+        except Exception as cache_err:
+            import traceback
+            error_trace = traceback.format_exc()
+            logger.error(f"Error in save_stocks_cache: {cache_err}\n{error_trace}")
+            # Кэш не сохранился, но данные нормализованы - возвращаем успех, но с предупреждением
+            logger.warning("Failed to save cache, but data was normalized successfully")
+            return jsonify({
+                "ok": True,
+                "count": len(items),
+                "updated_at": now_str,
+                "warning": "Cache save failed"
+            })
+        
         return jsonify({"ok": True, "count": len(items), "updated_at": now_str})
     except requests.HTTPError as http_err:
-        return jsonify({"error": "http", "status": http_err.response.status_code}), 502
+        # Получаем статус код из response, если он есть
+        status_code = 500
+        error_detail = ""
+        response_obj = None
+        
+        if hasattr(http_err, 'response') and http_err.response is not None:
+            response_obj = http_err.response
+            status_code = response_obj.status_code
+            try:
+                error_detail = response_obj.text[:500] if response_obj.text else ""
+            except Exception:
+                pass
+        else:
+            # Если response нет, пытаемся извлечь информацию из сообщения об ошибке
+            error_detail = str(http_err)
+            # Пытаемся найти статус код в сообщении
+            import re
+            match = re.search(r'status (\d+)', str(http_err), re.IGNORECASE)
+            if match:
+                try:
+                    status_code = int(match.group(1))
+                except (ValueError, TypeError):
+                    pass
+        
+        logger.error(f"HTTP error {status_code} while refreshing stocks: {error_detail}")
+        
+        # Для 429 возвращаем специальный статус с retry_after
+        if status_code == 429:
+            retry_after = 60
+            if response_obj:
+                retry_header = response_obj.headers.get('X-Ratelimit-Retry') or response_obj.headers.get('Retry-After')
+                if retry_header:
+                    try:
+                        retry_after = int(float(retry_header))
+                    except (ValueError, TypeError):
+                        pass
+            return jsonify({
+                "error": "rate_limit",
+                "status": 429,
+                "retry_after": retry_after,
+                "detail": error_detail
+            }), 429
+        
+        # Для других HTTP ошибок возвращаем статус с деталями
+        return jsonify({
+            "error": "http",
+            "status": status_code,
+            "detail": error_detail
+        }), status_code if 400 <= status_code < 600 else 502
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        import traceback
+        error_trace = traceback.format_exc()
+        logger.error(f"Unexpected error while refreshing stocks: {exc}\n{error_trace}")
+        return jsonify({"error": str(exc), "trace": error_trace}), 500
 
 
 @stocks_bp.route("/api/stocks/data", methods=["GET"])

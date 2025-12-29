@@ -38,8 +38,45 @@ def report_sales_page():
 def report_orders_page():
     """Страница отчёта по заказам"""
     cached = load_last_results()
-    # Страница по умолчанию открывается пустой
-    return render_template("report_orders.html", error=None, items=[], date_from_fmt="", date_to_fmt="")
+    
+    # Извлекаем параметры дат из URL
+    date_from_val = (request.args.get("date_from") or "").strip()
+    date_to_val = (request.args.get("date_to") or "").strip()
+    warehouse = request.args.get("warehouse") or None
+    
+    # Форматируем даты для отображения
+    date_from_fmt = ""
+    date_to_fmt = ""
+    if date_from_val:
+        try:
+            date_from_fmt = datetime.strptime(date_from_val, "%Y-%m-%d").strftime("%d.%m.%Y")
+        except Exception:
+            date_from_fmt = date_from_val
+    if date_to_val:
+        try:
+            date_to_fmt = datetime.strptime(date_to_val, "%Y-%m-%d").strftime("%d.%m.%Y")
+        except Exception:
+            date_to_fmt = date_to_val
+    
+    # Получаем список складов из кэша заказов
+    warehouses = []
+    if cached and current_user.is_authenticated and cached.get("_user_id") == current_user.id:
+        orders = cached.get("orders", [])
+        warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders})
+    
+    # Страница открывается пустой, данные загружаются через JavaScript
+    # Но передаем параметры дат, чтобы JavaScript мог их использовать для автозагрузки
+    return render_template(
+        "report_orders.html",
+        error=None,
+        items=[],
+        date_from_fmt=date_from_fmt,
+        date_to_fmt=date_to_fmt,
+        date_from_val=date_from_val,
+        date_to_val=date_to_val,
+        warehouse=warehouse,
+        warehouses=warehouses,
+    )
 
 
 @reports_bp.route("/report/finance", methods=["GET"]) 

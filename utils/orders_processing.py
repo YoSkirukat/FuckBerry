@@ -197,19 +197,40 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         nm_to_photo = {}
 
     # Load stocks data for current user
-    stocks_data = {}
+    # Build a map: barcode -> total qty (summed across all warehouses or filtered by warehouse)
+    stocks_by_barcode: Dict[str, int] = {}
     try:
+        from flask_login import current_user
         stocks_cached = load_stocks_cache()
+        # Verify that cache belongs to current user
+        # load_stocks_cache() already loads cache for current user via _stocks_cache_path_for_user()
+        # but we double-check _user_id to be safe
         if stocks_cached and stocks_cached.get("_user_id"):
-            for stock_item in stocks_cached.get("items", []):
-                barcode = stock_item.get("barcode")
-                stock_warehouse = stock_item.get("warehouse", "")
-                qty = int(stock_item.get("qty", 0) or 0)
-                if barcode and stock_warehouse:
-                    key = f"{barcode}_{stock_warehouse}"
-                    stocks_data[key] = qty
-    except Exception:
-        stocks_data = {}
+            # Check if current_user is available and matches
+            try:
+                user_id_match = current_user.is_authenticated and stocks_cached.get("_user_id") == current_user.id
+            except Exception:
+                # If current_user is not available, still use cache if it exists
+                user_id_match = True
+            if user_id_match:
+                for stock_item in stocks_cached.get("items", []):
+                    barcode = stock_item.get("barcode")
+                    stock_warehouse = stock_item.get("warehouse", "")
+                    qty = int(stock_item.get("qty", 0) or 0)
+                    
+                    if barcode:
+                        if warehouse:
+                            # Filter by warehouse - only add if warehouse matches
+                            if stock_warehouse == warehouse or (warehouse and stock_warehouse and warehouse in stock_warehouse):
+                                stocks_by_barcode[barcode] = stocks_by_barcode.get(barcode, 0) + qty
+                        else:
+                            # Sum across all warehouses
+                            stocks_by_barcode[barcode] = stocks_by_barcode.get(barcode, 0) + qty
+    except Exception as e:
+        # Log error but continue without stocks
+        import logging
+        logging.getLogger(__name__).warning(f"Error loading stocks cache: {e}")
+        stocks_by_barcode = {}
 
     items = []
     for p, c in counts.items():
@@ -217,18 +238,8 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         barcode = barcode_by_product.get(p)
         supplier_article = supplier_article_by_product.get(p)
         
-        # Calculate stock for this product (sum across all warehouses if warehouse filter not set)
-        stock_qty = 0
-        if barcode:
-            if warehouse:
-                # Filter by warehouse
-                key = f"{barcode}_{warehouse}"
-                stock_qty = stocks_data.get(key, 0)
-            else:
-                # Sum across all warehouses
-                for key, qty in stocks_data.items():
-                    if key.startswith(f"{barcode}_"):
-                        stock_qty += qty
+        # Get stock quantity for this product by barcode
+        stock_qty = stocks_by_barcode.get(barcode, 0) if barcode else 0
         
         items.append({
             "product": p,
@@ -238,7 +249,7 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
             "supplier_article": supplier_article,
             "sum": round(revenue_by_product.get(p, 0.0), 2),
             "photo": nm_to_photo.get(nm_id),
-            "stock": stock_qty
+            "stock_qty": stock_qty  # Changed from "stock" to "stock_qty" to match template
         })
     items.sort(key=lambda x: x["qty"], reverse=True)
     return items[:limit]

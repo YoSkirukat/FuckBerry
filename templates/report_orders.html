@@ -265,7 +265,7 @@
         </select>
       </div>
       <div class="col-sm-6 col-md-2 d-flex align-items-end">
-        <button id="reportLoadBtn" class="btn btn-primary w-100" type="submit">Загрузить</button>
+        <button id="reportLoadBtn" class="btn btn-primary w-100" type="button">Загрузить</button>
       </div>
       <div class="col-sm-6 col-md-2 d-flex align-items-end">
         <button id="exportExcelBtn" class="btn btn-success w-100" type="button" {% if not items or not items|length %}disabled{% endif %}>📊 Excel</button>
@@ -727,9 +727,13 @@
         // При загрузке отчёта всегда запрашиваем агрегат по всем складам,
         // а затем фильтруем локально при смене склада
         params.set('warehouse', '');
-        // Добавляем параметр force_refresh для получения свежих данных при каждом нажатии кнопки "Загрузить"
-        params.set('force_refresh', '1');
-        console.log('DEBUG: reloadReport params:', params.toString());
+        // force_refresh используется только при явном нажатии кнопки "Загрузить"
+        // При автозагрузке используем кэш, если он есть
+        const isManualLoad = btn.dataset.manualLoad === 'true';
+        if (isManualLoad) {
+          params.set('force_refresh', '1');
+        }
+        console.log('DEBUG: reloadReport params:', params.toString(), 'isManualLoad:', isManualLoad);
         const res = await fetch(`/api/report/orders?${params.toString()}`);
         const data = await res.json();
         console.log('DEBUG: reloadReport response:', data);
@@ -873,7 +877,14 @@
     const form = document.querySelector('form[action="/report/orders"]');
     const btn = document.getElementById('reportLoadBtn');
     if (form && btn){
-      form.addEventListener('submit', (e) => { e.preventDefault(); reloadReport(); });
+      // Обработчик для кнопки "Загрузить" - устанавливаем флаг manualLoad
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        btn.dataset.manualLoad = 'true';
+        reloadReport();
+        // Сбрасываем флаг после небольшой задержки
+        setTimeout(() => { btn.dataset.manualLoad = 'false'; }, 100);
+      });
     }
     
     // Обработчик для чекбокса "Показать весь товар"
@@ -1037,9 +1048,19 @@
     
     // Автозагрузка данных при наличии дат: только если матрица не пришла с сервера
     (function autoRun(){
+      // Ждем, пока DOM полностью загрузится
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', autoRun);
+        return;
+      }
       const df = document.getElementById('ordersDateFrom')?.value;
       const dt = document.getElementById('ordersDateTo')?.value;
-      if (df && dt && !reportMatrix){ reloadReport(); }
+      // Проверяем, что матрица действительно пустая (null, undefined, или пустой массив)
+      const hasMatrix = reportMatrix && (Array.isArray(reportMatrix) ? reportMatrix.length > 0 : Object.keys(reportMatrix || {}).length > 0);
+      if (df && dt && !hasMatrix){
+        console.log('Автозагрузка отчета по заказам с датами:', df, dt);
+        reloadReport();
+      }
     })();
 
     // Функция экспорта в Excel
