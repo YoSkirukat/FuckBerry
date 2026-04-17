@@ -108,6 +108,16 @@ from flask_login import (
 
 APP_VERSION = "1.0.1"
 
+from utils.constants import (
+    LAST_RESULTS_CACHE_MAX_BYTES,
+    WB_ORDERS_FETCH_MAX_PAGES,
+    WB_ORDERS_FETCH_MAX_PAGES_INTRADAY,
+    WB_ORDERS_PAGE_SLEEP_S,
+    WB_ORDERS_PAGE_SLEEP_INTRADAY_S,
+    ORDERS_TODAY_CACHE_TTL_SECONDS,
+)
+from utils.cache import period_cache_day_entry_is_fresh
+
 # --- Throttling for WB supplies API ---
 _last_supplies_api_call_ts: float = 0.0
 _SUPPLIES_API_MIN_INTERVAL_S: float = float(os.getenv("SUPPLIES_API_MIN_INTERVAL_S", "2.0"))
@@ -1590,18 +1600,18 @@ def _orders_period_cache_path_for_user(user_id: int = None) -> str:
 
 def load_orders_period_cache(user_id: int = None) -> Dict[str, Any] | None:
     path = _orders_period_cache_path_for_user(user_id)
-    print(f"????????? ??? ?? ?????: {path}")
+    print(f"Loading orders period cache from: {path}")
     if not os.path.isfile(path):
-        print("???? ???? ?? ??????")
+        print("Orders period cache file not found")
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
             days_count = len(data.get('days', {}))
-            print(f"??? ????????, ???? ? ????: {days_count}")
+            print(f"Orders period cache loaded, days in cache: {days_count}")
             return data
     except Exception as e:
-        print(f"?????? ???????? ????: {e}")
+        print(f"Error loading orders period cache: {e}")
         return None
 
 
@@ -1613,13 +1623,13 @@ def save_orders_period_cache(payload: Dict[str, Any], user_id: int = None) -> No
             enriched["_user_id"] = user_id
         elif current_user.is_authenticated:
             enriched["_user_id"] = current_user.id
-        print(f"????????? ??? ? ????: {path}")
-        print(f"?????????? ???? ??? ??????????: {len(enriched.get('days', {}))}")
+        print(f"Saving orders period cache to: {path}")
+        print(f"Days to save in cache: {len(enriched.get('days', {}))}")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False)
-        print("??? ??????? ????????")
+        print("Orders period cache saved")
     except Exception as e:
-        print(f"?????? ?????????? ????: {e}")
+        print(f"Error saving orders period cache: {e}")
 
 
 def _normalize_date_str(date_str: str) -> str:
@@ -1630,17 +1640,57 @@ def _normalize_date_str(date_str: str) -> str:
         return date_str
 
 
+def _order_row_day_iso(row: Dict[str, Any]) -> str:
+    """YYYY-MM-DD prefix for charts/caches; safe if source-file key literals collide (mojibake)."""
+    raw: Any = (
+        row.get("_order_date")
+        or row.get("\u0414\u0430\u0442\u0430")
+        or row.get("date")
+    )
+    if raw is None:
+        raw = row.get("????")
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    return s[:10] if s else ""
+
+
+def _order_row_warehouse_label(row: Dict[str, Any]) -> str:
+    for key in (
+        "_warehouse_label",
+        "_warehouse",
+        "\u0421\u043a\u043b\u0430\u0434 \u043e\u0442\u0433\u0440\u0443\u0437\u043a\u0438",
+        "warehouseName",
+        "????? ????????",
+    ):
+        v = row.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return "\u041d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d"
+
+
+def _order_row_price_disc(row: Dict[str, Any]) -> float:
+    raw: Any = row.get("_price")
+    if raw is None:
+        raw = row.get("\u0426\u0435\u043d\u0430 \u0441\u043e \u0441\u043a\u0438\u0434\u043a\u043e\u0439 \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u0430")
+    if raw is None:
+        raw = row.get("priceWithDisc")
+    if raw is None:
+        raw = row.get("???? ?? ??????? ????????")
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _daterange_inclusive(start_date: str, end_date: str) -> list[str]:
-    print(f"_daterange_inclusive: start_date='{start_date}', end_date='{end_date}'")
     start_dt = parse_date(start_date)
     end_dt = parse_date(end_date)
-    print(f"_daterange_inclusive: start_dt={start_dt}, end_dt={end_dt}")
     days: list[str] = []
     cur = start_dt
     while cur <= end_dt:
         days.append(cur.strftime("%Y-%m-%d"))
         cur += timedelta(days=1)
-    print(f"_daterange_inclusive: generated days={days}")
     return days
 
 
@@ -1648,9 +1698,12 @@ def get_orders_with_period_cache(
     token: str,
     date_from: str,
     date_to: str,
+    *,
+    bypass_today_ttl: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return (orders, cache_meta). Uses per-day cache and fetches only missing days.
 
+    bypass_today_ttl: если True — день «сегодня» всегда тянется с WB (игнор TTL).
     cache_meta contains info like {"used_cache_days": int, "fetched_days": int}
     """
     # Load existing cache structure
@@ -1658,28 +1711,31 @@ def get_orders_with_period_cache(
     days_map: Dict[str, Any] = cache.get("days") or {}
 
     requested_days = _daterange_inclusive(date_from, date_to)
-    print(f"??????????? ???: {requested_days}")
-    print(f"??? ? ????: {list(days_map.keys())}")
 
-    # Identify days to fetch: missing in cache or today (always refetch)
-    from datetime import datetime as _dt
-    today_iso = _dt.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
-    print(f"???????: {today_iso}")
+    today_iso = datetime.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
     days_to_fetch: list[str] = []
     for day in requested_days:
         entry = days_map.get(day)
-        print(f"???? {day}: {'???? ? ????' if entry else '??? ? ????'}")
         if day == today_iso:
-            print(f"???? {day} - ???????, ????????? ?????????????")
-            days_to_fetch.append(day)
+            if bypass_today_ttl:
+                days_to_fetch.append(day)
+            elif entry and period_cache_day_entry_is_fresh(entry, ORDERS_TODAY_CACHE_TTL_SECONDS):
+                pass
+            else:
+                days_to_fetch.append(day)
             continue
         if entry is None:
-            print(f"???? {day} - ??????????? ? ????, ?????????")
             days_to_fetch.append(day)
-        else:
-            print(f"???? {day} - ?????????? ?? ????")
-    
-    print(f"??? ??? ????????: {days_to_fetch}")
+
+    _refetch_preview = (
+        str(days_to_fetch)
+        if len(days_to_fetch) <= 8
+        else f"{len(days_to_fetch)} days from {min(days_to_fetch)} to {max(days_to_fetch)}"
+    )
+    print(
+        f"Orders period cache: user range {date_from}..{date_to} ({len(requested_days)} d.), "
+        f"days in cache file: {len(days_map)}, to refetch ({len(days_to_fetch)}): {_refetch_preview}"
+    )
 
     collected_orders: list[dict[str, Any]] = []
 
@@ -1712,13 +1768,20 @@ def get_orders_with_period_cache(
         _set_orders_progress(current_user.id, total_days, done_days, key=progress_key)
     if days_to_fetch:
         try:
-            print(f"?????? ???????? ??????? ?? ?????? {date_from}..{date_to} ??? {len(days_to_fetch)} ???????????????? ????")
-            raw = fetch_orders_range(token, date_from, date_to)
-            all_rows = to_rows(raw, date_from, date_to)
+            # WB fetch + pagination cost scales with the requested calendar span. Only pull the
+            # minimal range that covers missing/refetch days — not the full user-selected period.
+            fetch_from = min(days_to_fetch)
+            fetch_to = max(days_to_fetch)
+            print(
+                f"Fetching orders for minimal window {fetch_from}..{fetch_to} "
+                f"({len(days_to_fetch)} day(s) to merge; user range was {date_from}..{date_to})"
+            )
+            raw = fetch_orders_range(token, fetch_from, fetch_to)
+            all_rows = to_rows(raw, fetch_from, fetch_to)
             # Group by day
             by_day: Dict[str, list[dict[str, Any]]] = defaultdict(list)
             for r in all_rows:
-                d = str(r.get("????") or "")[:10]
+                d = _order_row_day_iso(r)
                 if d:
                     by_day[d].append(r)
             # For each missing day, update cache and progress
@@ -1733,17 +1796,17 @@ def get_orders_with_period_cache(
                 if current_user and current_user.is_authenticated:
                     _set_orders_progress(current_user.id, total_days, done_days, key=progress_key)
         except Exception as e:
-            print(f"?????? ?????? ???????? ???????: {e}")
+            print(f"Error fetching orders with period cache: {e}")
             # Fallback: nothing added
 
     # Persist cache file if any changes were made
     if days_to_fetch:
-        print(f"????????? ??? ??? ????: {days_to_fetch}")
+        print(f"Saving cache for days: {days_to_fetch}")
         cache["days"] = days_map
         save_orders_period_cache(cache)
-        print(f"??? ????????. ????? ???? ? ????: {len(days_map)}")
+        print(f"Cache saved. Total cached days: {len(days_map)}")
     else:
-        print("??? ????????? ? ????, ?? ?????????")
+        print("All requested days are already cached (or today within TTL), no fetch needed")
 
     if current_user and current_user.is_authenticated:
         _clear_orders_progress(current_user.id, key=progress_key)
@@ -1769,8 +1832,7 @@ def _update_period_cache_with_data(
     orders_by_day: Dict[str, list[dict[str, Any]]] = {}
     
     for order in orders:
-        # Rows produced by to_rows use key '????'. Keep fallback for legacy '???? ??????'.
-        order_date = (order.get("????") or order.get("???? ??????") or "")
+        order_date = _order_row_day_iso(order) or (order.get("???? ??????") or "")
         if order_date:
             day_key = _normalize_date_str(order_date)
             if day_key not in orders_by_day:
@@ -1839,11 +1901,13 @@ def load_last_results() -> Dict[str, Any] | None:
     if not os.path.isfile(path):
         return None
     
-    # ????????? ?????? ????? - ???? ?????? 10MB, ?? ????????? (????? ???? ????????? ??? ??????? ???????)
     try:
         file_size = os.path.getsize(path)
-        if file_size > 10 * 1024 * 1024:  # 10MB
-            print(f"???? ???? ??????? ??????? ({file_size / 1024 / 1024:.1f}MB), ?????????? ????????")
+        if file_size > LAST_RESULTS_CACHE_MAX_BYTES:
+            lim_mb = LAST_RESULTS_CACHE_MAX_BYTES / (1024 * 1024)
+            print(
+                f"last_results cache too large ({file_size / 1024 / 1024:.1f} MB, limit {lim_mb:.0f} MB), skip load"
+            )
             return None
     except Exception:
         pass
@@ -2025,11 +2089,25 @@ def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: in
     collected: List[Dict[str, Any]] = []
     seen_srid: set[str] = set()
 
-    max_pages = 2000
     pages = 0
+    now_date = datetime.now(MOSCOW_TZ).date()
+    if end_dt.date() < now_date:
+        lcd_stop_date = end_dt.date() + timedelta(days=1)
+    else:
+        lcd_stop_date = end_dt.date()
+
+    span_inclusive = (end_dt.date() - start_dt.date()).days + 1
+    intraday_short = end_dt.date() >= now_date and span_inclusive <= 2
+    if intraday_short:
+        max_pages = min(WB_ORDERS_FETCH_MAX_PAGES, WB_ORDERS_FETCH_MAX_PAGES_INTRADAY)
+        page_sleep_s = WB_ORDERS_PAGE_SLEEP_INTRADAY_S
+    else:
+        max_pages = WB_ORDERS_FETCH_MAX_PAGES
+        page_sleep_s = WB_ORDERS_PAGE_SLEEP_S
 
     while pages < max_pages:
         pages += 1
+        before_cursor = cursor_dt
         page = fetch_orders_page(token, cursor_dt.strftime("%Y-%m-%dT%H:%M:%S"), flag=0)
         if not page:
             break
@@ -2039,8 +2117,7 @@ def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: in
             pass
 
         last_page_lcd: datetime | None = parse_wb_datetime(page[-1].get("lastChangeDate"))
-        # ???????????????, ????? lastChangeDate ????????? end_date + 1 ????
-        page_exceeds = last_page_lcd and last_page_lcd.date() > (end_dt.date() + timedelta(days=1))
+        page_exceeds = bool(last_page_lcd and last_page_lcd.date() > lcd_stop_date)
 
         for item in page:
             srid = str(item.get("srid", ""))
@@ -2053,11 +2130,19 @@ def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: in
 
         if last_page_lcd is None:
             break
+        if pages > 1 and last_page_lcd <= before_cursor:
+            break
         cursor_dt = last_page_lcd
         if page_exceeds:
             break
-        # Gentle delay between pages to avoid throttling
-        time.sleep(0.1)
+        if page_sleep_s > 0:
+            time.sleep(page_sleep_s)
+
+    if pages >= max_pages:
+        print(
+            f"fetch_orders_range: max_pages={max_pages} start={start_date} end={end_date} "
+            f"intraday_short_window={intraday_short}"
+        )
 
     return collected
 
@@ -2639,13 +2724,60 @@ def _normalize_and_group_orders(orders: List[Dict[str, Any]]) -> tuple:
     barcode_to_nm: Dict[str, Any] = {}
     supplier_article_to_nm: Dict[str, Any] = {}
     
+    def _row_barcode(row: Dict[str, Any]) -> Any:
+        return (
+            row.get("_barcode")
+            or row.get("\u0411\u0430\u0440\u043a\u043e\u0434")
+            or row.get("??????")
+            or row.get("barcode")
+        )
+
+    def _row_nm_id(row: Dict[str, Any]) -> Any:
+        return (
+            row.get("_nm_id")
+            or row.get("\u0410\u0440\u0442\u0438\u043a\u0443\u043b WB")
+            or row.get("??????? WB")
+            or row.get("nmId")
+            or row.get("nmID")
+        )
+
+    def _row_supplier_article(row: Dict[str, Any]) -> Any:
+        return (
+            row.get("_supplier_article")
+            or row.get("\u0410\u0440\u0442\u0438\u043a\u0443\u043b \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u0430")
+            or row.get("??????? ????????")
+            or row.get("supplierArticle")
+        )
+
+    def _row_warehouse(row: Dict[str, Any]) -> str:
+        return str(
+            row.get("_warehouse")
+            or row.get("\u0421\u043a\u043b\u0430\u0434 \u043e\u0442\u0433\u0440\u0443\u0437\u043a\u0438")
+            or row.get("????? ????????")
+            or row.get("warehouseName")
+            or "?? ??????"
+        )
+
+    def _row_price(row: Dict[str, Any]) -> float:
+        raw = row.get("_price")
+        if raw is None:
+            raw = row.get("\u0426\u0435\u043d\u0430 \u0441\u043e \u0441\u043a\u0438\u0434\u043a\u043e\u0439 \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u0430")
+        if raw is None:
+            raw = row.get("???? ?? ??????? ????????")
+        if raw is None:
+            raw = row.get("priceWithDisc")
+        try:
+            return float(raw or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     # ?????? ??????: ???????? ????? ??? ????????????
     for r in (orders or []):
         if r.get("is_cancelled", False):
             continue
-        barcode = r.get("??????")
-        nmv = r.get("??????? WB") or r.get("nmId") or r.get("nmID")
-        supplier_article = r.get("??????? ????????")
+        barcode = _row_barcode(r)
+        nmv = _row_nm_id(r)
+        supplier_article = _row_supplier_article(r)
         
         # ????????? ?????: ???? ???? ??????? WB, ????????? ??? ? ???????? ? ????????? ????????
         if nmv:
@@ -2660,9 +2792,9 @@ def _normalize_and_group_orders(orders: List[Dict[str, Any]]) -> tuple:
         if r.get("is_cancelled", False):
             continue
         # ?????????? ?? ???????? WB (????????? 1 - ????? ??????????), ????? ?? ??????? (????????? 2), ????? ?? ???????? ???????? (????????? 3)
-        barcode = r.get("??????")
-        nmv = r.get("??????? WB") or r.get("nmId") or r.get("nmID")
-        supplier_article = r.get("??????? ????????")
+        barcode = _row_barcode(r)
+        nmv = _row_nm_id(r)
+        supplier_article = _row_supplier_article(r)
         
         # ????????????: ???? ???????? WB ???, ?? ???? ????????? ?????? ??? ??????? ????????, ?????????? ????????? ??????? WB
         if not nmv:
@@ -2682,13 +2814,10 @@ def _normalize_and_group_orders(orders: List[Dict[str, Any]]) -> tuple:
         else:
             prod_key = "?? ??????"
         
-        wh = str(r.get("????? ????????") or "?? ??????")
+        wh = _row_warehouse(r)
         counts_total[prod_key] += 1
         by_wh[prod_key][wh] += 1
-        try:
-            price = float(r.get("???? ?? ??????? ????????") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
+        price = _row_price(r)
         revenue_total[prod_key] += price
         by_wh_sum[prod_key][wh] += price
         
@@ -2723,7 +2852,21 @@ def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[
         is_cancelled = sale.get("isCancel")
         is_cancelled_bool = is_cancelled is True or str(is_cancelled).lower() in ('true', '1', '??????')
         
+        _wh_raw = sale.get("warehouseName")
+        _warehouse_label = (
+            str(_wh_raw).strip()
+            if _wh_raw is not None and str(_wh_raw).strip()
+            else "\u041d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d"
+        )
         rows.append({
+            # Canonical fields (stable, encoding-independent) for server-side grouping
+            "_warehouse": sale.get("warehouseName"),
+            "_order_date": date_str,
+            "_warehouse_label": _warehouse_label,
+            "_supplier_article": sale.get("supplierArticle"),
+            "_nm_id": sale.get("nmId"),
+            "_barcode": sale.get("barcode"),
+            "_price": sale.get("priceWithDisc"),
             "????": date_str,
             "???? ? ????? ?????????? ?????????? ? ???????": sale.get("lastChangeDate"),
             "????? ????????": sale.get("warehouseName"),
@@ -2785,11 +2928,10 @@ def aggregate_daily(rows: List[Dict[str, Any]]):
     revenue_by_day: Dict[str, float] = defaultdict(float)
 
     for r in rows:
-        day = r.get("????")
-        try:
-            price = float(r.get("???? ?? ??????? ????????") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
+        day = _order_row_day_iso(r)
+        if not day:
+            continue
+        price = _order_row_price_disc(r)
         count_by_day[day] += 1
         revenue_by_day[day] += price
 
@@ -2804,7 +2946,9 @@ def aggregate_daily_counts_and_revenue(rows: List[Dict[str, Any]]):
     cancelled_count_by_day: Dict[str, int] = defaultdict(int)
     revenue_by_day: Dict[str, float] = defaultdict(float)
     for r in rows:
-        day = r.get("????")
+        day = _order_row_day_iso(r)
+        if not day:
+            continue
         is_cancelled = r.get("is_cancelled", False)
         
         # ???????????? ????? ?????????? ???????
@@ -2816,11 +2960,7 @@ def aggregate_daily_counts_and_revenue(rows: List[Dict[str, Any]]):
         
         # ??????? ??????? ?????? ? ???????? ???????
         if not is_cancelled:
-            try:
-                price = float(r.get("???? ?? ??????? ????????") or 0)
-            except (TypeError, ValueError):
-                price = 0.0
-            revenue_by_day[day] += price
+            revenue_by_day[day] += _order_row_price_disc(r)
     return count_by_day, revenue_by_day, cancelled_count_by_day
 
 
@@ -2837,7 +2977,7 @@ def build_union_series(orders_counts: Dict[str, int], sales_counts: Dict[str, in
 def aggregate_by_warehouse(rows: List[Dict[str, Any]]) -> List[Tuple[str, int]]:
     counts: Dict[str, int] = defaultdict(int)
     for r in rows:
-        warehouse = r.get("????? ????????") or "?? ??????"
+        warehouse = _order_row_warehouse_label(r)
         counts[warehouse] += 1
     return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
 
@@ -2846,10 +2986,10 @@ def aggregate_by_warehouse_dual(orders_rows: List[Dict[str, Any]], sales_rows: L
     orders_map: Dict[str, int] = defaultdict(int)
     sales_map: Dict[str, int] = defaultdict(int)
     for r in orders_rows:
-        warehouse = r.get("????? ????????") or "?? ??????"
+        warehouse = _order_row_warehouse_label(r)
         orders_map[warehouse] += 1
     for r in sales_rows:
-        warehouse = r.get("????? ????????") or "?? ??????"
+        warehouse = _order_row_warehouse_label(r)
         sales_map[warehouse] += 1
     all_wh = sorted(set(orders_map.keys()) | set(sales_map.keys()))
     summary = []
@@ -2865,7 +3005,7 @@ def aggregate_by_warehouse_orders_only(orders_rows: List[Dict[str, Any]]):
         # ?????????? ?????????? ?????? ? ?????????? ?? ???????
         if r.get("is_cancelled", False):
             continue
-        warehouse = r.get("????? ????????") or "?? ??????"
+        warehouse = _order_row_warehouse_label(r)
         orders_map[warehouse] += 1
     summary = []
     for w in sorted(orders_map.keys()):
@@ -2888,11 +3028,7 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
         product = r.get("??????? ????????") or r.get("??????? WB") or r.get("??????") or "?? ??????"
         product = str(product)
         counts[product] += 1
-        try:
-            price = float(r.get("???? ?? ??????? ????????") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        revenue_by_product[product] += price
+        revenue_by_product[product] += _order_row_price_disc(r)
         nm = r.get("??????? WB") or r.get("nmId") or r.get("nmID")
         if product not in nm_by_product and nm:
             nm_by_product[product] = nm
@@ -2930,7 +3066,7 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
 def aggregate_top_products_sales(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Tuple[str, int]]:
     counts: Dict[str, int] = defaultdict(int)
     for r in rows:
-        if warehouse and (r.get("????? ????????") or "?? ??????") != warehouse:
+        if warehouse and _order_row_warehouse_label(r) != warehouse:
             continue
         product = r.get("??????? ????????") or r.get("??????? WB") or r.get("??????") or "?? ??????"
         counts[str(product)] += 1
@@ -2945,16 +3081,12 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         # ?????????? ?????????? ?????? ? ??? ???????
         if r.get("is_cancelled", False):
             continue
-        if warehouse and (r.get("????? ????????") or "?? ??????") != warehouse:
+        if warehouse and _order_row_warehouse_label(r) != warehouse:
             continue
         product = r.get("??????? ????????") or r.get("??????? WB") or r.get("??????") or "?? ??????"
         product = str(product)
         counts[product] += 1
-        try:
-            price = float(r.get("???? ?? ??????? ????????") or 0)
-        except (TypeError, ValueError):
-            price = 0.0
-        revenue_by_product[product] += price
+        revenue_by_product[product] += _order_row_price_disc(r)
         nm = r.get("??????? WB") or r.get("nmId") or r.get("nmID")
         if product not in nm_by_product and nm:
             nm_by_product[product] = nm
@@ -4487,6 +4619,19 @@ def test_remote_file(url: str) -> Dict[str, Any]:
             "error": str(e),
             "accessible": False
         }
+# Remote stock XLS: header aliases (Unicode escapes — safe in any source encoding)
+_REMOTE_STOCK_BARCODE_HEADERS = frozenset({
+    "barcode",
+    "\u0431\u0430\u0440\u043a\u043e\u0434",
+})
+_REMOTE_STOCK_QUANTITY_HEADERS = frozenset({
+    "quantity",
+    "qty",
+    "\u043a\u043e\u043b-\u0432\u043e",
+    "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e",
+})
+
+
 def download_and_process_remote_file(url: str, user_id: int) -> Dict[str, Any]:
     """Download remote file and process it for stock updates"""
     try:
@@ -4506,13 +4651,20 @@ def download_and_process_remote_file(url: str, user_id: int) -> Dict[str, Any]:
         
         for i, cell in enumerate(header_row):
             cell_value = str(cell).strip().lower()
-            if cell_value in ['??????', 'barcode']:
+            if cell_value in _REMOTE_STOCK_BARCODE_HEADERS:
                 barcode_col = i
-            elif cell_value in ['???-??', '??????????', 'quantity']:
+            elif cell_value in _REMOTE_STOCK_QUANTITY_HEADERS:
                 quantity_col = i
         
         if barcode_col == -1 or quantity_col == -1:
-            return {"success": False, "error": "?? ??????? ??????????? ???????"}
+            return {
+                "success": False,
+                "error": (
+                    "Required columns not found in Excel: need headers "
+                    "'barcode' / '\u0431\u0430\u0440\u043a\u043e\u0434' and "
+                    "'quantity' / '\u043a\u043e\u043b-\u0432\u043e' / '\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e'"
+                ),
+            }
         
         # Parse data
         file_data = {}
@@ -4567,9 +4719,10 @@ def get_reserved_quantities_from_fbs_tasks(user_id: int) -> Dict[str, int]:
                 
             # Get quantity from task (usually 1 per task, but could be more)
             quantity = 1  # Default quantity per task
-            if "??????????" in task:
+            _qty_raw = task.get("quantity") or task.get("\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e")
+            if _qty_raw is not None:
                 try:
-                    quantity = int(task["??????????"])
+                    quantity = int(_qty_raw)
                 except (ValueError, TypeError):
                     quantity = 1
             
@@ -4842,7 +4995,10 @@ def auto_update_worker():
                     global_settings['history'].insert(0, {
                         "timestamp": datetime.now().isoformat(),
                         "success": all_success,
-                        "message": f"??????????????: ?????????? {total_processed} ???????, ????????? {total_updated} ???????? (? ?????? FBS ???????)"
+                        "message": (
+                            f"Auto-update: processed {total_processed} file rows, "
+                            f"updated {total_updated} stock rows (remote FBS file)"
+                        ),
                     })
                     global_settings['history'] = global_settings['history'][:50]  # Keep last 50 entries
                     save_auto_update_settings(settings, user_id)
@@ -5153,7 +5309,7 @@ def index():
 
                 # Aggregates for charts
                 o_counts_map, o_rev_map, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(orders)
-                daily_labels = sorted(o_counts_map.keys())
+                daily_labels = sorted(k for k in o_counts_map if k)
                 daily_orders_counts = [o_counts_map.get(d, 0) for d in daily_labels]
                 daily_orders_cancelled_counts = [o_cancelled_counts_map.get(d, 0) for d in daily_labels]
                 daily_orders_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in daily_labels]
@@ -5242,7 +5398,7 @@ def index():
                 error = f"??????: {exc}"
 
     # Build warehouses list and filtered ORDERS TOP from current orders
-    warehouses = sorted({(r.get("????? ????????") or "?? ??????") for r in orders})
+    warehouses = sorted({_order_row_warehouse_label(r) for r in orders})
     top_products_orders_filtered = aggregate_top_products_orders(
         orders, selected_warehouse or None, limit=50
     )
@@ -7404,7 +7560,7 @@ def api_fbs_stock_auto_update_manual():
             
             if not url:
                 print(f"ERROR: No URL provided for warehouse {warehouse_id}")
-                results.append(f"????? {warehouse_id}: ?? ?????? URL")
+                results.append(f"warehouse {warehouse_id}: no URL")
                 continue
             
             print(f"Processing warehouse {warehouse_id} with URL: {url}")
@@ -7424,17 +7580,22 @@ def api_fbs_stock_auto_update_manual():
                 
                 total_processed += len(result['data'])
                 total_updated += updated_count
-                results.append(f"????? {warehouse_id}: ?????????? {len(result['data'])} ???????, ????????? {updated_count} ????????")
+                results.append(
+                    f"warehouse {warehouse_id}: ok, rows={len(result['data'])}, stock_updates={updated_count}"
+                )
             else:
                 print(f"File processing failed for warehouse {warehouse_id}: {result['error']}")
-                results.append(f"????? {warehouse_id}: ?????? - {result['error']}")
+                results.append(f"warehouse {warehouse_id}: error - {result['error']}")
         
         # Add to history
         settings = load_auto_update_settings()
         history_entry = {
             "timestamp": datetime.now().isoformat(),
             "success": True,
-            "message": f"?????? ??????????: ?????????? {total_processed} ???????, ????????? {total_updated} ???????? (? ?????? FBS ???????)"
+            "message": (
+                f"Manual update: processed {total_processed} file rows, "
+                f"updated {total_updated} stock rows (remote FBS file)"
+            ),
         }
         settings['global']['history'].insert(0, history_entry)
         settings['global']['history'] = settings['global']['history'][:50]  # Keep last 50 entries
@@ -7646,16 +7807,16 @@ def api_orders_refresh():
         return jsonify({"error": "no_token"}), 401
     date_from = request.form.get("date_from", "")
     date_to = request.form.get("date_to", "")
-    print(f"API orders-refresh: ???????? ???? date_from='{date_from}', date_to='{date_to}'")
+    print(f"API orders-refresh: received date_from='{date_from}', date_to='{date_to}'")
     try:
         df = parse_date(date_from)
         dt = parse_date(date_to)
-        print(f"API orders-refresh: ???????????? ???? df={df}, dt={dt}")
+        print(f"API orders-refresh: parsed dates df={df}, dt={dt}")
         if df > dt:
             date_from, date_to = date_to, date_from
-            print(f"API orders-refresh: ???? ???????? ???????: date_from='{date_from}', date_to='{date_to}'")
+            print(f"API orders-refresh: swapped inverted range to date_from='{date_from}', date_to='{date_to}'")
     except ValueError as e:
-        print(f"API orders-refresh: ?????? ???????? ???: {e}")
+        print(f"API orders-refresh: date parse error: {e}")
         return jsonify({"error": "bad_dates"}), 400
     try:
         # Orders
@@ -7683,7 +7844,7 @@ def api_orders_refresh():
             total_revenue = round(sum(float(o.get("???? ?? ??????? ????????") or 0) for o in orders if not o.get("is_cancelled", False)), 2)
         # Aggregates
         o_counts_map, o_rev_map, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(orders)
-        daily_labels = sorted(o_counts_map.keys())
+        daily_labels = sorted(k for k in o_counts_map if k)
         daily_orders_counts = [o_counts_map.get(d, 0) for d in daily_labels]
         daily_orders_cancelled_counts = [o_cancelled_counts_map.get(d, 0) for d in daily_labels]
         daily_orders_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in daily_labels]
@@ -7691,7 +7852,7 @@ def api_orders_refresh():
         warehouse_summary_dual = aggregate_by_warehouse_orders_only(orders)
         top_products = aggregate_top_products(orders, limit=15)
         top_mode = "orders"
-        warehouses = sorted({(r.get("????? ????????") or "?? ??????") for r in orders})
+        warehouses = sorted({_order_row_warehouse_label(r) for r in orders})
         top_products_orders_filtered = aggregate_top_products_orders(orders, None, limit=50)
         updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         # Save last results snapshot
@@ -8243,7 +8404,7 @@ def report_sales_page():
         date_from_fmt = ""
         date_to_fmt = ""
 
-    warehouses = sorted({(r.get("????? ????????") or "?? ??????") for r in orders}) if orders else []
+    warehouses = sorted({_order_row_warehouse_label(r) for r in orders}) if orders else []
     # Build matrix for client-side filtering (same as API)
     counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
     # build photo map from products cache
@@ -8451,7 +8612,7 @@ def report_orders_page():
         date_from_fmt = ""
         date_to_fmt = ""
 
-    warehouses = sorted({(r.get("????? ????????") or "?? ??????") for r in orders}) if orders else []
+    warehouses = sorted({_order_row_warehouse_label(r) for r in orders}) if orders else []
     # Build matrix for client-side filtering (same as API)
     counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
     # build photo map from products cache
@@ -8626,30 +8787,30 @@ def api_report_orders():
     
     try:
         if req_from and req_to and token:
-            # ???? ????????? ?????????????? ?????????? ??? ??? ?? ?????????????, ????????? ?????? ??????
-            if force_refresh or not (
-                cached
-                and current_user.is_authenticated
-                and cached.get("_user_id") == current_user.id
-                and cached.get("date_from") == req_from
-                and cached.get("date_to") == req_to
-            ):
-                # ??? ??????? ?????????? ??????????? ????? (1 ????) ??? ????????? ????????
-                raw_orders = fetch_orders_range(token, req_from, req_to, days_back=1)
-                orders = to_rows(raw_orders, req_from, req_to)
-                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
-                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
-            else:
-                orders = cached.get("orders", [])
-                date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
-                date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
+            # Use the same stable path as /orders page (period cache + missing days fetch).
+            # This avoids empty report on transient WB/API errors when pressing "Загрузить".
+            try:
+                orders, _meta = get_orders_with_period_cache(token, req_from, req_to)
+            except Exception:
+                if (
+                    cached
+                    and current_user.is_authenticated
+                    and cached.get("_user_id") == current_user.id
+                    and cached.get("date_from") == req_from
+                    and cached.get("date_to") == req_to
+                ):
+                    orders = cached.get("orders", [])
+                else:
+                    orders = []
+            date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
+            date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
         else:
             orders = (cached or {}).get("orders", [])
             date_from_fmt = (cached or {}).get("date_from_fmt") or (cached or {}).get("date_from")
             date_to_fmt = (cached or {}).get("date_to_fmt") or (cached or {}).get("date_to")
         # Build matrix for local filtering on frontend
         counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
-        warehouses = sorted({(r.get("????? ????????") or "?? ??????") for r in orders}) if orders else []
+        warehouses = sorted({_order_row_warehouse_label(r) for r in orders}) if orders else []
         show_all = request.args.get("show_all_products") == "on"
 
         # build photo map from products cache
@@ -8842,7 +9003,7 @@ def api_report_orders():
             }
         }), 200
     except Exception as exc:
-        return jsonify({"items": [], "error": str(exc)}), 200
+        return jsonify({"items": [], "error": str(exc), "debug": {"force_refresh": force_refresh}}), 200
 
 # ??????? ?????? ?? ??????? ? Excel (??? ???????? /report/orders)
 @app.route("/api/report/orders/export", methods=["GET"]) 
@@ -9180,7 +9341,7 @@ def api_report_sales_export():
         
         # Build matrix for filtering
         counts_total, by_wh, revenue_total, by_wh_sum, nm_by_product, barcode_by_product, supplier_article_by_product = _normalize_and_group_orders(orders)
-        warehouses = sorted({(r.get("????? ????????") or "?? ??????") for r in orders}) if orders else []
+        warehouses = sorted({_order_row_warehouse_label(r) for r in orders}) if orders else []
         
         # Build items for export
         def _build_items(target_wh: str | None) -> List[Dict[str, Any]]:
@@ -12090,7 +12251,7 @@ def api_product_analytics(nm_id: int):
 
         # ????? ???????? - ?????????? ??? ?????? ??? ??????????? ??????????? ??????????
         o_counts_map, o_rev_map, o_cancelled_counts_map = aggregate_daily_counts_and_revenue(all_product_orders)
-        labels = sorted(o_counts_map.keys())
+        labels = sorted(k for k in o_counts_map if k)
         series_orders = [o_counts_map.get(d, 0) for d in labels]
         series_cancelled = [o_cancelled_counts_map.get(d, 0) for d in labels]
         series_revenue = [round(o_rev_map.get(d, 0.0), 2) for d in labels]

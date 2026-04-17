@@ -1142,8 +1142,17 @@
           progressTimer = null;
         }
         
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
+        const contentType = (res.headers.get('content-type') || '').toLowerCase();
+        let data = null;
+        if (contentType.includes('application/json')) {
+          data = await res.json();
+        } else {
+          const raw = await res.text();
+          const shortBody = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+          const details = shortBody ? ` ${shortBody}` : '';
+          throw new Error(`Сервер вернул не JSON (HTTP ${res.status}). Возможно, истек таймаут запроса.${details}`);
+        }
+        if (!res.ok) throw new Error(data?.error || `Ошибка обновления (HTTP ${res.status})`);
         
         // Обновляем текст загрузки в зависимости от источника данных
         if (loadingText) {

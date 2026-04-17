@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import requests
 from utils.constants import (
     MOSCOW_TZ, API_URL, SALES_API_URL, FIN_REPORT_URL,
+    WB_ORDERS_FETCH_MAX_PAGES, WB_ORDERS_FETCH_MAX_PAGES_INTRADAY,
+    WB_ORDERS_PAGE_SLEEP_S, WB_ORDERS_PAGE_SLEEP_INTRADAY_S,
     FBW_SUPPLIES_LIST_URL, FBW_SUPPLY_DETAILS_URL, FBW_SUPPLY_GOODS_URL, FBW_SUPPLY_PACKAGE_URL,
     FBS_NEW_URL, FBS_ORDERS_URL, FBS_ORDERS_STATUS_URL,
     DBS_NEW_URL, DBS_STATUS_URL, DBS_ORDERS_URL,
@@ -149,11 +151,29 @@ def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: in
     collected: List[Dict[str, Any]] = []
     seen_srid: set[str] = set()
 
-    max_pages = 2000
     pages = 0
+    # Для прошлых дат оставляем «+1 календарный день» к end: иначе можно обрезать заказы с
+    # отложенным lastChangeDate. Если end — сегодня (или позже), требование «> end+1 день»
+    # почти никогда не наступает в тот же день → пагинация уходит в сотни/тысячи страниц.
+    now_date = datetime.now(MOSCOW_TZ).date()
+    if end_dt.date() < now_date:
+        lcd_stop_date = end_dt.date() + timedelta(days=1)
+    else:
+        lcd_stop_date = end_dt.date()
+
+    span_inclusive = (end_dt.date() - start_dt.date()).days + 1
+    # Окно 1–2 календарных дня с концом «сегодня»: ограничиваем страницы (полнота vs время).
+    intraday_short = end_dt.date() >= now_date and span_inclusive <= 2
+    if intraday_short:
+        max_pages = min(WB_ORDERS_FETCH_MAX_PAGES, WB_ORDERS_FETCH_MAX_PAGES_INTRADAY)
+        page_sleep_s = WB_ORDERS_PAGE_SLEEP_INTRADAY_S
+    else:
+        max_pages = WB_ORDERS_FETCH_MAX_PAGES
+        page_sleep_s = WB_ORDERS_PAGE_SLEEP_S
 
     while pages < max_pages:
         pages += 1
+        before_cursor = cursor_dt
         page = fetch_orders_page(token, cursor_dt.strftime("%Y-%m-%dT%H:%M:%S"), flag=0)
         if not page:
             break
@@ -163,8 +183,7 @@ def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: in
             pass
 
         last_page_lcd: datetime | None = parse_wb_datetime(page[-1].get("lastChangeDate"))
-        # Останавливаемся, когда lastChangeDate превышает end_date + 1 день
-        page_exceeds = last_page_lcd and last_page_lcd.date() > (end_dt.date() + timedelta(days=1))
+        page_exceeds = bool(last_page_lcd and last_page_lcd.date() > lcd_stop_date)
 
         for item in page:
             srid = str(item.get("srid", ""))
@@ -177,11 +196,28 @@ def fetch_orders_range(token: str, start_date: str, end_date: str, days_back: in
 
         if last_page_lcd is None:
             break
+        # Тот же lastChangeDate на новом запросе → зацикливание
+        if pages > 1 and last_page_lcd <= before_cursor:
+            logger.warning(
+                "fetch_orders_range: lastChangeDate did not advance (cursor stall), stopping after %s pages",
+                pages,
+            )
+            break
         cursor_dt = last_page_lcd
         if page_exceeds:
             break
         # Gentle delay between pages to avoid throttling
-        time.sleep(0.1)
+        if page_sleep_s > 0:
+            time.sleep(page_sleep_s)
+
+    if pages >= max_pages:
+        logger.warning(
+            "fetch_orders_range: stopped at max_pages=%s (start=%s end=%s, intraday_cap=%s)",
+            max_pages,
+            start_date,
+            end_date,
+            end_dt.date() >= now_date and span_inclusive <= 2,
+        )
 
     return collected
 

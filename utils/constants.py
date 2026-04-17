@@ -77,6 +77,22 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache")
 if not os.path.isdir(CACHE_DIR):
     os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Макс. размер last_results (orders_user_*.json) при json.load, МиБ. Длинные периоды = крупный JSON.
+# Переменная окружения: FUCKBERRY_LAST_RESULTS_MAX_MB
+LAST_RESULTS_CACHE_MAX_BYTES = (
+    int(os.getenv("FUCKBERRY_LAST_RESULTS_MAX_MB", "80")) * 1024 * 1024
+)
+
+# Пагинация WB supplier/orders (lastChangeDate). Для короткого окна, заканчивающегося «сегодня»,
+# условие выхода по дате часто не наступает в течение дня → без лимита возможны сотни страниц и минуты ожидания.
+WB_ORDERS_FETCH_MAX_PAGES = int(os.getenv("WB_ORDERS_FETCH_MAX_PAGES", "2000"))
+WB_ORDERS_FETCH_MAX_PAGES_INTRADAY = int(os.getenv("WB_ORDERS_FETCH_MAX_PAGES_INTRADAY", "200"))
+# Пауза между страницами пагинации WB orders (сек). Intraday — короче, чтобы «сегодня» не тянулось минутами.
+WB_ORDERS_PAGE_SLEEP_S = float(os.getenv("WB_ORDERS_PAGE_SLEEP_S", "0.1"))
+WB_ORDERS_PAGE_SLEEP_INTRADAY_S = float(os.getenv("WB_ORDERS_PAGE_SLEEP_INTRADAY_S", "0.02"))
+# Не дёргать WB для «сегодня», если срез дня в period-cache обновлялся недавно (сек). 0 = всегда обновлять.
+ORDERS_TODAY_CACHE_TTL_SECONDS = int(os.getenv("ORDERS_TODAY_CACHE_TTL_SECONDS", "180"))
+
 # Управление автопостроением кэша поставок
 SUPPLIES_CACHE_AUTO = os.getenv("SUPPLIES_CACHE_AUTO", "0") == "1"
 

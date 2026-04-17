@@ -229,6 +229,7 @@
     {% if error %}
       <div class="alert alert-warning">{{ error }}</div>
     {% endif %}
+    <div id="reportClientError" class="alert alert-danger d-none"></div>
 
     
     <form class="row g-3 mb-3" method="get" action="/report/orders">
@@ -728,8 +729,13 @@
       const form = document.querySelector('form[action="/report/orders"]');
       const btn = document.getElementById('reportLoadBtn');
       if (!form || !btn) return;
+      const reportClientError = document.getElementById('reportClientError');
       try{
         btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Загрузка...';
+        if (reportClientError) {
+          reportClientError.classList.add('d-none');
+          reportClientError.textContent = '';
+        }
         
         // Показываем индикатор загрузки и размываем контент
         const overlay = document.getElementById('loadingOverlay');
@@ -753,6 +759,9 @@
         const res = await fetch(`/api/report/orders?${params.toString()}`);
         const data = await res.json();
         console.log('DEBUG: reloadReport response:', data);
+        if (data.error) {
+          throw new Error(data.error);
+        }
         reportMatrix = data.matrix || reportMatrix || null;
         
         // Сохраняем фото товаров для использования при фильтрации
@@ -882,6 +891,10 @@
         if (onlyNotSoldCheckbox) onlyNotSoldCheckbox.disabled = false;
       } catch(err){
         console.error(err);
+        if (reportClientError) {
+          reportClientError.textContent = `Ошибка загрузки отчета: ${err.message || err}`;
+          reportClientError.classList.remove('d-none');
+        }
         btn.disabled = false;
       } finally {
         // Скрываем индикатор загрузки и убираем размытие

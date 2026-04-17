@@ -5,7 +5,12 @@ import json
 from typing import Dict, Any
 from flask import session
 from flask_login import current_user
-from utils.constants import CACHE_DIR, MOSCOW_TZ
+from utils.constants import (
+    CACHE_DIR,
+    MOSCOW_TZ,
+    LAST_RESULTS_CACHE_MAX_BYTES,
+    ORDERS_TODAY_CACHE_TTL_SECONDS,
+)
 from utils.helpers import _get_session_id
 from datetime import datetime, timedelta
 
@@ -456,11 +461,15 @@ def load_last_results() -> Dict[str, Any] | None:
     if not os.path.isfile(path):
         return None
     
-    # Проверяем размер файла - если больше 10MB, не загружаем
+    # Проверяем размер файла (снимок заказов может быть большим — см. LAST_RESULTS_CACHE_MAX_BYTES)
     try:
         file_size = os.path.getsize(path)
-        if file_size > 10 * 1024 * 1024:  # 10MB
-            print(f"Файл кэша слишком большой ({file_size / 1024 / 1024:.1f}MB), пропускаем загрузку")
+        if file_size > LAST_RESULTS_CACHE_MAX_BYTES:
+            lim_mb = LAST_RESULTS_CACHE_MAX_BYTES / (1024 * 1024)
+            print(
+                f"Файл last_results слишком большой ({file_size / 1024 / 1024:.1f} MB, лимит {lim_mb:.0f} MB), "
+                f"пропускаем загрузку (см. FUCKBERRY_LAST_RESULTS_MAX_MB)"
+            )
             return None
     except Exception:
         pass
@@ -511,19 +520,30 @@ def _normalize_date_str(date_str: str) -> str:
         return date_str
 
 
+def period_cache_day_entry_is_fresh(entry: Dict[str, Any], max_age_seconds: int) -> bool:
+    """True if daily orders cache entry was saved within max_age_seconds (Moscow wall clock)."""
+    if max_age_seconds <= 0 or not isinstance(entry, dict):
+        return False
+    s = entry.get("updated_at") or ""
+    if not str(s).strip():
+        return False
+    try:
+        dt = datetime.strptime(str(s).strip(), "%d.%m.%Y %H:%M:%S").replace(tzinfo=MOSCOW_TZ)
+        return (datetime.now(MOSCOW_TZ) - dt).total_seconds() <= float(max_age_seconds)
+    except Exception:
+        return False
+
+
 def _daterange_inclusive(start_date: str, end_date: str) -> list[str]:
     """Генерирует список дат от start_date до end_date включительно"""
     from utils.helpers import parse_date
-    print(f"_daterange_inclusive: start_date='{start_date}', end_date='{end_date}'")
     start_dt = parse_date(start_date)
     end_dt = parse_date(end_date)
-    print(f"_daterange_inclusive: start_dt={start_dt}, end_dt={end_dt}")
     days: list[str] = []
     cur = start_dt
     while cur <= end_dt:
         days.append(cur.strftime("%Y-%m-%d"))
         cur += timedelta(days=1)
-    print(f"_daterange_inclusive: generated days={days}")
     return days
 
 
@@ -531,8 +551,13 @@ def get_orders_with_period_cache(
     token: str,
     date_from: str,
     date_to: str,
+    *,
+    bypass_today_ttl: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Возвращает (orders, cache_meta). Использует кэш по дням и загружает только отсутствующие дни."""
+    """Возвращает (orders, cache_meta). Использует кэш по дням и загружает только отсутствующие дни.
+
+    bypass_today_ttl: если True — день «сегодня» всегда тянется с WB (игнор TTL свежести).
+    """
     from collections import defaultdict
     from utils.api import fetch_orders_range
     from utils.orders_processing import to_rows
@@ -545,27 +570,32 @@ def get_orders_with_period_cache(
     days_map: Dict[str, Any] = cache.get("days") or {}
 
     requested_days = _daterange_inclusive(date_from, date_to)
-    print(f"Запрошенные дни: {requested_days}")
-    print(f"Дни в кэше: {list(days_map.keys())}")
 
-    # Identify days to fetch: missing in cache or today (always refetch)
+    # Дни для догрузки: нет в кэше; «сегодня» — только если нет записи, протухла или bypass_today_ttl.
     today_iso = datetime.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
-    print(f"Сегодня: {today_iso}")
     days_to_fetch: list[str] = []
     for day in requested_days:
         entry = days_map.get(day)
-        print(f"День {day}: {'есть в кэше' if entry else 'НЕТ в кэше'}")
         if day == today_iso:
-            print(f"День {day} - сегодня, загружаем принудительно")
-            days_to_fetch.append(day)
+            if bypass_today_ttl:
+                days_to_fetch.append(day)
+            elif entry and period_cache_day_entry_is_fresh(entry, ORDERS_TODAY_CACHE_TTL_SECONDS):
+                pass  # берём из кэша
+            else:
+                days_to_fetch.append(day)
             continue
         if entry is None:
-            print(f"День {day} - отсутствует в кэше, загружаем")
             days_to_fetch.append(day)
-        else:
-            print(f"День {day} - используем из кэша")
-    
-    print(f"Дни для загрузки: {days_to_fetch}")
+
+    _refetch_preview = (
+        str(days_to_fetch)
+        if len(days_to_fetch) <= 8
+        else f"{len(days_to_fetch)} дн. с {min(days_to_fetch)} по {max(days_to_fetch)}"
+    )
+    print(
+        f"Кэш заказов по дням: период {date_from}..{date_to} ({len(requested_days)} дн.), "
+        f"в файле кэша: {len(days_map)} дн., догрузить ({len(days_to_fetch)}): {_refetch_preview}"
+    )
 
     collected_orders: list[dict[str, Any]] = []
 
@@ -594,9 +624,16 @@ def get_orders_with_period_cache(
         set_orders_progress(current_user.id, total_days, done_days, key=progress_key)
     if days_to_fetch:
         try:
-            print(f"Единая загрузка заказов за период {date_from}..{date_to} для {len(days_to_fetch)} незакэшированных дней")
-            raw = fetch_orders_range(token, date_from, date_to)
-            all_rows = to_rows(raw, date_from, date_to)
+            # Стоимость запроса к WB растёт с шириной периода (пагинация). Тянем только окно,
+            # покрывающее отсутствующие/сегодняшние дни — не весь выбранный пользователем диапазон.
+            fetch_from = min(days_to_fetch)
+            fetch_to = max(days_to_fetch)
+            print(
+                f"Загрузка заказов: окно {fetch_from}..{fetch_to} "
+                f"({len(days_to_fetch)} дн. в merge; запрос пользователя был {date_from}..{date_to})"
+            )
+            raw = fetch_orders_range(token, fetch_from, fetch_to)
+            all_rows = to_rows(raw, fetch_from, fetch_to)
             # Group by day
             by_day: Dict[str, list[dict[str, Any]]] = defaultdict(list)
             for r in all_rows:
