@@ -9,6 +9,7 @@ from typing import List, Dict, Any
 from utils.api import fetch_fbs_new_orders
 from utils.cache import load_fbs_tasks_cache, load_products_cache
 from utils.fbs_dbs_processing import to_fbs_rows, _extract_created_at
+from utils.wb_token import effective_wb_api_token
 
 fbs_bp = Blueprint('fbs', __name__)
 
@@ -18,7 +19,7 @@ fbs_bp = Blueprint('fbs', __name__)
 def fbs_page():
     """Страница заказов FBS"""
     error = None
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     rows: List[Dict[str, Any]] = []
     # Load cached tasks to show immediately
     cached_tasks = load_fbs_tasks_cache() or {}
@@ -42,56 +43,33 @@ def fbs_page():
 @login_required
 def fbs_export():
     """Экспорт заказов FBS в Excel"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return ("Требуется API токен", 400)
     try:
-        raw = fetch_fbs_new_orders(token)
-        raw_sorted = sorted(raw, key=_extract_created_at)
-        rows = to_fbs_rows(raw_sorted)
-        # Enrich from products cache
-        prod_cached = load_products_cache()
-        items = (prod_cached or {}).get("items") or []
-        by_article: Dict[str, Dict[str, Any]] = {}
-        by_nm: Dict[int, Dict[str, Any]] = {}
-        for it in items:
-            art = (it.get("supplier_article") or it.get("vendorCode") or "").strip()
-            if art:
-                by_article.setdefault(art, it)
-            nmv = it.get("nm_id") or it.get("nmID")
+        # 1) Используем кэш заданий (как на странице /fbs), чтобы экспорт соответствовал UI.
+        cached = load_fbs_tasks_cache() or {}
+        rows = (cached.get("rows") or []) if isinstance(cached, dict) else []
+
+        # 2) Fallback: если кэш пуст — забираем свежие /new и сохраняем.
+        if not rows:
+            raw = fetch_fbs_new_orders(token)
+            raw_sorted = sorted(raw, key=_extract_created_at)
+            rows = to_fbs_rows(raw_sorted)
             try:
-                if nmv:
-                    by_nm[int(nmv)] = it
+                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                from utils.cache import save_fbs_tasks_cache  # локальный импорт, чтобы избежать циклов
+                save_fbs_tasks_cache({"rows": rows, "updated_at": now_str})
             except Exception:
                 pass
-        for r in rows:
-            art = (r.get("Наименование товара") or "").strip()
-            hit = by_article.get(art)
-            if not hit and r.get("nm_id"):
-                try:
-                    hit = by_nm.get(int(r["nm_id"]))
-                except Exception:
-                    hit = None
-            if hit:
-                if hit.get("barcode"):
-                    r["barcode"] = hit.get("barcode")
-                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
-                    r["barcode"] = str(hit.get("barcodes")[0])
-                else:
-                    sizes = hit.get("sizes") or []
-                    if isinstance(sizes, list):
-                        for s in sizes:
-                            bar_list = s.get("skus") or s.get("barcodes")
-                            if isinstance(bar_list, list) and bar_list:
-                                r["barcode"] = str(bar_list[0])
-                                break
 
-        # Aggregate: Наименование + Баркод -> Количество
-        agg: Dict[tuple[str, str], int] = {}
+        # 3) Агрегация дублей: nm_id -> barcode -> name
+        agg: Dict[tuple[str, str, str], int] = {}
         for r in rows:
             name = (r.get("Наименование товара") or "").strip()
-            barcode = (r.get("barcode") or "").strip()
-            key = (name, barcode)
+            nm_id = str(r.get("nm_id") or "").strip()
+            barcode = str(r.get("barcode") or "").strip()
+            key = (name, nm_id, barcode)
             agg[key] = agg.get(key, 0) + 1
 
         # Build XLS (not XLSX)
@@ -104,13 +82,15 @@ def fbs_export():
         header_style = xlwt.easyxf("font: bold on; align: horiz center")
         num_style = xlwt.easyxf("align: horiz right")
         ws.write(0, 0, "Наименование", header_style)
-        ws.write(0, 1, "Баркод", header_style)
-        ws.write(0, 2, "Количество", header_style)
+        ws.write(0, 1, "Артикул WB (nmId)", header_style)
+        ws.write(0, 2, "Баркод", header_style)
+        ws.write(0, 3, "Количество", header_style)
         row_idx = 1
-        for (name, barcode), qty in sorted(agg.items(), key=lambda x: (-x[1], x[0][0])):
+        for (name, nm_id, barcode), qty in sorted(agg.items(), key=lambda x: (-x[1], x[0][0][0])):
             ws.write(row_idx, 0, name)
-            ws.write(row_idx, 1, barcode)
-            ws.write(row_idx, 2, qty, num_style)
+            ws.write(row_idx, 1, nm_id)
+            ws.write(row_idx, 2, barcode)
+            ws.write(row_idx, 3, qty, num_style)
             row_idx += 1
         out = io.BytesIO()
         wb.save(out)

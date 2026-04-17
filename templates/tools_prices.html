@@ -244,8 +244,44 @@
       <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
     
-    
-    <!-- Загрузка закупочных цен: только скрытый input и статус -->
+    <!-- Загрузка закупочных цен: модалка + скрытый input и статус -->
+    <div class="modal fade" id="uploadPricesModal" tabindex="-1" aria-labelledby="uploadPricesModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="uploadPricesModalLabel">
+              <i class="bi bi-cloud-upload me-1"></i>
+              Загрузить закупочные цены
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="excelUrl" class="form-label">Ссылка на Excel файл (.xlsx или .xls)</label>
+              <input type="url" class="form-control" id="excelUrl" placeholder="https://...">
+              <div class="form-text">
+                Файл должен содержать 2 колонки: Баркод и Закупочная цена (можно использовать скачанный шаблон.
+              </div>
+            </div>
+            <div class="d-flex flex-column gap-2">
+              <button type="button" class="btn btn-primary" id="uploadFromUrlBtn">
+                <i class="bi bi-arrow-repeat me-1"></i>
+                Обновить по ссылке
+              </button>
+              <div class="text-center text-muted">или</div>
+              <button type="button" class="btn btn-outline-secondary" id="uploadFromFileBtn">
+                <i class="bi bi-folder2-open me-1"></i>
+                Выбрать файл на компьютере
+              </button>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <input type="file" id="excelFile" accept=".xlsx,.xls" style="display: none;">
     <div id="uploadStatus" class="mb-3" style="display: none;"></div>
     
@@ -600,18 +636,27 @@
     const warehousesData = JSON.parse(document.getElementById('warehousesDataJson').textContent || '[]');
     const stocksData = JSON.parse(document.getElementById('stocksDataJson').textContent || '{}');
     const purchasePricesData = JSON.parse(document.getElementById('purchasePricesDataJson').textContent || '{}');
+    const PURCHASE_PRICES_LOCAL_CACHE_KEY = 'tools_prices_purchase_prices_cache_v1';
+    let localPurchasePrices = {};
+    try {
+      localPurchasePrices = JSON.parse(localStorage.getItem(PURCHASE_PRICES_LOCAL_CACHE_KEY) || '{}');
+    } catch {
+      localPurchasePrices = {};
+    }
+    const effectivePurchasePricesData = { ...purchasePricesData, ...localPurchasePrices };
     
     // Отладочная информация
     console.log('Загруженные закупочные цены (purchasePricesData):', purchasePricesData);
-    console.log('Количество закупочных цен:', Object.keys(purchasePricesData).length);
-    console.log('Примеры баркодов из purchasePricesData:', Object.keys(purchasePricesData).slice(0, 5));
+    console.log('Локальный кэш закупочных цен:', localPurchasePrices);
+    console.log('Количество закупочных цен:', Object.keys(effectivePurchasePricesData).length);
+    console.log('Примеры баркодов из effectivePurchasePricesData:', Object.keys(effectivePurchasePricesData).slice(0, 5));
     
     // Инициализируем закупочные цены из purchasePricesData при загрузке страницы
     let initializedCount = 0;
     document.querySelectorAll('.purchase-price').forEach(input => {
       const barcode = String(input.getAttribute('data-barcode') || '').trim();
-      if (barcode && purchasePricesData[barcode]) {
-        input.value = purchasePricesData[barcode];
+      if (barcode && Object.prototype.hasOwnProperty.call(effectivePurchasePricesData, barcode)) {
+        input.value = effectivePurchasePricesData[barcode];
         initializedCount++;
       }
     });
@@ -702,6 +747,58 @@
       Object.values(inputs).forEach(inp=>{
         if (inp){ inp.addEventListener('input', scheduleSave); }
       });
+
+      // ---- Автосохранение маржинальности (profit_pct/profit_net) ----
+      // Нужна, чтобы числа из /fbw/planning совпадали с числами из /tools/prices.
+      const MARGINS_SAVE_DEBOUNCE_MS = 1200;
+      let marginsSaveTimer = null;
+      const pendingMarginsByNmId = {};
+
+      function scheduleSaveMargins(){
+        try {
+          // Собираем текущие значения для всех видимых строк
+          const rows = document.querySelectorAll('#productsTable tbody tr');
+          rows.forEach(row => {
+            const nmId = row.getAttribute('data-nm-id');
+            if (!nmId) return;
+            const profitPctInput = row.querySelector('.profit-pct-input');
+            const profitNetInput = row.querySelector('.profit-net-input');
+            const profitPctVal = profitPctInput ? Number(String(profitPctInput.value || '').replace(',', '.')) : NaN;
+            const profitNetVal = profitNetInput ? Number(String(profitNetInput.value || '').replace(',', '.')) : NaN;
+            if (isNaN(profitPctVal)) return;
+            const barcode = row.getAttribute('data-barcode');
+            pendingMarginsByNmId[nmId] = {
+              barcode: barcode,
+              profit_pct: profitPctVal,
+              profit_net: isNaN(profitNetVal) ? null : profitNetVal,
+            };
+          });
+        } catch (e) {
+          // не мешаем основному пересчету
+        }
+
+        if (marginsSaveTimer) clearTimeout(marginsSaveTimer);
+        marginsSaveTimer = setTimeout(async () => {
+          try {
+            const margins = {};
+            for (const [nm_id, v] of Object.entries(pendingMarginsByNmId)) {
+              margins[nm_id] = v;
+            }
+            // Очищаем буфер ДО запроса, чтобы повторные пересчеты не копились бесконечно
+            for (const k of Object.keys(pendingMarginsByNmId)) delete pendingMarginsByNmId[k];
+            if (!Object.keys(margins).length) return;
+
+            await fetch('/api/tools/prices/margins/save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ margins })
+            });
+          } catch (e) {
+            // Если не удалось сохранить — просто пропускаем, при следующем пересчете попробуем снова.
+            console.warn('Не удалось сохранить маржинальность', e);
+          }
+        }, MARGINS_SAVE_DEBOUNCE_MS);
+      }
 
       // ---- Заполнение колонки Комиссия WB, % по выбранной схеме ----
       function getCommissionPercent(subjectId){
@@ -915,6 +1012,9 @@
             markInputsChanged(allInputs);
           }
         });
+
+        // Сохраняем текущие значения маржинальности в БД (с debounce).
+        scheduleSaveMargins();
       }
 
       if (inputs.scheme){
@@ -1632,9 +1732,88 @@
       const uploadBtn = document.getElementById('actionUploadPrices');
       const fileInput = document.getElementById('excelFile');
       const uploadStatus = document.getElementById('uploadStatus');
+      const uploadModalEl = document.getElementById('uploadPricesModal');
+      const uploadFromUrlBtn = document.getElementById('uploadFromUrlBtn');
+      const uploadFromFileBtn = document.getElementById('uploadFromFileBtn');
+      const excelUrlInput = document.getElementById('excelUrl');
+      let uploadModal = null;
+      const PRICES_URL_STORAGE_KEY = 'tools_prices_last_excel_url';
+
+      // При загрузке страницы сразу подставляем последнюю ссылку (если есть),
+      // чтобы она была сохранена даже до первого открытия модалки.
+      if (excelUrlInput) {
+        try {
+          const last = localStorage.getItem(PRICES_URL_STORAGE_KEY) || '';
+          excelUrlInput.value = last;
+        } catch {
+          excelUrlInput.value = '';
+        }
+      }
       
       // Обработка клика по кнопке загрузки
-      uploadBtn.addEventListener('click', () => fileInput.click());
+      if (uploadBtn) {
+        uploadBtn.addEventListener('click', () => {
+          if (uploadModalEl && window.bootstrap && window.bootstrap.Modal) {
+            if (!uploadModal) {
+              uploadModal = new window.bootstrap.Modal(uploadModalEl);
+            }
+            // подставляем последнюю использованную ссылку (если есть)
+            if (excelUrlInput) {
+              try {
+                const last = localStorage.getItem(PRICES_URL_STORAGE_KEY) || '';
+                excelUrlInput.value = last;
+              } catch {
+                excelUrlInput.value = '';
+              }
+            }
+            uploadModal.show();
+          } else {
+            // fallback: если нет Bootstrap-модалок, просто открыть проводник как раньше
+            fileInput?.click();
+          }
+        });
+      }
+
+      if (uploadFromFileBtn && fileInput) {
+        uploadFromFileBtn.addEventListener('click', () => {
+          fileInput.click();
+        });
+      }
+
+      if (uploadFromUrlBtn && excelUrlInput) {
+        uploadFromUrlBtn.addEventListener('click', async () => {
+          const url = (excelUrlInput.value || '').trim();
+          if (!url) {
+            showUploadStatus('Укажите ссылку на файл', 'danger');
+            return;
+          }
+          // сохраняем ссылку в localStorage
+          try {
+            localStorage.setItem(PRICES_URL_STORAGE_KEY, url);
+          } catch {}
+          showUploadStatus('Загружаю файл по ссылке...', 'info');
+          try {
+            const res = await fetch('/api/prices/upload-from-url', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ url })
+            });
+            const data = await res.json().catch(()=>({}));
+            if (!res.ok || !data.success) {
+              showUploadStatus(data.error || `Ошибка загрузки по ссылке (HTTP ${res.status})`, 'danger');
+              return;
+            }
+            showUploadStatus(`Успешно загружено ${data.updated_count} цен. Сохранение...`, 'success');
+            updatePurchasePrices(data.prices || {});
+            if (uploadModal) {
+              uploadModal.hide();
+            }
+          } catch (e) {
+            console.error(e);
+            showUploadStatus('Ошибка загрузки файла по ссылке', 'danger');
+          }
+        });
+      }
       
       fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
@@ -1681,9 +1860,10 @@
         }, 5000);
       }
       
-      function updatePurchasePrices(prices) {
+      async function updatePurchasePrices(prices) {
         let updatedCount = 0;
         const priceInputs = document.querySelectorAll('.purchase-price');
+        const updatedInputs = [];
         
         // Нормализуем все баркоды из prices к строкам
         const normalizedPrices = {};
@@ -1697,6 +1877,7 @@
           if (barcode && normalizedPrices[barcode]) {
             input.value = normalizedPrices[barcode];
             input.classList.add('table-success');
+            updatedInputs.push(input);
             updatedCount++;
           }
         });
@@ -1704,53 +1885,74 @@
         console.log(`Обновлено ${updatedCount} полей закупочных цен из ${Object.keys(prices).length} загруженных`);
         console.log('Примеры баркодов из файла:', Object.keys(normalizedPrices).slice(0, 5));
         console.log('Примеры баркодов в таблице:', Array.from(priceInputs).slice(0, 5).map(inp => inp.getAttribute('data-barcode')));
-        
+
+        // Пересчёт «Прибыль чистая руб.» / «Прибыль %» (как при ручном изменении закупки)
+        if (typeof updateCommissionColumn === 'function') {
+          updateCommissionColumn();
+        }
+
         // Автоматически сохраняем цены в базу данных (используем нормализованные)
-        savePricesToDatabase(normalizedPrices);
+        const ok = await savePricesToDatabase(normalizedPrices);
+        if (ok) {
+          updateBaselineForInputs(updatedInputs);
+          const profitInputs = [];
+          updatedInputs.forEach(pi => {
+            const tr = pi.closest('tr');
+            if (!tr) return;
+            const net = tr.querySelector('.profit-net-input');
+            const pct = tr.querySelector('.profit-pct-input');
+            if (net) profitInputs.push(net);
+            if (pct) profitInputs.push(pct);
+          });
+          updateBaselineForInputs(profitInputs);
+          markInputsChanged([...updatedInputs, ...profitInputs]);
+          showUploadStatus(`Сохранено ${updatedCount} закупочных цен`, 'success');
+        }
       }
       
-      function savePricesToDatabase(prices) {
+      async function savePricesToDatabase(prices) {
         if (Object.keys(prices).length === 0) {
-          return;
+          return false;
         }
-        
-        fetch('/api/prices/save', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ prices: prices })
-        })
-        .then(response => response.json())
-        .then(data => {
-          if (data.success) {
-            console.log('Цены автоматически сохранены:', data.message);
-            // Убираем кнопку сохранения, так как уже сохранили
-            const saveBtn = document.getElementById('savePrices');
-            if (saveBtn) {
-              saveBtn.style.display = 'none';
-            }
-            // Перезагружаем страницу через 1 секунду, чтобы обновить данные из базы
-            setTimeout(() => {
-              location.reload();
-            }, 1000);
-          } else {
-            console.error('Ошибка автоматического сохранения:', data.error);
-            // Показываем кнопку сохранения для ручного сохранения
+        try {
+          const response = await fetch('/api/prices/save', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ prices: prices })
+          });
+          const data = await response.json().catch(()=>({}));
+          if (!response.ok || !data.success) {
+            console.error('Ошибка автоматического сохранения:', data.error || response.status);
             const saveBtn = document.getElementById('savePrices');
             if (saveBtn) {
               saveBtn.style.display = 'inline-block';
             }
+            showUploadStatus(data.error || 'Ошибка сохранения закупочных цен', 'danger');
+            return false;
           }
-        })
-        .catch(error => {
+
+          console.log('Цены автоматически сохранены:', data.message);
+          try {
+            const currentLocal = JSON.parse(localStorage.getItem(PURCHASE_PRICES_LOCAL_CACHE_KEY) || '{}');
+            const mergedLocal = { ...currentLocal, ...prices };
+            localStorage.setItem(PURCHASE_PRICES_LOCAL_CACHE_KEY, JSON.stringify(mergedLocal));
+          } catch {}
+          const saveBtn = document.getElementById('savePrices');
+          if (saveBtn) {
+            saveBtn.style.display = 'none';
+          }
+          return true;
+        } catch (error) {
           console.error('Ошибка при сохранении цен:', error);
-          // Показываем кнопку сохранения для ручного сохранения
           const saveBtn = document.getElementById('savePrices');
           if (saveBtn) {
             saveBtn.style.display = 'inline-block';
           }
-        });
+          showUploadStatus('Ошибка сохранения закупочных цен', 'danger');
+          return false;
+        }
       }
       
       // Сохранение изменений

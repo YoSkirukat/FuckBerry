@@ -279,7 +279,23 @@
           </label>
         </div>
       </div>
-      <div class="col-sm-6 col-md-2 offset-md-6 d-flex align-items-end justify-content-end">
+      <div class="col-sm-6 col-md-2 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="hideZeroStock" name="hide_zero_stock" disabled>
+          <label class="form-check-label" for="hideZeroStock">
+            Скрыть нулевые остатки
+          </label>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-3 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="onlyNotSold" name="only_not_sold" disabled>
+          <label class="form-check-label" for="onlyNotSold">
+            Только товары которые не продавались
+          </label>
+        </div>
+      </div>
+      <div class="col-sm-6 col-md-1 d-flex align-items-end justify-content-end">
         <small class="text-muted" id="stocksUpdateInfo" style="display: none;">
           Остатки обновлены: <span id="stocksUpdatedAt">-</span>
         </small>
@@ -859,9 +875,11 @@
         
         // Активируем галочку "Показать весь товар" после загрузки данных
         const showAllCheckbox = document.getElementById('showAllProducts');
-        if (showAllCheckbox) {
-          showAllCheckbox.disabled = false;
-        }
+        const hideZeroStockCheckbox = document.getElementById('hideZeroStock');
+        const onlyNotSoldCheckbox = document.getElementById('onlyNotSold');
+        if (showAllCheckbox) showAllCheckbox.disabled = false;
+        if (hideZeroStockCheckbox) hideZeroStockCheckbox.disabled = false;
+        if (onlyNotSoldCheckbox) onlyNotSoldCheckbox.disabled = false;
       } catch(err){
         console.error(err);
         btn.disabled = false;
@@ -889,10 +907,22 @@
     
     // Обработчик для чекбокса "Показать весь товар"
     const showAllCheckbox = document.getElementById('showAllProducts');
+    const hideZeroStockCheckbox = document.getElementById('hideZeroStock');
+    const onlyNotSoldCheckbox = document.getElementById('onlyNotSold');
     if (showAllCheckbox) {
       showAllCheckbox.addEventListener('change', () => {
         console.log('DEBUG: showAllProducts checkbox changed:', showAllCheckbox.checked);
         // Всегда перезагружаем данные с сервера при изменении чекбокса
+        reloadReport();
+      });
+    }
+    if (hideZeroStockCheckbox) {
+      hideZeroStockCheckbox.addEventListener('change', () => {
+        reloadReport();
+      });
+    }
+    if (onlyNotSoldCheckbox) {
+      onlyNotSoldCheckbox.addEventListener('change', () => {
         reloadReport();
       });
     }
@@ -944,6 +974,9 @@
             }
           }
           
+          // Получаем nm_id из матрицы
+          const nm_id = nm_by_product[product] || null;
+
           // Получаем фото из кэша по ключу группировки
           // Если не найдено, пробуем найти по nm_id или barcode с префиксами
           let photo = productPhotos[product] || null;
@@ -955,9 +988,6 @@
             // Пробуем найти фото по barcode с префиксом BARCODE_
             photo = productPhotos[`BARCODE_${barcode}`] || productPhotos[`BARCODE_${String(barcode)}`] || null;
           }
-          
-          // Получаем nm_id из матрицы
-          const nm_id = nm_by_product[product] || null;
           
           // Определяем название товара для отображения: используем актуальный артикул продавца, если есть
           let display_name = supplier_article_by_product[product];
@@ -983,8 +1013,14 @@
             stock_qty: stock_qty
           };
         }).filter(it => {
-          // Show only items with orders (local filtering doesn't handle show_all)
-          return (it.qty || 0) > 0;
+          const showAll = !!showAllCheckbox?.checked;
+          const hideZeroStock = !!hideZeroStockCheckbox?.checked;
+          const onlyNotSold = !!onlyNotSoldCheckbox?.checked;
+          // При show_all показываем весь набор товаров, иначе только с заказами
+          if (!showAll && (it.qty || 0) <= 0) return false;
+          if (hideZeroStock && (it.stock_qty || 0) <= 0) return false;
+          if (onlyNotSold && (it.qty || 0) > 0) return false;
+          return true;
         }).sort((a,b) => {
           // Sort by quantity first, then by stock quantity
           const qtyA = a.qty || 0;

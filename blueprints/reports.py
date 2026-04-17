@@ -5,6 +5,7 @@ from flask_login import login_required, current_user
 from datetime import datetime
 from utils.cache import load_last_results
 from utils.api import fetch_finance_report
+from utils.wb_token import effective_wb_api_token
 
 reports_bp = Blueprint('reports', __name__)
 
@@ -14,7 +15,7 @@ reports_bp = Blueprint('reports', __name__)
 def report_sales_page():
     """Страница отчёта по продажам"""
     cached = load_last_results()
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     
     # Страница по умолчанию открывается пустой: без данных, пока пользователь не задаст период и не нажмёт Загрузить
     if not request.args.get("date_from") and not request.args.get("date_to"):
@@ -95,7 +96,7 @@ def report_finance_page():
             date_to_val="",
             finance_metrics={},
         ), 200
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return render_template(
             "finance_report.html",

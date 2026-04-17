@@ -25,6 +25,7 @@ from utils.orders_processing import (
     aggregate_top_products_orders, aggregate_top_products_sales
 )
 from utils.progress import ORDERS_PROGRESS, set_orders_progress, clear_orders_progress
+from utils.wb_token import effective_wb_api_token, token_for_wb_request
 
 orders_bp = Blueprint('orders', __name__)
 
@@ -69,7 +70,7 @@ def index():
     date_to_fmt = format_dmy(date_to)
 
     # Токен: берём из формы, иначе из профиля пользователя
-    token = (request.form.get("token", "").strip() or (current_user.wb_token if current_user.is_authenticated else ""))
+    token = token_for_wb_request(current_user, request.form.get("token"))
 
     # Если GET — пробуем показать последние результаты из кэша
     top_mode = "orders"
@@ -282,7 +283,7 @@ def index():
 @login_required
 def api_orders_refresh():
     """API для обновления данных заказов"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     date_from = request.form.get("date_from", "")
@@ -438,7 +439,7 @@ def api_refresh_orders_cache():
             "error": "Кэш заказов уже обновляется. Пожалуйста, подождите завершения текущего процесса."
         }), 409
     
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     

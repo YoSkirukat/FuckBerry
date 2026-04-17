@@ -16,6 +16,20 @@
     </div></div>
     {% endif %}
 
+    <div class="card mb-3"><div class="card-body">
+      <h6 class="mb-2">Название организации в шапке сайта</h6>
+      <p class="text-muted small mb-2">Укажите вручную, если WB API возвращает ошибку лимита (429) и автоматическое имя не подставляется.</p>
+      <form method="post" action="/profile/org-display-name" class="row g-2 align-items-end">
+        <div class="col-md-8">
+          <input type="text" name="org_display_name" class="form-control" maxlength="255"
+            value="{{ current_user.org_display_name or '' }}" placeholder="Например: ООО Ромашка" />
+        </div>
+        <div class="col-md-4 d-flex gap-2">
+          <button type="submit" class="btn btn-primary">Сохранить</button>
+        </div>
+      </form>
+    </div></div>
+
     <div class="row g-3">
       <div class="col-md-6">
         <div class="card h-100"><div class="card-body">

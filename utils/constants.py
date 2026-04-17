@@ -5,6 +5,8 @@ from datetime import timedelta, timezone
 
 # Версия приложения
 APP_VERSION = "1.0.1"
+# Порог (дней до exp JWT): жёлтый баннер в шапке, как у подписки. Переопределение: WB_TOKEN_EXPIRY_BANNER_DAYS
+WB_TOKEN_EXPIRY_BANNER_DAYS = int(os.getenv("WB_TOKEN_EXPIRY_BANNER_DAYS", "20"))
 
 # FBS warehouses/stocks
 FBS_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"

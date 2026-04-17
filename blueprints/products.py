@@ -3,6 +3,7 @@
 import requests
 from flask import Blueprint, render_template, jsonify
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 from typing import List, Dict, Any
 from utils.api import fetch_all_cards
 from utils.cache import save_products_cache
@@ -15,7 +16,7 @@ products_bp = Blueprint('products', __name__)
 @login_required
 def products_page():
     """Страница товаров"""
-    token = current_user.wb_token or ""
+    token = effective_wb_api_token(current_user)
     error = None
     products: List[Dict[str, Any]] = []
     if not token:
@@ -41,7 +42,7 @@ def products_page():
 @login_required
 def api_products_refresh():
     """API для обновления списка товаров"""
-    token = current_user.wb_token or ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:

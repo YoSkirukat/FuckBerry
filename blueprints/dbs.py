@@ -3,6 +3,7 @@
 import requests
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 from datetime import datetime
 from typing import List, Dict, Any
 from utils.api import fetch_dbs_new_orders
@@ -28,7 +29,7 @@ def dbs_page():
 @login_required
 def api_dbs_orders_new():
     """API для получения новых заказов DBS"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"items": [], "updated_at": None}), 200
     try:
@@ -93,7 +94,7 @@ def api_dbs_orders_new():
 @login_required
 def api_dbs_order_deliver(order_id: str):
     """API для доставки заказа DBS"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "No token"}), 401
     headers_list = [

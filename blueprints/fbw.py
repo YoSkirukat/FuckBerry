@@ -2,6 +2,7 @@
 """Blueprint для поставок FBW"""
 from flask import Blueprint, render_template
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 from utils.cache import load_fbw_supplies_cache
 
 fbw_bp = Blueprint('fbw', __name__)
@@ -27,7 +28,7 @@ def _filter_fbw_display_items(items: list[dict] | None) -> list[dict]:
 @login_required
 def fbw_supplies_page():
     """Страница поставок FBW"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     error = None
     supplies: list[dict] = []
     generated_at = ""

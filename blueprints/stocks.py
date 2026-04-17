@@ -18,6 +18,7 @@ from utils.cache import (
 from utils.helpers import normalize_stocks
 from utils.api import get_with_retry
 from utils.constants import STOCKS_API_URL
+from utils.wb_token import effective_wb_api_token
 
 
 stocks_bp = Blueprint("stocks", __name__)
@@ -219,7 +220,7 @@ def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
 @login_required
 def stocks_page():
     """Страница остатков на складах."""
-    token = current_user.wb_token or ""
+    token = effective_wb_api_token(current_user)
     error = None
     items: List[Dict[str, Any]] = []
 
@@ -398,7 +399,7 @@ def api_stocks_refresh():
     import logging
     logger = logging.getLogger(__name__)
     
-    token = current_user.wb_token or ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     
@@ -669,7 +670,7 @@ def api_stocks_data():
 @login_required
 def stocks_export():
     """Выгрузка остатков в Excel."""
-    token = current_user.wb_token or ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return redirect(url_for("stocks.stocks_page"))
     try:

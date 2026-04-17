@@ -4,9 +4,10 @@ import os
 from functools import wraps
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from flask_login import login_required, current_user
-from models import User, db
+from models import User, db, delete_user_with_related
 from datetime import datetime
 from utils.cache import _cache_path_for_user_id
+from utils.wb_token import wb_api_key_expiry_summary
 
 admin_bp = Blueprint('admin', __name__)
 
@@ -28,7 +29,8 @@ def admin_required(f):
 def admin_users():
     """Страница управления пользователями"""
     users = User.query.order_by(User.id.asc()).all()
-    return render_template("admin_users.html", users=users, message=None)
+    wb_expiry = {u.id: wb_api_key_expiry_summary(getattr(u, "wb_token", None)) for u in users}
+    return render_template("admin_users.html", users=users, wb_expiry=wb_expiry, message=None)
 
 
 @admin_bp.route("/admin/users/create", methods=["POST"]) 
@@ -134,12 +136,11 @@ def admin_users_reset(user_id: int):
 @admin_required
 def admin_users_delete(user_id: int):
     """Удаление пользователя"""
-    u = db.session.get(User, user_id)
-    if u:
-        try:
-            db.session.delete(u)
-            db.session.commit()
-            # Remove user's cache file if exists
+    if current_user.id == user_id:
+        flash("Нельзя удалить свою учётную запись")
+        return redirect(url_for("admin.admin_users"))
+    try:
+        if delete_user_with_related(user_id):
             try:
                 cache_path = _cache_path_for_user_id(user_id)
                 if os.path.isfile(cache_path):
@@ -147,9 +148,10 @@ def admin_users_delete(user_id: int):
             except Exception:
                 pass
             flash("Пользователь удалён")
-        except Exception:
-            db.session.rollback()
-            flash("Ошибка")
+        else:
+            flash("Пользователь не найден")
+    except Exception as exc:
+        flash(f"Ошибка удаления: {exc}")
     return redirect(url_for("admin.admin_users"))
 
 

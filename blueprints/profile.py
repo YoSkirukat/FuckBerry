@@ -4,13 +4,16 @@ from typing import Any
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required, current_user
 from models import db
-from utils.constants import MOSCOW_TZ
-from utils.api import fetch_seller_info
-from utils.cache import load_fbw_supplies_detailed_cache, load_orders_cache_meta, is_supplies_cache_fresh, is_orders_cache_fresh
+from utils.constants import MOSCOW_TZ, CACHE_DIR
+from utils.wb_token import effective_wb_api_token
+from utils.cache import load_orders_cache_meta, is_orders_cache_fresh
 from datetime import datetime
+import os
 import jwt
+import requests
 
 profile_bp = Blueprint('profile', __name__)
+SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
 
 def decode_token_info(token: str) -> dict[str, Any] | None:
@@ -52,6 +55,62 @@ def decode_token_info(token: str) -> dict[str, Any] | None:
         return None
 
 
+def _get_light_supplies_cache_info(user_id: int) -> dict[str, Any] | None:
+    path = os.path.join(CACHE_DIR, f"fbw_supplies_detailed_user_{user_id}.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        modified_dt = datetime.fromtimestamp(os.path.getmtime(path), tz=MOSCOW_TZ)
+        return {
+            "last_updated": modified_dt.isoformat(),
+            "total_supplies": 0,
+            "is_fresh": (datetime.now(MOSCOW_TZ) - modified_dt).total_seconds() < 24 * 3600,
+            "cache_period_from": None,
+            "cache_period_to": None,
+        }
+    except Exception:
+        return None
+
+
+def _fetch_seller_name_once(token: str) -> tuple[str | None, str | None]:
+    """
+    Single low-risk call for seller name:
+    - Bearer only
+    - strict timeout
+    - no retries/fallbacks to avoid extra requests under WB limits
+    """
+    if not token:
+        return None, "Токен отсутствует"
+    try:
+        resp = requests.get(
+            SELLER_INFO_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+    except Exception as exc:
+        return None, f"Ошибка запроса: {exc}"
+
+    if resp.status_code >= 400:
+        return None, f"{resp.status_code}: {resp.text[:300]}"
+
+    try:
+        payload = resp.json()
+    except Exception:
+        return None, f"Некорректный JSON: {resp.text[:300]}"
+
+    if not isinstance(payload, dict):
+        return None, f"Неожиданный тип ответа: {type(payload).__name__}"
+
+    org_name = (
+        payload.get("name")
+        or payload.get("companyName")
+        or payload.get("supplierName")
+    )
+    if not org_name:
+        return None, "В ответе нет name/companyName/supplierName"
+    return str(org_name).strip(), None
+
+
 @profile_bp.route("/profile", methods=["GET"]) 
 @login_required
 def profile():
@@ -60,39 +119,14 @@ def profile():
     token_info: dict[str, Any] | None = None
     supplies_cache_info: dict[str, Any] | None = None
     orders_cache_info: dict[str, Any] | None = None
-    token = current_user.wb_token or ""
+    token = (current_user.wb_token or "").strip()
+    token_info = decode_token_info(token) if token else None
+    token_api = effective_wb_api_token(current_user)
+    # Do not block profile page on live WB seller-info requests.
+    seller_info = None
     if token:
         try:
-            seller_info = fetch_seller_info(token)
-            token_info = decode_token_info(token)
-            
-            # Информация о кэше поставок (безопасная загрузка)
-            supplies_cache_info = None
-            try:
-                supplies_cache = load_fbw_supplies_detailed_cache()
-                if supplies_cache:
-                    # Определяем период кэша по ключам дней
-                    supplies_by_date = supplies_cache.get("supplies_by_date") or {}
-                    period_from = None
-                    period_to = None
-                    try:
-                        if supplies_by_date:
-                            keys = sorted(supplies_by_date.keys())
-                            period_from = keys[0]
-                            period_to = keys[-1]
-                    except Exception:
-                        pass
-
-                    supplies_cache_info = {
-                        "last_updated": supplies_cache.get("last_updated"),
-                        "total_supplies": supplies_cache.get("total_supplies_processed", 0),
-                        "is_fresh": is_supplies_cache_fresh(),
-                        "cache_period_from": period_from,
-                        "cache_period_to": period_to,
-                    }
-            except Exception as e:
-                print(f"Ошибка загрузки кэша поставок: {e}")
-                supplies_cache_info = None
+            supplies_cache_info = _get_light_supplies_cache_info(current_user.id)
             
             # Информация о кэше заказов (безопасная загрузка)
             orders_cache_info = None
@@ -111,8 +145,6 @@ def profile():
                 print(f"Ошибка загрузки кэша заказов: {e}")
                 orders_cache_info = None
         except Exception:
-            seller_info = None
-            token_info = None
             supplies_cache_info = None
             orders_cache_info = None
     validity_status = None
@@ -147,6 +179,15 @@ def profile_token():
         current_user.wb_token = new_token or None
         db.session.commit()
         if new_token:
+            # Try to refresh organization title once right after token save.
+            org_name, _err = _fetch_seller_name_once(new_token)
+            if org_name:
+                try:
+                    current_user.org_display_name = org_name[:255]
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+        if new_token:
             hint = []
             if not (current_user.phone and current_user.email and current_user.shipper_address):
                 hint.append(" Заполните телефон, email и адрес склада для этикеток в профиле.")
@@ -156,6 +197,21 @@ def profile_token():
     except Exception:
         db.session.rollback()
         flash("Ошибка сохранения токена")
+    return redirect(url_for("profile.profile"))
+
+
+@profile_bp.route("/profile/org-display-name", methods=["POST"])
+@login_required
+def profile_org_display_name():
+    """Сохраняет название организации для шапки (fallback при лимитах WB API)."""
+    val = (request.form.get("org_display_name") or "").strip()
+    try:
+        current_user.org_display_name = val or None
+        db.session.commit()
+        flash("Название в шапке сохранено" if val else "Название в шапке сброшено")
+    except Exception:
+        db.session.rollback()
+        flash("Ошибка сохранения названия")
     return redirect(url_for("profile.profile"))
 
 

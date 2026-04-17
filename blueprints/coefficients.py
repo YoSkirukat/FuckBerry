@@ -3,6 +3,7 @@
 import requests
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 from datetime import datetime
 from typing import List, Dict, Any
 from utils.api import fetch_acceptance_coefficients
@@ -16,7 +17,7 @@ coefficients_bp = Blueprint('coefficients', __name__)
 def coefficients_page():
     """Страница коэффициентов приёмки"""
     error = None
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     items: List[Dict[str, Any]] | None = None
     warehouses: List[str] = []
     date_keys: List[str] = []
@@ -61,7 +62,7 @@ def coefficients_page():
 @login_required
 def api_acceptance_coefficients():
     """API для получения коэффициентов приёмки"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:

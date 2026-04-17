@@ -5,6 +5,7 @@ import requests
 from datetime import datetime
 from flask import Blueprint, jsonify, request
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 from typing import Dict, Any, List
 
 from utils.api import get_with_retry
@@ -27,7 +28,7 @@ fbs_supplies_bp = Blueprint("fbs_supplies", __name__)
 @login_required
 def api_fbs_supplies():
     """Список поставок FBS (с пагинацией и возможностью обновления)."""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"items": [], "lastUpdated": None}), 200
 
@@ -213,7 +214,7 @@ def api_fbs_supplies():
 def api_fbs_supply_orders(supply_id: str):
     """Состав (товары) конкретной поставки FBS."""
     print(f"=== FBS supply {supply_id} orders request received ===")
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         print(f"No token for supply {supply_id}")
         return jsonify({"items": []}), 200
@@ -379,7 +380,7 @@ def api_fbs_add_order_to_supply(supply_id: str, order_id: str):
     logger = logging.getLogger(__name__)
     logger.info(f"=== Adding order {order_id} to supply {supply_id} ===")
 
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         logger.warning("No token provided")
         return jsonify({"error": "No token"}), 401

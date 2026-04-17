@@ -15,6 +15,23 @@
   });
 </script>
 {% endif %}
+{% if api_token_banner.show %}
+<div class="alert alert-warning rounded-0 mb-0 position-relative text-center fw-semibold py-1" role="alert" style="border:0;">
+  Срок действия API-ключа истекает {{ api_token_banner.end_date }} (осталось {{ api_token_banner.days_left }} дн.).
+  <button id="hideWbTokenBanner" type="button" class="btn-close" aria-label="Close" style="position:absolute; right:8px; top:50%; transform: translateY(-50%);"></button>
+</div>
+<script>
+  document.getElementById('hideWbTokenBanner')?.addEventListener('click', function(){
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth()+1).padStart(2,'0');
+    const dd = String(today.getDate()).padStart(2,'0');
+    const val = `${yyyy}-${mm}-${dd}`;
+    document.cookie = `hide_wb_token_banner_until=${val}; Max-Age=86400; path=/`;
+    this.closest('.alert').remove();
+  });
+</script>
+{% endif %}
 <style>
 @keyframes slideInFromRight {
   from {

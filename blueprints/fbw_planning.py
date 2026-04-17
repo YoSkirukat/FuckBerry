@@ -2,6 +2,7 @@
 """Blueprint для планирования поставок FBW"""
 from flask import Blueprint, render_template
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 
 fbw_planning_bp = Blueprint('fbw_planning', __name__)
 
@@ -10,7 +11,7 @@ fbw_planning_bp = Blueprint('fbw_planning', __name__)
 @login_required
 def fbw_planning_page():
     """Страница планирования поставки FBW"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     error = None
     
     if not token:

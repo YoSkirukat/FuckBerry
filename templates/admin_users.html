@@ -3,6 +3,12 @@
 <head>
   {% block title %}<title>Пользователи — WB Dashboard</title>{% endblock %}
   {% include '_header.html' %}
+  <style>
+    .admin-users-table .icon-yes { color: #198754; }
+    .admin-users-table .icon-no { color: #e91e8c; }
+    .admin-users-table .btn-icon { line-height: 1; padding: 0.25rem 0.4rem; }
+    .admin-users-table .btn-icon:hover { opacity: 0.85; }
+  </style>
 </head>
 <body>
   {% include '_navbar.html' %}
@@ -55,47 +61,86 @@
     </div></div>
 
     <div class="table-responsive">
-      <table class="table table-sm table-striped">
-        <thead><tr>
-          <th>ID</th><th>Логин</th><th>Имя пользователя</th><th>Админ</th><th>Активен</th><th>Срок с</th><th>Срок по</th><th>Создан</th><th class="text-end">Действия</th>
+      <table class="table table-sm table-striped table-bordered align-middle admin-users-table">
+        <thead class="table-light"><tr>
+          <th>ID</th>
+          <th>Логин</th>
+          <th>Имя пользователя</th>
+          <th class="text-center">Админ</th>
+          <th class="text-center">Активен</th>
+          <th class="text-nowrap">Срок с / по</th>
+          <th title="По полю exp в JWT токене WB API">API ключ</th>
+          <th>Создан</th>
+          <th>Пароль</th>
+          <th class="text-center text-nowrap">Действия</th>
         </tr></thead>
         <tbody>
           {% for u in users %}
             <tr>
-              <td>{{ u.id }}</td>
+              <td>{{ u.id }}<form id="vf-{{ u.id }}" method="post" action="/admin/users/{{ u.id }}/validity" hidden></form></td>
               <td>{{ u.username }}</td>
               <td>
-                <form method="post" action="/admin/users/{{u.id}}/display_name" class="d-inline">
-                  <input name="display_name" type="text" class="form-control form-control-sm d-inline w-auto" value="{{ u.display_name or '' }}" placeholder="Имя пользователя" />
-                  <button class="btn btn-sm btn-outline-info" type="submit">Имя</button>
+                <form method="post" action="/admin/users/{{u.id}}/display_name" class="d-flex align-items-center gap-1 flex-nowrap">
+                  <input name="display_name" type="text" class="form-control form-control-sm flex-grow-1" style="min-width:7rem;max-width:14rem;width:1%;" value="{{ u.display_name or '' }}" placeholder="Имя пользователя" />
+                  <button type="submit" class="btn btn-sm btn-outline-primary btn-icon flex-shrink-0" title="Сохранить имя"><i class="fa-solid fa-check"></i></button>
                 </form>
               </td>
-              <td>{{ 'да' if u.is_admin else 'нет' }}</td>
-              <td>{{ 'да' if u.is_active else 'нет' }}</td>
-              <td>{{ u.valid_from.strftime('%d.%m.%Y') if u.valid_from else '' }}</td>
-              <td>{{ u.valid_to.strftime('%d.%m.%Y') if u.valid_to else '' }}</td>
-              <td>{{ u.created_at.strftime('%d.%m.%Y %H:%M') if u.created_at else '' }}</td>
-              <td class="text-end">
-                <form method="post" action="/admin/users/{{u.id}}/validity" class="d-inline">
-                  <input name="valid_from" type="date" class="form-control form-control-sm d-inline w-auto" value="{{ u.valid_from.strftime('%Y-%m-%d') if u.valid_from else '' }}" />
-                  <input name="valid_to" type="date" class="form-control form-control-sm d-inline w-auto" value="{{ u.valid_to.strftime('%Y-%m-%d') if u.valid_to else '' }}" />
-                  <button class="btn btn-sm btn-outline-secondary" type="submit">Срок</button>
-                </form>
-                <form method="post" action="/admin/users/{{u.id}}/reset" class="d-inline ms-1">
-                  <input type="password" name="password" placeholder="Новый пароль" class="form-control form-control-sm d-inline w-auto" required />
-                  <button class="btn btn-sm btn-outline-primary" type="submit">Пароль</button>
-                </form>
+              <td class="text-center fs-5">
+                {% if u.is_admin %}
+                  <i class="fa-solid fa-check icon-yes" title="Администратор"></i>
+                {% else %}
+                  <i class="fa-solid fa-xmark icon-no" title="Не админ"></i>
+                {% endif %}
+              </td>
+              <td class="text-center fs-5">
                 {% if u.is_active %}
-                  <form method="post" action="/admin/users/{{u.id}}/block" class="d-inline ms-1">
-                    <button class="btn btn-sm btn-warning" type="submit">Блок</button>
+                  <i class="fa-solid fa-check icon-yes" title="Активен"></i>
+                {% else %}
+                  <i class="fa-solid fa-xmark icon-no" title="Заблокирован"></i>
+                {% endif %}
+              </td>
+              <td class="text-nowrap">
+                <div class="d-flex align-items-center gap-1 flex-nowrap">
+                  <input form="vf-{{ u.id }}" name="valid_from" type="date" class="form-control form-control-sm flex-shrink-0" style="width:9.5rem;max-width:9.5rem;" value="{{ u.valid_from.strftime('%Y-%m-%d') if u.valid_from else '' }}" title="Срок с" />
+                  <input form="vf-{{ u.id }}" name="valid_to" type="date" class="form-control form-control-sm flex-shrink-0" style="width:9.5rem;max-width:9.5rem;" value="{{ u.valid_to.strftime('%Y-%m-%d') if u.valid_to else '' }}" title="Срок по" />
+                  <button form="vf-{{ u.id }}" type="submit" class="btn btn-sm btn-outline-secondary btn-icon flex-shrink-0" title="Сохранить срок"><i class="fa-solid fa-check"></i></button>
+                </div>
+              </td>
+              <td>
+                {% set e = wb_expiry.get(u.id, {}) %}
+                {% if e.kind == 'empty' %}
+                  <span class="text-muted">нет токена</span>
+                {% elif e.kind == 'not_jwt' %}
+                  <span class="text-muted" title="Не удалось разобрать как JWT">н/д</span>
+                {% elif e.kind == 'no_exp' %}
+                  <span class="text-muted" title="В токене нет поля срока exp">без даты</span>
+                {% elif e.kind == 'expired' %}
+                  <span class="text-danger fw-semibold" title="Истёк: {{ e.expires_at_fmt }}">истёк</span>
+                {% elif e.kind == 'valid' %}
+                  <span class="{% if e.days_left is not none and e.days_left <= 7 %}text-warning fw-semibold{% else %}text-body{% endif %}" title="До {{ e.expires_at_fmt }}">{{ e.days_left }} дн.</span>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td class="text-nowrap small">{{ u.created_at.strftime('%d.%m.%Y %H:%M') if u.created_at else '' }}</td>
+              <td>
+                <form method="post" action="/admin/users/{{u.id}}/reset" class="d-flex align-items-center gap-1 flex-wrap">
+                  <input type="password" name="password" class="form-control form-control-sm" style="min-width:7rem;max-width:10rem;" placeholder="Новый" required autocomplete="new-password" />
+                  <button type="submit" class="btn btn-sm btn-outline-primary btn-icon" title="Применить новый пароль"><i class="fa-solid fa-check"></i></button>
+                </form>
+              </td>
+              <td class="text-center text-nowrap">
+                {% if u.is_active %}
+                  <form method="post" action="/admin/users/{{u.id}}/block" class="d-inline">
+                    <button type="submit" class="btn btn-link btn-sm btn-icon text-dark p-1" title="Заблокировать"><i class="fa-solid fa-lock fa-lg"></i></button>
                   </form>
                 {% else %}
-                  <form method="post" action="/admin/users/{{u.id}}/unblock" class="d-inline ms-1">
-                    <button class="btn btn-sm btn-success" type="submit">Разблок</button>
+                  <form method="post" action="/admin/users/{{u.id}}/unblock" class="d-inline">
+                    <button type="submit" class="btn btn-link btn-sm btn-icon text-success p-1" title="Разблокировать"><i class="fa-solid fa-lock-open fa-lg"></i></button>
                   </form>
                 {% endif %}
-                <form method="post" action="/admin/users/{{u.id}}/delete" class="d-inline ms-1" onsubmit="return confirm('Удалить пользователя {{u.username}}?');">
-                  <button class="btn btn-sm btn-outline-danger" type="submit">Удалить</button>
+                <form method="post" action="/admin/users/{{u.id}}/delete" class="d-inline" onsubmit="return confirm('Удалить пользователя {{ u.username }}?');">
+                  <button type="submit" class="btn btn-link btn-sm btn-icon text-danger p-1" title="Удалить"><i class="fa-solid fa-trash-can fa-lg"></i></button>
                 </form>
               </td>
             </tr>

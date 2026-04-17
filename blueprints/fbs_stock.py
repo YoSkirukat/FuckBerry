@@ -3,6 +3,7 @@
 import requests
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required, current_user
+from utils.wb_token import effective_wb_api_token
 from datetime import datetime
 from typing import List, Dict, Any
 from utils.constants import MOSCOW_TZ
@@ -16,7 +17,7 @@ fbs_stock_bp = Blueprint('fbs_stock', __name__)
 @login_required
 def fbs_stock_page():
     """Страница остатков FBS"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     error = None
     warehouses: list[dict[str, Any]] = []
     updated_at = ""
@@ -56,7 +57,7 @@ def fbs_stock_page():
 @login_required
 def api_fbs_stock_refresh():
     """API для обновления остатков FBS"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:
@@ -146,7 +147,7 @@ def api_fbs_stock_refresh():
 @login_required
 def api_fbs_stock_by_warehouse(warehouse_id: int):
     """API для получения остатков FBS по складу"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:

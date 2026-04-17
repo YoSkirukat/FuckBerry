@@ -3,15 +3,17 @@
 import io
 import xlwt
 import xlrd
+import requests
 from flask import Blueprint, render_template, request, jsonify, send_file
 from flask_login import login_required, current_user
 from datetime import datetime
 from openpyxl import load_workbook
 from io import BytesIO
-from models import PurchasePrice, db
+from models import PurchasePrice, MarginCalculation, db
 from utils.constants import MOSCOW_TZ
 from utils.margin import load_user_margin_settings, save_user_margin_settings
 from utils.api import fetch_warehouses_data
+from utils.wb_token import effective_wb_api_token
 
 tools_bp = Blueprint('tools', __name__)
 
@@ -20,11 +22,14 @@ tools_bp = Blueprint('tools', __name__)
 @login_required
 def tools_labels_page():
     """Страница генерации этикеток"""
-    token = (current_user.wb_token or "") if current_user.is_authenticated else ""
+    raw_tok = (current_user.wb_token or "").strip() if current_user.is_authenticated else ""
+    token = effective_wb_api_token(current_user)
     error = None
-    if not token:
+    if not raw_tok:
         error = "Укажите токен API в профиле"
-    return render_template("tools_labels.html", error=error, token=token)
+    elif not token:
+        error = "Срок действия API-токена истёк. Обновите токен в профиле."
+    return render_template("tools_labels.html", error=error, token=raw_tok)
 
 
 @tools_bp.route("/tools/prices", methods=["GET"])
@@ -35,7 +40,8 @@ def tools_prices_page():
     from utils.constants import MOSCOW_TZ
     from datetime import datetime
     
-    token = current_user.wb_token or ""
+    raw_tok = (current_user.wb_token or "").strip()
+    token = effective_wb_api_token(current_user)
     error = None
     products = []
     prices_data = {}
@@ -49,8 +55,10 @@ def tools_prices_page():
     # Загружаем настройки маржи
     margin_settings = load_user_margin_settings(current_user.id)
     
-    if not token:
+    if not raw_tok:
         error = "Укажите токен API в профиле"
+    elif not token:
+        error = "Срок действия API-токена истёк. Обновите токен в профиле."
     else:
         try:
             # Загружаем товары из кэша или с API
@@ -283,9 +291,99 @@ def api_prices_upload():
             "prices": prices,
             "updated_count": updated_count
         })
-        
+
     except Exception as e:
         return jsonify({"success": False, "error": f"Ошибка обработки файла: {str(e)}"}), 500
+
+
+@tools_bp.route("/api/prices/upload-from-url", methods=["POST"])
+@login_required
+def api_prices_upload_from_url():
+    """Загрузка закупочных цен из Excel по ссылке (URL)."""
+    try:
+        data = request.get_json() or {}
+        url = (data.get("url") or "").strip()
+        if not url:
+            return jsonify({"success": False, "error": "Не указана ссылка на файл"}), 400
+
+        # Скачиваем файл
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Не удалось загрузить файл по ссылке: {e}"}), 400
+
+        # Определяем тип файла по расширению или Content-Type
+        lower_url = url.lower()
+        is_xlsx = lower_url.endswith(".xlsx")
+        is_xls = lower_url.endswith(".xls")
+        if not (is_xlsx or is_xls):
+            # Если расширения нет, пробуем по Content-Type; иначе считаем .xlsx по умолчанию
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "sheet" in ctype or "excel" in ctype:
+                is_xlsx = True
+            else:
+                # Разрешаем, но помечаем как xlsx по умолчанию
+                is_xlsx = True
+
+        content = resp.content or b""
+        if not content:
+            return jsonify({"success": False, "error": "Получен пустой файл по ссылке"}), 400
+
+        prices: dict[str, float] = {}
+        updated_count = 0
+
+        if is_xlsx:
+            workbook = load_workbook(BytesIO(content), data_only=True)
+            worksheet = workbook.active
+            for row in worksheet.iter_rows(min_row=2, max_col=2, values_only=True):
+                if len(row) >= 2 and row[0] and row[1]:
+                    barcode = str(row[0]).strip()
+                    if barcode.endswith(".0"):
+                        try:
+                            int(float(barcode))
+                            barcode = barcode[:-2]
+                        except (ValueError, TypeError):
+                            pass
+                    try:
+                        price = float(row[1])
+                        if price > 0:
+                            prices[barcode] = price
+                            updated_count += 1
+                    except (ValueError, TypeError):
+                        continue
+        else:
+            workbook = xlrd.open_workbook(file_contents=content)
+            worksheet = workbook.sheet_by_index(0)
+            for row_idx in range(1, worksheet.nrows):
+                if worksheet.ncols >= 2:
+                    barcode_cell = worksheet.cell_value(row_idx, 0)
+                    price_cell = worksheet.cell_value(row_idx, 1)
+                    if barcode_cell and price_cell:
+                        barcode = str(barcode_cell).strip()
+                        if barcode.endswith(".0"):
+                            try:
+                                int(float(barcode))
+                                barcode = barcode[:-2]
+                            except (ValueError, TypeError):
+                                pass
+                        try:
+                            price = float(price_cell)
+                            if price > 0:
+                                prices[barcode] = price
+                                updated_count += 1
+                        except (ValueError, TypeError):
+                            continue
+
+        return jsonify(
+            {
+                "success": True,
+                "prices": prices,
+                "updated_count": updated_count,
+            }
+        )
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Ошибка обработки ссылки: {str(e)}"}), 500
 
 
 @tools_bp.route("/api/prices/save", methods=["POST"])
@@ -405,14 +503,86 @@ def api_margin_settings():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@tools_bp.route("/api/tools/prices/margins/save", methods=["POST"])
+@login_required
+def api_tools_prices_margins_save():
+    """Сохранение маржинальности (profit_pct/profit_net) из /tools/prices."""
+    try:
+        payload = request.get_json() or {}
+        items = payload.get("items")
+        margins = payload.get("margins")
+
+        records: list[dict[str, Any]] = []
+        if isinstance(items, list):
+            records = items
+        elif isinstance(margins, dict):
+            # { "nm_id": {profit_pct:..., profit_net:..., barcode:...}, ... }
+            for nm_id, v in margins.items():
+                if not isinstance(v, dict):
+                    continue
+                records.append(
+                    {
+                        "nm_id": nm_id,
+                        "barcode": v.get("barcode"),
+                        "profit_pct": v.get("profit_pct"),
+                        "profit_net": v.get("profit_net"),
+                    }
+                )
+        else:
+            return jsonify({"success": False, "error": "Нет данных"}), 400
+
+        saved_count = 0
+        for rec in records:
+            try:
+                nm_id_raw = rec.get("nm_id")
+                if nm_id_raw is None or nm_id_raw == "":
+                    continue
+                nm_id = int(float(nm_id_raw))
+
+                profit_pct = rec.get("profit_pct")
+                profit_net = rec.get("profit_net")
+                barcode = rec.get("barcode")
+
+                profit_pct_f = float(profit_pct) if profit_pct is not None and profit_pct != "" else None
+                profit_net_f = float(profit_net) if profit_net is not None and profit_net != "" else None
+
+                barcode_str = str(barcode).strip() if barcode else None
+
+                existing = MarginCalculation.query.filter_by(user_id=current_user.id, nm_id=nm_id).first()
+                if existing:
+                    existing.barcode = barcode_str
+                    existing.profit_pct = profit_pct_f
+                    existing.profit_net = profit_net_f
+                else:
+                    db.session.add(
+                        MarginCalculation(
+                            user_id=current_user.id,
+                            nm_id=nm_id,
+                            barcode=barcode_str,
+                            profit_pct=profit_pct_f,
+                            profit_net=profit_net_f,
+                        )
+                    )
+                saved_count += 1
+            except Exception:
+                continue
+
+        db.session.commit()
+
+        return jsonify({"success": True, "saved_count": saved_count})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @tools_bp.route("/api/tools/prices/warehouses", methods=["GET"])
 @login_required
 def api_tools_prices_warehouses():
     """Возвращает список складов с коэффициентами для выпадающего списка."""
     try:
-        token = current_user.wb_token or ""
+        token = effective_wb_api_token(current_user)
         if not token:
-            return jsonify({"success": False, "error": "Не указан WB токен"}), 400
+            return jsonify({"success": False, "error": "WB токен не указан или срок его действия истёк"}), 400
         warehouses = fetch_warehouses_data(token)
         return jsonify({"success": True, "warehouses": warehouses})
     except Exception as exc:
