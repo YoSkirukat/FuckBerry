@@ -72,6 +72,50 @@ def _get_light_supplies_cache_info(user_id: int) -> dict[str, Any] | None:
         return None
 
 
+def _get_light_orders_cache_info(user_id: int) -> dict[str, Any] | None:
+    """
+    Берем информацию о кэше заказов безопасно:
+    - основа: metadata файл orders_warm_meta_user_<id>.json
+    - fallback для last_updated: mtime файла периодического кэша orders_period_user_<id>.json
+    """
+    meta = load_orders_cache_meta(user_id)
+    period_path = os.path.join(CACHE_DIR, f"orders_period_user_{user_id}.json")
+    period_mtime_iso = None
+    try:
+        if os.path.isfile(period_path):
+            period_mtime_iso = datetime.fromtimestamp(os.path.getmtime(period_path), tz=MOSCOW_TZ).isoformat()
+    except Exception:
+        period_mtime_iso = None
+
+    if not meta and not period_mtime_iso:
+        return None
+
+    meta_last_updated = (meta or {}).get("last_updated")
+    last_updated = meta_last_updated or period_mtime_iso
+    try:
+        meta_dt = datetime.fromisoformat(meta_last_updated) if meta_last_updated else None
+    except Exception:
+        meta_dt = None
+    try:
+        period_dt = datetime.fromisoformat(period_mtime_iso) if period_mtime_iso else None
+    except Exception:
+        period_dt = None
+    # Если периодический кэш свежее меты — показываем его как последнее обновление.
+    if period_dt and (not meta_dt or period_dt > meta_dt):
+        last_updated = period_mtime_iso
+    return {
+        "last_updated": last_updated,
+        "date_from": (meta or {}).get("date_from"),
+        "date_to": (meta or {}).get("date_to"),
+        "total_orders_cached": (meta or {}).get("total_orders_cached", 0),
+        "is_fresh": is_orders_cache_fresh(user_id) or (
+            bool(period_mtime_iso)
+            and (datetime.now(MOSCOW_TZ) - datetime.fromisoformat(period_mtime_iso)).total_seconds() < 24 * 3600
+        ),
+        "cache_version": (meta or {}).get("cache_version", "1.0"),
+    }
+
+
 def _fetch_seller_name_once(token: str) -> tuple[str | None, str | None]:
     """
     Single low-risk call for seller name:
@@ -131,16 +175,7 @@ def profile():
             # Информация о кэше заказов (безопасная загрузка)
             orders_cache_info = None
             try:
-                orders_meta = load_orders_cache_meta()
-                if orders_meta:
-                    orders_cache_info = {
-                        "last_updated": orders_meta.get("last_updated"),
-                        "date_from": orders_meta.get("date_from"),
-                        "date_to": orders_meta.get("date_to"),
-                        "total_orders_cached": orders_meta.get("total_orders_cached", 0),
-                        "is_fresh": is_orders_cache_fresh(),
-                        "cache_version": orders_meta.get("cache_version", "1.0")
-                    }
+                orders_cache_info = _get_light_orders_cache_info(current_user.id)
             except Exception as e:
                 print(f"Ошибка загрузки кэша заказов: {e}")
                 orders_cache_info = None

@@ -166,6 +166,7 @@ def index():
                 # Сохраняем токен в профиле пользователя при наличии
                 if current_user.is_authenticated and token:
                     try:
+                        user_id = current_user.id
                         # Проверяем, изменился ли токен
                         token_changed = current_user.wb_token != token
                         current_user.wb_token = token
@@ -198,12 +199,12 @@ def index():
                         #     thread.start()
 
                         # Если токен изменился или кэш заказов устарел, подогреем кэш заказов
-                        if token_changed or not is_orders_cache_fresh():
+                        if token_changed or not is_orders_cache_fresh(user_id):
                             print("Запускаем подогрев кэша заказов (6 месяцев)...")
                             def warm_orders_cache_bg():
                                 try:
-                                    meta = build_orders_warm_cache(token)
-                                    save_orders_cache_meta(meta)
+                                    meta = build_orders_warm_cache(token, user_id)
+                                    save_orders_cache_meta(meta, user_id)
                                     print("Кэш заказов подогрет")
                                 except Exception as e:
                                     print(f"Ошибка подогрева кэша заказов: {e}")

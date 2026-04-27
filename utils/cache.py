@@ -306,9 +306,9 @@ def _orders_cache_meta_path_for_user(user_id: int = None) -> str:
     return os.path.join(CACHE_DIR, "orders_warm_meta_anon.json")
 
 
-def load_orders_cache_meta() -> Dict[str, Any] | None:
+def load_orders_cache_meta(user_id: int = None) -> Dict[str, Any] | None:
     """Загружает метаданные кэша заказов"""
-    path = _orders_cache_meta_path_for_user()
+    path = _orders_cache_meta_path_for_user(user_id)
     if not os.path.isfile(path):
         return None
     
@@ -344,9 +344,9 @@ def save_orders_cache_meta(payload: Dict[str, Any], user_id: int = None) -> None
         pass
 
 
-def is_orders_cache_fresh() -> bool:
+def is_orders_cache_fresh(user_id: int = None) -> bool:
     """Проверяет, свежий ли кэш заказов (обновлялся ли за последние 24 часа)"""
-    meta = load_orders_cache_meta()
+    meta = load_orders_cache_meta(user_id)
     if not meta:
         return False
     last_updated = meta.get("last_updated")
@@ -571,8 +571,14 @@ def get_orders_with_period_cache(
 
     requested_days = _daterange_inclusive(date_from, date_to)
 
-    # Дни для догрузки: нет в кэше; «сегодня» — только если нет записи, протухла или bypass_today_ttl.
+    # Дни для догрузки:
+    # - нет в кэше;
+    # - сегодня: TTL ORDERS_TODAY_CACHE_TTL_SECONDS;
+    # - последние N дней: периодический рефетч по TTL (чтобы задним числом корректировались отмены/статусы).
     today_iso = datetime.now(MOSCOW_TZ).date().strftime("%Y-%m-%d")
+    today_dt = datetime.now(MOSCOW_TZ).date()
+    ORDERS_RECENT_DAYS_REVALIDATE_WINDOW = 35
+    ORDERS_RECENT_DAYS_TTL_SECONDS = 6 * 60 * 60
     days_to_fetch: list[str] = []
     for day in requested_days:
         entry = days_map.get(day)
@@ -586,6 +592,15 @@ def get_orders_with_period_cache(
             continue
         if entry is None:
             days_to_fetch.append(day)
+            continue
+        # Для последних дней разрешаем авто-освежение по TTL.
+        try:
+            day_dt = parse_date(day).date()
+            if (today_dt - day_dt).days <= ORDERS_RECENT_DAYS_REVALIDATE_WINDOW:
+                if not period_cache_day_entry_is_fresh(entry, ORDERS_RECENT_DAYS_TTL_SECONDS):
+                    days_to_fetch.append(day)
+        except Exception:
+            pass
 
     _refetch_preview = (
         str(days_to_fetch)
@@ -600,6 +615,42 @@ def get_orders_with_period_cache(
     collected_orders: list[dict[str, Any]] = []
 
     # Collect from cache first
+    def _normalize_order_row_cached(row: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(row, dict):
+            return {}
+        normalized = dict(row)
+
+        # Date aliases
+        if not normalized.get("Дата"):
+            normalized["Дата"] = (
+                normalized.get("date")
+                or normalized.get("Дата заказа")
+                or normalized.get("orderDate")
+                or normalized.get("_order_date")
+                or ""
+            )
+
+        # Price aliases
+        if normalized.get("Цена со скидкой продавца") is None:
+            normalized["Цена со скидкой продавца"] = (
+                normalized.get("priceWithDisc")
+                or normalized.get("price_with_disc")
+                or normalized.get("Цена")
+                or normalized.get("_price")
+                or 0
+            )
+
+        # Cancel flag aliases
+        if "is_cancelled" not in normalized:
+            cancel_raw = (
+                normalized.get("isCancel")
+                if normalized.get("isCancel") is not None
+                else normalized.get("Отмена заказа")
+            )
+            normalized["is_cancelled"] = cancel_raw is True or str(cancel_raw).lower() in ("true", "1", "истина")
+
+        return normalized
+
     def _cached_orders(entry: Dict[str, Any]) -> list[dict[str, Any]]:
         """Извлекает список заказов из записи кэша дня"""
         if not isinstance(entry, dict):
@@ -610,7 +661,9 @@ def get_orders_with_period_cache(
             or entry.get("rows")
             or entry.get("data")
         )
-        return val if isinstance(val, list) else []
+        if not isinstance(val, list):
+            return []
+        return [_normalize_order_row_cached(v) for v in val if isinstance(v, dict)]
     for day in requested_days:
         entry = days_map.get(day)
         if entry and day not in days_to_fetch:

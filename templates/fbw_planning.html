@@ -53,6 +53,14 @@
     .result-section.show {
       display: block;
     }
+    .archive-section {
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 20px;
+      display: block;
+    }
 
     #resultsContent {
       min-width: 0;
@@ -126,6 +134,12 @@
       font-size: 0.85em;
       color: #666;
       margin-top: 2px;
+    }
+    .warehouse-planning-hint {
+      font-size: 0.78rem;
+      color: #6c757d;
+      margin-top: 2px;
+      line-height: 1.2;
     }
     .warehouse-sorting-center {
       background-color: #e3f2fd;
@@ -528,6 +542,21 @@
       <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
 
+    <ul class="nav nav-tabs mb-3" id="planningTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="planning-tab" data-bs-toggle="tab" data-bs-target="#planning-pane" type="button" role="tab" aria-controls="planning-pane" aria-selected="true">
+          Планирование
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="planning-archive-tab" data-bs-toggle="tab" data-bs-target="#planning-archive-pane" type="button" role="tab" aria-controls="planning-archive-pane" aria-selected="false">
+          Архив запланированных поставок
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content" id="planningTabsContent">
+      <div class="tab-pane fade show active" id="planning-pane" role="tabpanel" aria-labelledby="planning-tab">
     <div class="form-section">
       <h5>📊 Параметры планирования</h5>
       <form id="planningForm">
@@ -635,6 +664,10 @@
             <button type="button" class="btn btn-outline-secondary btn-sm" id="tableSettingsBtn" title="Настройки таблицы">
               <i class="bi bi-gear"></i>
             </button>
+            <button type="button" class="btn btn-outline-primary btn-sm" id="savePlanningBtn" disabled>
+              <i class="bi bi-save me-1"></i>
+              Сохранить планирование
+            </button>
             <button type="button" class="btn btn-success btn-sm" id="exportExcelBtn" disabled>
               <i class="bi bi-file-earmark-excel me-1"></i>
               Сохранить в Excel
@@ -734,6 +767,38 @@
               <!-- Результаты будут загружены здесь -->
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+      </div>
+
+      <div class="tab-pane fade" id="planning-archive-pane" role="tabpanel" aria-labelledby="planning-archive-tab">
+        <div class="archive-section">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="mb-0">Архив запланированных поставок</h5>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="refreshArchiveBtn">
+              <i class="bi bi-arrow-clockwise me-1"></i>
+              Обновить
+            </button>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-striped table-hover">
+              <thead class="table-light">
+                <tr>
+                  <th>Дата</th>
+                  <th>Направление</th>
+                  <th>Текущий остаток</th>
+                  <th>Поставить на склад</th>
+                  <th style="width: 170px;">Действие</th>
+                </tr>
+              </thead>
+              <tbody id="planningArchiveTableBody">
+                <tr>
+                  <td colspan="5" class="text-center text-muted py-4">Архив пуст</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -937,13 +1002,78 @@
     </div>
   </div>
 
+  <div class="modal fade" id="planningArchiveDetailModal" tabindex="-1" aria-labelledby="planningArchiveDetailModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="planningArchiveDetailModalLabel">Сохраненное планирование</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="planningArchiveDetailMeta" class="mb-3 small text-muted"></div>
+          <div class="table-responsive">
+            <table class="table table-sm table-striped">
+              <thead class="table-light">
+                <tr>
+                  <th>Баркод</th>
+                  <th>Наименование</th>
+                  <th>Текущий остаток</th>
+                  <th>Поставить на склад</th>
+                </tr>
+              </thead>
+              <tbody id="planningArchiveDetailBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="deleteArchivePlanModal" tabindex="-1" aria-labelledby="deleteArchivePlanModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="deleteArchivePlanModalLabel">Удаление планирования</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          Вы действительно хотите удалить это планирование из архива?
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" class="btn btn-danger" id="confirmDeleteArchivePlanBtn">
+            <i class="bi bi-trash me-1"></i>
+            Удалить
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="position-fixed top-0 end-0 p-3" style="z-index: 1080;">
+    <div id="planningToast" class="toast align-items-center text-bg-success border-0" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body" id="planningToastBody">Готово</div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+      </div>
+    </div>
+  </div>
+
   <!-- Chart.js (нужен только для графика динамики) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
   <script>
     let allWarehouses = [];
     let filteredWarehouses = [];
+    let warehouseSearchInitialized = false;
     let currentProducts = []; // Для хранения текущих данных таблицы
+    let currentPlanningArchiveId = null; // ID сохраненного планирования для перезаписи
+    let planningArchiveDetailModal = null;
+    let deleteArchivePlanModal = null;
+    let planningToast = null;
+    let localSavedPlans = [];
+    let pendingDeleteArchivePlanId = null;
+    let warehouseLastPlanningDaysMap = {};
     let sortDirection = 'desc'; // Направление сортировки: 'asc' или 'desc'
     let pendingSupplies = []; // Непринятые поставки
     let pendingSuppliesModal = null; // Ссылка на модальное окно
@@ -1356,6 +1486,19 @@
       document.getElementById('exportExcelBtn').addEventListener('click', function() {
         exportToExcel();
       });
+
+      document.getElementById('savePlanningBtn').addEventListener('click', function() {
+        savePlanningToArchive();
+      });
+      document.getElementById('refreshArchiveBtn').addEventListener('click', function() {
+        loadPlanningArchive();
+      });
+      const archiveTabBtn = document.getElementById('planning-archive-tab');
+      if (archiveTabBtn) {
+        archiveTabBtn.addEventListener('shown.bs.tab', function() {
+          loadPlanningArchive();
+        });
+      }
       
       // Обработчики для превью изображений
       const preview = document.getElementById('imgPreview');
@@ -1378,8 +1521,11 @@
         }
       });
       
+      // Инициализируем поиск сразу, чтобы dropdown работал даже до ответа API.
+      setupWarehouseSearch();
       // Загружаем список складов при загрузке страницы
       loadWarehouses();
+      loadWarehousePlanningHints();
       
       // Инициализируем календарь периода продаж
       window.salesPeriodCalendar = new SalesPeriodCalendar();
@@ -1394,6 +1540,13 @@
       
       // Инициализируем модальное окно
       pendingSuppliesModal = new bootstrap.Modal(document.getElementById('pendingSuppliesModal'));
+      planningArchiveDetailModal = new bootstrap.Modal(document.getElementById('planningArchiveDetailModal'));
+      deleteArchivePlanModal = new bootstrap.Modal(document.getElementById('deleteArchivePlanModal'));
+      planningToast = new bootstrap.Toast(document.getElementById('planningToast'), { delay: 3000, autohide: true });
+      localSavedPlans = _loadLocalSavedPlans();
+      document.getElementById('confirmDeleteArchivePlanBtn').addEventListener('click', function() {
+        confirmDeleteArchivePlan();
+      });
       
       // Обработчики для модального окна
       document.getElementById('acceptSuppliesBtn').addEventListener('click', function() {
@@ -1461,6 +1614,7 @@
       // Обработчик формы
       document.getElementById('planningForm').addEventListener('submit', function(e) {
         e.preventDefault();
+        currentPlanningArchiveId = null;
         
         const formData = new FormData(this);
         const data = Object.fromEntries(formData);
@@ -1779,6 +1933,7 @@
       
       // Активируем кнопку Excel
       document.getElementById('exportExcelBtn').disabled = false;
+      document.getElementById('savePlanningBtn').disabled = false;
       
       // Показываем количество товаров и остатков
       const productsCountDiv = document.getElementById('productsCount');
@@ -1927,6 +2082,272 @@
       
       // Применяем настройки видимости колонок
       applyTableColumnSettings();
+    }
+
+    async function savePlanningToArchive() {
+      if (!window.lastFormData || !Array.isArray(currentProducts) || currentProducts.length === 0) {
+        alert('Сначала выполните расчет поставки');
+        return;
+      }
+      try {
+        updateCurrentProductsFromTable();
+      } catch (e) {
+        console.warn('Не удалось синхронизировать таблицу перед сохранением:', e);
+      }
+
+      const payload = {
+        plan_id: currentPlanningArchiveId,
+        formData: window.lastFormData,
+        products: currentProducts
+      };
+
+      const btn = document.getElementById('savePlanningBtn');
+      const oldText = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Сохраняю...';
+      try {
+        const resp = await fetch('/api/fbw/planning/archive/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.message || 'Не удалось сохранить планирование');
+        }
+        currentPlanningArchiveId = data.plan && data.plan.id ? data.plan.id : currentPlanningArchiveId;
+        _upsertLocalSavedPlan(data.plan || null);
+        updateWarehousePlanningHintsFromPlans(localSavedPlans);
+        showPlanningToast('Планирование сохранено в архив', 'success');
+      } catch (err) {
+        console.error('Ошибка сохранения планирования:', err);
+        showPlanningToast(err.message || 'Ошибка сохранения планирования', 'danger');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = oldText;
+      }
+    }
+
+    function showPlanningToast(message, type = 'success') {
+      const toastEl = document.getElementById('planningToast');
+      const toastBody = document.getElementById('planningToastBody');
+      if (!toastEl || !toastBody || !planningToast) return;
+      toastBody.textContent = message;
+      toastEl.classList.remove('text-bg-success', 'text-bg-danger', 'text-bg-warning', 'text-bg-info');
+      toastEl.classList.add(type === 'danger' ? 'text-bg-danger' : 'text-bg-success');
+      planningToast.show();
+    }
+
+    function _loadLocalSavedPlans() {
+      try {
+        const raw = localStorage.getItem('fbwPlanningLocalSavedPlans');
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function _persistLocalSavedPlans() {
+      try {
+        localStorage.setItem('fbwPlanningLocalSavedPlans', JSON.stringify(localSavedPlans));
+      } catch (e) {}
+    }
+
+    function _upsertLocalSavedPlan(plan) {
+      if (!plan || !plan.id) return;
+      const idx = localSavedPlans.findIndex(p => Number(p.id) === Number(plan.id));
+      if (idx >= 0) {
+        localSavedPlans[idx] = plan;
+      } else {
+        localSavedPlans.unshift(plan);
+      }
+      _persistLocalSavedPlans();
+    }
+
+    function _removeLocalSavedPlan(planId) {
+      localSavedPlans = localSavedPlans.filter(p => Number(p.id) !== Number(planId));
+      _persistLocalSavedPlans();
+      updateWarehousePlanningHintsFromPlans(localSavedPlans);
+    }
+
+    function _dayWordRu(n) {
+      const v = Math.abs(Number(n)) % 100;
+      const v1 = v % 10;
+      if (v > 10 && v < 20) return 'дней';
+      if (v1 > 1 && v1 < 5) return 'дня';
+      if (v1 === 1) return 'день';
+      return 'дней';
+    }
+
+    function _normalizeWarehouseNameForMap(name) {
+      return String(name || '')
+        .toLowerCase()
+        .replace(/ё/g, 'е')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function updateWarehousePlanningHintsFromPlans(plans) {
+      const map = {};
+      const now = new Date();
+      (Array.isArray(plans) ? plans : []).forEach(plan => {
+        if (!plan || !plan.warehouse_name || !plan.date) return;
+        const key = _normalizeWarehouseNameForMap(plan.warehouse_name);
+        if (!key) return;
+        const dt = new Date(plan.date);
+        if (isNaN(dt.getTime())) return;
+        if (!map[key] || dt > map[key]) {
+          map[key] = dt;
+        }
+      });
+      const daysMap = {};
+      Object.keys(map).forEach(key => {
+        const diffMs = now.getTime() - map[key].getTime();
+        const diffDays = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+        daysMap[key] = diffDays;
+      });
+      warehouseLastPlanningDaysMap = daysMap;
+    }
+
+    async function loadWarehousePlanningHints() {
+      try {
+        const resp = await fetch('/api/fbw/planning/archive');
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          updateWarehousePlanningHintsFromPlans(localSavedPlans);
+          return;
+        }
+        const serverPlans = Array.isArray(data.plans) ? data.plans : [];
+        const merged = [...serverPlans];
+        const ids = new Set(serverPlans.map(p => Number(p.id)));
+        localSavedPlans.forEach(p => {
+          if (p && p.id && !ids.has(Number(p.id))) merged.push(p);
+        });
+        updateWarehousePlanningHintsFromPlans(merged);
+      } catch (e) {
+        updateWarehousePlanningHintsFromPlans(localSavedPlans);
+      }
+    }
+
+    function _formatPlanDate(dateIso) {
+      if (!dateIso) return '—';
+      const dt = new Date(dateIso);
+      if (isNaN(dt.getTime())) return dateIso;
+      return dt.toLocaleString('ru-RU');
+    }
+
+    async function loadPlanningArchive() {
+      const tbody = document.getElementById('planningArchiveTableBody');
+      if (!tbody) return;
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Загрузка...</td></tr>';
+      try {
+        const resp = await fetch('/api/fbw/planning/archive');
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.message || 'Не удалось загрузить архив');
+        }
+        const serverPlans = Array.isArray(data.plans) ? data.plans : [];
+        const merged = [...serverPlans];
+        const serverIds = new Set(serverPlans.map(p => Number(p.id)));
+        localSavedPlans.forEach(plan => {
+          if (plan && plan.id && !serverIds.has(Number(plan.id))) {
+            merged.push(plan);
+          }
+        });
+        const plans = merged.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+        updateWarehousePlanningHintsFromPlans(plans);
+        if (plans.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Архив пуст</td></tr>';
+          return;
+        }
+        tbody.innerHTML = plans.map(plan => `
+          <tr>
+            <td>${_formatPlanDate(plan.date)}</td>
+            <td>${plan.warehouse_name || '—'}</td>
+            <td>${Number(plan.total_current_stock || 0)}</td>
+            <td>${Number(plan.total_to_supply || 0)}</td>
+            <td>
+              <button type="button" class="btn btn-outline-primary btn-sm" onclick="openArchivePlanDetail(${Number(plan.id)})">
+                Открыть
+              </button>
+              <button type="button" class="btn btn-outline-danger btn-sm ms-1" onclick="askDeleteArchivePlan(${Number(plan.id)})" title="Удалить из архива">
+                <i class="bi bi-trash"></i>
+              </button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error('Ошибка загрузки архива:', err);
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger py-4">${err.message || 'Ошибка загрузки архива'}</td></tr>`;
+      }
+    }
+
+    async function openArchivePlanDetail(planId) {
+      const body = document.getElementById('planningArchiveDetailBody');
+      const meta = document.getElementById('planningArchiveDetailMeta');
+      body.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">Загрузка...</td></tr>';
+      meta.textContent = '';
+      planningArchiveDetailModal.show();
+      try {
+        const resp = await fetch(`/api/fbw/planning/archive/${encodeURIComponent(planId)}`);
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.message || 'Не удалось загрузить планирование');
+        }
+        const plan = data.plan || {};
+        const products = Array.isArray(data.products) ? data.products : [];
+        meta.textContent = `Дата: ${_formatPlanDate(plan.date)} | Направление: ${plan.warehouse_name || '—'} | Текущий остаток: ${Number(plan.total_current_stock || 0)} | Поставить на склад: ${Number(plan.total_to_supply || 0)}`;
+        if (products.length === 0) {
+          body.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">Нет товаров</td></tr>';
+          return;
+        }
+        body.innerHTML = products.map(item => `
+          <tr>
+            <td>${item.barcode || '—'}</td>
+            <td>${item.name || '—'}</td>
+            <td>${Number(item.currentStock || 0)}</td>
+            <td>${Number(item.toSupply || 0)}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        console.error('Ошибка загрузки деталей архивного планирования:', err);
+        body.innerHTML = `<tr><td colspan="4" class="text-center text-danger py-3">${err.message || 'Ошибка загрузки'}</td></tr>`;
+      }
+    }
+
+    function askDeleteArchivePlan(planId) {
+      pendingDeleteArchivePlanId = Number(planId);
+      if (!pendingDeleteArchivePlanId) return;
+      deleteArchivePlanModal.show();
+    }
+
+    async function confirmDeleteArchivePlan() {
+      if (!pendingDeleteArchivePlanId) {
+        deleteArchivePlanModal.hide();
+        return;
+      }
+      const planId = pendingDeleteArchivePlanId;
+      pendingDeleteArchivePlanId = null;
+      try {
+        const resp = await fetch(`/api/fbw/planning/archive/${encodeURIComponent(planId)}`, {
+          method: 'DELETE'
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.message || 'Не удалось удалить планирование');
+        }
+        _removeLocalSavedPlan(planId);
+        if (Number(currentPlanningArchiveId) === Number(planId)) {
+          currentPlanningArchiveId = null;
+        }
+        showPlanningToast('Планирование удалено из архива', 'success');
+        deleteArchivePlanModal.hide();
+        await loadPlanningArchive();
+      } catch (err) {
+        console.error('Ошибка удаления планирования:', err);
+        showPlanningToast(err.message || 'Ошибка удаления планирования', 'danger');
+      }
     }
     
     function setupSorting() {
@@ -2250,15 +2671,26 @@
     
     // Настройка поиска складов
     function setupWarehouseSearch() {
+      if (warehouseSearchInitialized) return;
       const searchInput = document.getElementById('warehouseSearch');
       const dropdown = document.getElementById('warehouseDropdown');
       const hiddenSelect = document.getElementById('warehouse');
+      if (!searchInput || !dropdown || !hiddenSelect) return;
+      warehouseSearchInitialized = true;
       
       console.log('Настройка поиска складов:');
       console.log('searchInput:', searchInput);
       console.log('dropdown:', dropdown);
       console.log('hiddenSelect:', hiddenSelect);
       
+      function normalizeWarehouseText(value) {
+        return String(value || '')
+          .toLowerCase()
+          .replace(/ё/g, 'е')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
       // Показываем все склады при фокусе
       searchInput.addEventListener('focus', function() {
         showWarehouseDropdown();
@@ -2266,7 +2698,7 @@
       
       // Поиск при вводе
       searchInput.addEventListener('input', function() {
-        const query = this.value.toLowerCase().trim();
+        const query = normalizeWarehouseText(this.value);
         console.log(`Input event: query="${query}", lastSelectedValue="${searchInput.dataset.lastSelectedValue}"`);
         
         // Очищаем скрытый select только если пользователь вводит текст вручную
@@ -2280,9 +2712,9 @@
           filteredWarehouses = [...allWarehouses];
         } else {
           filteredWarehouses = allWarehouses.filter(warehouse => 
-            warehouse.name.toLowerCase().includes(query) ||
-            (warehouse.city && warehouse.city.toLowerCase().includes(query)) ||
-            (warehouse.address && warehouse.address.toLowerCase().includes(query))
+            normalizeWarehouseText(warehouse?.name).includes(query) ||
+            normalizeWarehouseText(warehouse?.city).includes(query) ||
+            normalizeWarehouseText(warehouse?.address).includes(query)
           );
         }
         showWarehouseDropdown();
@@ -2292,6 +2724,7 @@
       document.addEventListener('click', function(e) {
         if (!e.target.closest('#warehouseSearch') && !e.target.closest('#warehouseDropdown')) {
           dropdown.style.display = 'none';
+          dropdown.classList.remove('show');
         }
       });
       
@@ -2324,6 +2757,7 @@
           
           // Скрываем dropdown
           dropdown.style.display = 'none';
+          dropdown.classList.remove('show');
           
           console.log(`Выбран склад: ${warehouseName} (ID: ${warehouseId})`);
           console.log(`Скрытый select value: ${hiddenSelect.value}`);
@@ -2345,7 +2779,29 @@
       if (filteredWarehouses.length === 0) {
         dropdown.innerHTML = '<div class="warehouse-search-item text-muted">Склады не найдены</div>';
       } else {
-        filteredWarehouses.forEach(warehouse => {
+        const warehousesToRender = [...filteredWarehouses].sort((a, b) => {
+          const aName = String(a?.name || '');
+          const bName = String(b?.name || '');
+          const aDays = warehouseLastPlanningDaysMap[_normalizeWarehouseNameForMap(aName)];
+          const bDays = warehouseLastPlanningDaysMap[_normalizeWarehouseNameForMap(bName)];
+          const aHasDays = Number.isInteger(aDays);
+          const bHasDays = Number.isInteger(bDays);
+
+          // Сначала склады с историей планирования
+          if (aHasDays && !bHasDays) return -1;
+          if (!aHasDays && bHasDays) return 1;
+
+          // Среди складов с историей: от большего кол-ва дней к меньшему
+          if (aHasDays && bHasDays) {
+            if (aDays !== bDays) return bDays - aDays;
+            return aName.localeCompare(bName, 'ru');
+          }
+
+          // Без истории: по алфавиту
+          return aName.localeCompare(bName, 'ru');
+        });
+
+        warehousesToRender.forEach(warehouse => {
           const item = document.createElement('div');
           item.className = 'warehouse-search-item';
           if (warehouse.is_sorting_center) {
@@ -2354,9 +2810,14 @@
           
           item.dataset.warehouseId = warehouse.id;
           item.dataset.warehouseName = warehouse.name;
+          const planningDays = warehouseLastPlanningDaysMap[_normalizeWarehouseNameForMap(warehouse.name)];
+          const planningHintHtml = Number.isInteger(planningDays)
+            ? `<div class="warehouse-planning-hint"><strong>${planningDays}</strong> ${_dayWordRu(planningDays)} назад</div>`
+            : '';
           
           item.innerHTML = `
             <div class="warehouse-name">${warehouse.name || 'Без названия'}</div>
+            ${planningHintHtml}
             <div class="warehouse-details">
               ${warehouse.city ? warehouse.city : ''} 
               ${warehouse.is_sorting_center ? '• Сортировочный центр' : ''}
@@ -2368,6 +2829,7 @@
       }
       
       dropdown.style.display = 'block';
+      dropdown.classList.add('show');
     }
     
     // Функция для обновления данных из таблицы

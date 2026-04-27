@@ -46,6 +46,7 @@ def delete_user_with_related(user_id: int) -> bool:
         Notification.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         PurchasePrice.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         MarginCalculation.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        FbwPlanningArchive.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         db.session.delete(u)
         db.session.commit()
     except Exception:
@@ -114,6 +115,37 @@ class MarginCalculation(db.Model):
         return str(self.id)
 
 
+class FbwPlanningArchive(db.Model):
+    __tablename__ = "fbw_planning_archive"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+
+    warehouse_id = db.Column(db.String(128), nullable=True)
+    warehouse_name = db.Column(db.String(255), nullable=False)
+    sales_period_from = db.Column(db.String(16), nullable=True)
+    sales_period_to = db.Column(db.String(16), nullable=True)
+    planning_days = db.Column(db.Integer, nullable=True)
+    supply_date = db.Column(db.String(16), nullable=True)
+
+    total_current_stock = db.Column(db.Integer, default=0)
+    total_to_supply = db.Column(db.Integer, default=0)
+    products_json = db.Column(db.Text, nullable=False, default="[]")
+
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(MOSCOW_TZ), nullable=False)
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(MOSCOW_TZ),
+        onupdate=lambda: datetime.now(MOSCOW_TZ),
+        nullable=False,
+    )
+
+    user = db.relationship('User', backref=db.backref('fbw_plans', lazy=True))
+
+    def get_id(self):  # type: ignore[override]
+        return str(self.id)
+
+
 def delete_user_with_related(user_id: int) -> bool:
     """
     Удаляет пользователя и все строки с FK на users.id (в БД без ON DELETE CASCADE).
@@ -125,6 +157,7 @@ def delete_user_with_related(user_id: int) -> bool:
         Notification.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         PurchasePrice.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         MarginCalculation.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        FbwPlanningArchive.query.filter_by(user_id=user_id).delete(synchronize_session=False)
         db.session.delete(u)
         db.session.commit()
     except Exception:
