@@ -22,6 +22,7 @@ from utils.cache import (
 from utils.orders_processing import (
     to_rows, aggregate_daily_counts_and_revenue,
     aggregate_by_warehouse_orders_only, aggregate_top_products,
+    aggregate_cancelled_products,
     aggregate_top_products_orders, aggregate_top_products_sales
 )
 from utils.progress import ORDERS_PROGRESS, set_orders_progress, clear_orders_progress
@@ -217,6 +218,7 @@ def index():
                 updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 date_from_fmt = format_dmy(date_from)
                 date_to_fmt = format_dmy(date_to)
+                cancelled_products_snapshot = aggregate_cancelled_products(orders)
                 save_last_results({
                     "date_from": date_from,
                     "date_to": date_to,
@@ -233,6 +235,7 @@ def index():
                     "top_products": top_products,
                     "top_mode": top_mode,
                     "updated_at": updated_at,
+                    "cancelled_products": cancelled_products_snapshot,
                 })
             except requests.HTTPError as http_err:
                 error = f"Ошибка API: {http_err.response.status_code}"
@@ -244,6 +247,7 @@ def index():
     top_products_orders_filtered = aggregate_top_products_orders(
         orders, selected_warehouse or None, limit=50
     )
+    cancelled_products = aggregate_cancelled_products(orders)
 
     return render_template(
         "index.html",
@@ -260,6 +264,7 @@ def index():
         total_active_orders=total_active_orders,
         total_cancelled_orders=total_cancelled_orders,
         total_revenue=total_revenue,
+        cancelled_products=cancelled_products,
         updated_at=updated_at,
         # Charts
         daily_labels=daily_labels,
@@ -336,6 +341,7 @@ def api_orders_refresh():
         top_mode = "orders"
         warehouses = sorted({(r.get("Склад отгрузки") or "Не указан") for r in orders})
         top_products_orders_filtered = aggregate_top_products_orders(orders, None, limit=50)
+        cancelled_products = aggregate_cancelled_products(orders)
         updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         # Save last results snapshot
         save_last_results({
@@ -354,6 +360,7 @@ def api_orders_refresh():
             "top_products": top_products,
             "top_mode": top_mode,
             "updated_at": updated_at,
+            "cancelled_products": cancelled_products,
         })
         resp = {
             "total_orders": total_orders,
@@ -372,6 +379,7 @@ def api_orders_refresh():
             "date_from_fmt": format_dmy(date_from),
             "date_to_fmt": format_dmy(date_to),
             "top_mode": top_mode,
+            "cancelled_products": cancelled_products,
         }
         try:
             resp["cache"] = {"used_cache_days": meta.get("used_cache_days", 0), "fetched_days": meta.get("fetched_days", 0)}
@@ -393,18 +401,28 @@ def api_orders_refresh():
                 and cached.get("date_to") == date_to
                 and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None)
             ):
+                cached_orders = cached.get("orders") or []
+                cp = cached.get("cancelled_products")
+                if cp is None and cached_orders:
+                    cp = aggregate_cancelled_products(cached_orders)
+                elif cp is None:
+                    cp = []
                 return jsonify({
                     "total_orders": cached.get("total_orders", 0),
+                    "total_active_orders": cached.get("total_active_orders", 0),
+                    "total_cancelled_orders": cached.get("total_cancelled_orders", 0),
                     "total_revenue": cached.get("total_revenue", 0),
                     "daily_labels": cached.get("daily_labels", []),
                     "daily_orders_counts": cached.get("daily_orders_counts", []),
                     "daily_sales_counts": cached.get("daily_sales_counts", []),
                     "daily_orders_revenue": cached.get("daily_orders_revenue", []),
                     "daily_sales_revenue": cached.get("daily_sales_revenue", []),
+                    "daily_orders_cancelled_counts": cached.get("daily_orders_cancelled_counts", []),
                     "warehouse_summary_dual": cached.get("warehouse_summary_dual", []),
                     "top_products": cached.get("top_products", []),
                     "warehouses": cached.get("warehouses", []),
                     "top_products_orders_filtered": cached.get("top_products_orders_filtered", []),
+                    "cancelled_products": cp,
                     "updated_at": cached.get("updated_at", ""),
                     "date_from_fmt": format_dmy(date_from),
                     "date_to_fmt": format_dmy(date_to),

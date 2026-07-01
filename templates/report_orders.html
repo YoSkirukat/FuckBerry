@@ -199,6 +199,21 @@
       opacity: 0.6;
       transition: all 0.3s ease;
     }
+
+    /* Прокрутка таблицы: шапка остаётся на месте */
+    .report-table-wrap {
+      max-height: 70vh;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    #reportTable thead th {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background-color: #f8f9fa;
+      box-shadow: 0 1px 0 #dee2e6;
+      vertical-align: middle;
+    }
     
     /* Мобильное позиционирование календаря */
     @media (max-width: 768px) {
@@ -305,9 +320,9 @@
 
     <div class="card">
       <div class="card-body">
-        <div class="table-responsive" style="max-height: 70vh;">
-          <table class="table table-sm table-striped" id="reportTable">
-            <thead>
+        <div class="table-responsive report-table-wrap">
+          <table class="table table-sm table-striped mb-0" id="reportTable">
+            <thead class="table-light">
               <tr>
                 <th>#</th>
                 <th style="width:72px;">Фото</th>
@@ -324,6 +339,8 @@
                   <div>Текущий</div>
                   <div>Остаток:</div>
                 </th>
+                <th class="text-end">Прибыль чистая</th>
+                <th class="text-end">Прибыль %</th>
               </tr>
             </thead>
             <tbody id="reportBody">
@@ -352,10 +369,12 @@
                     <td class="text-end">{{ it.qty | num_space }}</td>
                     <td class="text-end">{{ (it.sum or 0) | money_ru }} руб.</td>
                     <td class="text-end">{{ (it.stock_qty or 0) | num_space }} шт.</td>
+                    <td class="text-end{% if it.profit_net is not none and it.profit_net <= 0 %} text-danger{% endif %}">{% if it.profit_net is not none %}{{ it.profit_net | money_ru }} руб.{% else %}—{% endif %}</td>
+                    <td class="text-end{% if it.profit_pct is not none and it.profit_pct <= 0 %} text-danger{% endif %}">{% if it.profit_pct is not none %}{{ it.profit_pct | money_ru }}%{% else %}—{% endif %}</td>
                   </tr>
                 {% endfor %}
               {% else %}
-                <tr><td colspan="6" class="text-muted">Нет данных</td></tr>
+                <tr><td colspan="8" class="text-muted">Нет данных</td></tr>
               {% endif %}
             </tbody>
           </table>
@@ -725,6 +744,90 @@
     // eslint-disable-next-line
     let reportMatrix = {{ (matrix or []) | tojson | safe }}; // cached matrix for client-side filtering (server-side if уже есть)
     let productPhotos = {}; // Кэш фото товаров: product -> photo
+    let reportMarginsByBarcode = (reportMatrix && reportMatrix.margins_by_barcode) ? reportMatrix.margins_by_barcode : {};
+    let reportMarginsByNmId = (reportMatrix && reportMatrix.margins_by_nm_id) ? reportMatrix.margins_by_nm_id : {};
+
+    function formatProfitNet(v) {
+      if (v === null || v === undefined || v === '') return '—';
+      const n = Number(v);
+      if (isNaN(n)) return '—';
+      return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' руб.';
+    }
+    function formatProfitPct(v) {
+      if (v === null || v === undefined || v === '') return '—';
+      const n = Number(v);
+      if (isNaN(n)) return '—';
+      return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+    }
+    function resolveItemMargins(it) {
+      if (it.profit_net != null || it.profit_pct != null) {
+        return { profit_net: it.profit_net, profit_pct: it.profit_pct };
+      }
+      const bc = String(it.barcode || '').trim();
+      if (bc && reportMarginsByBarcode && reportMarginsByBarcode[bc]) {
+        return reportMarginsByBarcode[bc];
+      }
+      const nm = it.nm_id != null ? String(it.nm_id) : '';
+      if (nm && reportMarginsByNmId && reportMarginsByNmId[nm]) {
+        return reportMarginsByNmId[nm];
+      }
+      return { profit_net: null, profit_pct: null };
+    }
+    function fillReportRow(tr, it, idx, dateFrom, dateTo) {
+      tr.innerHTML = '<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>';
+      tr.children[0].textContent = (idx + 1).toString();
+      const photoCell = tr.children[1];
+      if (it.photo) {
+        photoCell.innerHTML = `<img class="thumb" src="${it.photo}" data-src="${it.photo}"/>`;
+      } else {
+        photoCell.textContent = '-';
+      }
+      const cell = tr.children[2];
+      if (it.nm_id) {
+        const a = document.createElement('a');
+        a.href = `/product/${it.nm_id}?date_from=${dateFrom}&date_to=${dateTo}`;
+        a.className = 'text-decoration-none';
+        a.textContent = it.product;
+        cell.appendChild(a);
+        const span = document.createElement('span');
+        span.className = 'ms-1 small';
+        const wbLink = document.createElement('a');
+        wbLink.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
+        wbLink.target = '_blank';
+        wbLink.rel = 'noopener';
+        wbLink.className = 'text-muted';
+        wbLink.title = 'Открыть на WB';
+        wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
+        span.appendChild(wbLink);
+        cell.appendChild(span);
+      } else {
+        cell.textContent = it.product;
+      }
+      if (it.nm_id || it.barcode) {
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'small text-muted mt-1';
+        let infoText = '';
+        if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
+        if (it.nm_id && it.barcode) infoText += ' | ';
+        if (it.barcode) infoText += `Баркод: ${it.barcode}`;
+        infoDiv.textContent = infoText;
+        cell.appendChild(infoDiv);
+      }
+      tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
+      tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' руб.';
+      tr.children[5].textContent = (it.stock_qty || 0).toLocaleString('ru-RU') + ' шт.';
+      const margins = resolveItemMargins(it);
+      const profitNetCell = tr.children[6];
+      const profitPctCell = tr.children[7];
+      profitNetCell.textContent = formatProfitNet(margins.profit_net);
+      profitPctCell.textContent = formatProfitPct(margins.profit_pct);
+      if (margins.profit_net != null && Number(margins.profit_net) <= 0) {
+        profitNetCell.classList.add('text-danger');
+      }
+      if (margins.profit_pct != null && Number(margins.profit_pct) <= 0) {
+        profitPctCell.classList.add('text-danger');
+      }
+    }
     async function reloadReport(){
       const form = document.querySelector('form[action="/report/orders"]');
       const btn = document.getElementById('reportLoadBtn');
@@ -763,6 +866,8 @@
           throw new Error(data.error);
         }
         reportMatrix = data.matrix || reportMatrix || null;
+        reportMarginsByBarcode = (reportMatrix && reportMatrix.margins_by_barcode) || {};
+        reportMarginsByNmId = (reportMatrix && reportMatrix.margins_by_nm_id) || {};
         
         // Сохраняем фото товаров для использования при фильтрации
         // Сохраняем по ключу группировки из матрицы
@@ -817,43 +922,7 @@
         
         (data.items || []).forEach((it, idx) => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>`;
-          tr.children[0].textContent = (idx + 1).toString();
-          const photoCell = tr.children[1];
-          if (it.photo) { photoCell.innerHTML = `<img class="thumb" src="${it.photo}" data-src="${it.photo}"/>`; }
-          else { photoCell.textContent = '-'; }
-          const cell = tr.children[2];
-          if (it.nm_id){
-            const a = document.createElement('a'); 
-            a.href = `/product/${it.nm_id}?date_from=${dateFrom}&date_to=${dateTo}`; 
-            a.className = 'text-decoration-none';
-            a.textContent = it.product; 
-            cell.appendChild(a);
-            const span = document.createElement('span');
-            span.className = 'ms-1 small';
-            const wbLink = document.createElement('a');
-            wbLink.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
-            wbLink.target = '_blank';
-            wbLink.rel = 'noopener';
-            wbLink.className = 'text-muted';
-            wbLink.title = 'Открыть на WB';
-            wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
-            span.appendChild(wbLink);
-            cell.appendChild(span);
-          } else { cell.textContent = it.product; }
-          if (it.nm_id || it.barcode) {
-            const infoDiv = document.createElement('div');
-            infoDiv.className = 'small text-muted mt-1';
-            let infoText = '';
-            if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
-            if (it.nm_id && it.barcode) infoText += ' | ';
-            if (it.barcode) infoText += `Баркод: ${it.barcode}`;
-            infoDiv.textContent = infoText;
-            cell.appendChild(infoDiv);
-          }
-          tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
-          tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
-          tr.children[5].textContent = (it.stock_qty || 0).toLocaleString('ru-RU') + ' шт.';
+          fillReportRow(tr, it, idx, dateFrom, dateTo);
           tbody.appendChild(tr);
         });
         bindPreview();
@@ -1015,6 +1084,7 @@
             }
           }
           
+          const margins = resolveItemMargins({ barcode, nm_id });
           return {
             product: display_name,
             nm_id: nm_id,
@@ -1023,7 +1093,9 @@
             qty: qty,
             sum: sum,
             photo: photo,
-            stock_qty: stock_qty
+            stock_qty: stock_qty,
+            profit_net: margins.profit_net,
+            profit_pct: margins.profit_pct,
           };
         }).filter(it => {
           const showAll = !!showAllCheckbox?.checked;
@@ -1043,42 +1115,7 @@
         });
         items.forEach((it, idx) => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td></td><td class="text-center"></td><td></td><td class="text-end"></td><td class="text-end"></td><td class="text-end"></td>`;
-          tr.children[0].textContent = (idx + 1).toString();
-          const photoCell = tr.children[1]; photoCell.innerHTML = it.photo ? `<img class=\"thumb\" src=\"${it.photo}\" data-src=\"${it.photo}\"/>` : '-';
-          const cell = tr.children[2];
-          if (it.nm_id){ 
-            const a = document.createElement('a'); 
-            a.href = `/product/${it.nm_id}?date_from=${dateFrom}&date_to=${dateTo}`; 
-            a.className = 'text-decoration-none';
-            a.textContent = it.product; 
-            cell.appendChild(a);
-            const span = document.createElement('span');
-            span.className = 'ms-1 small';
-            const wbLink = document.createElement('a');
-            wbLink.href = `https://www.wildberries.ru/catalog/${it.nm_id}/detail.aspx`;
-            wbLink.target = '_blank';
-            wbLink.rel = 'noopener';
-            wbLink.className = 'text-muted';
-            wbLink.title = 'Открыть на WB';
-            wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
-            span.appendChild(wbLink);
-            cell.appendChild(span);
-          }
-          else { cell.textContent = it.product; }
-          if (it.nm_id || it.barcode) {
-            const infoDiv = document.createElement('div');
-            infoDiv.className = 'small text-muted mt-1';
-            let infoText = '';
-            if (it.nm_id) infoText += `Артикул WB: ${it.nm_id}`;
-            if (it.nm_id && it.barcode) infoText += ' | ';
-            if (it.barcode) infoText += `Баркод: ${it.barcode}`;
-            infoDiv.textContent = infoText;
-            cell.appendChild(infoDiv);
-          }
-          tr.children[3].textContent = (it.qty || 0).toLocaleString('ru-RU');
-          tr.children[4].textContent = (Number(it.sum) || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' руб.';
-          tr.children[5].textContent = (it.stock_qty || 0).toLocaleString('ru-RU') + ' шт.';
+          fillReportRow(tr, it, idx, dateFrom, dateTo);
           tbody.appendChild(tr);
         });
         bindPreview();

@@ -664,10 +664,6 @@
             <button type="button" class="btn btn-outline-secondary btn-sm" id="tableSettingsBtn" title="Настройки таблицы">
               <i class="bi bi-gear"></i>
             </button>
-            <button type="button" class="btn btn-outline-primary btn-sm" id="savePlanningBtn" disabled>
-              <i class="bi bi-save me-1"></i>
-              Сохранить планирование
-            </button>
             <button type="button" class="btn btn-success btn-sm" id="exportExcelBtn" disabled>
               <i class="bi bi-file-earmark-excel me-1"></i>
               Сохранить в Excel
@@ -1487,9 +1483,6 @@
         exportToExcel();
       });
 
-      document.getElementById('savePlanningBtn').addEventListener('click', function() {
-        savePlanningToArchive();
-      });
       document.getElementById('refreshArchiveBtn').addEventListener('click', function() {
         loadPlanningArchive();
       });
@@ -1933,7 +1926,6 @@
       
       // Активируем кнопку Excel
       document.getElementById('exportExcelBtn').disabled = false;
-      document.getElementById('savePlanningBtn').disabled = false;
       
       // Показываем количество товаров и остатков
       const productsCountDiv = document.getElementById('productsCount');
@@ -2084,10 +2076,11 @@
       applyTableColumnSettings();
     }
 
-    async function savePlanningToArchive() {
+    async function savePlanningToArchive(options = {}) {
+      const { showSuccessToast = true, showErrorToast = true } = options;
       if (!window.lastFormData || !Array.isArray(currentProducts) || currentProducts.length === 0) {
-        alert('Сначала выполните расчет поставки');
-        return;
+        if (showErrorToast) showPlanningToast('Сначала выполните расчет поставки', 'danger');
+        return false;
       }
       try {
         updateCurrentProductsFromTable();
@@ -2101,10 +2094,6 @@
         products: currentProducts
       };
 
-      const btn = document.getElementById('savePlanningBtn');
-      const oldText = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Сохраняю...';
       try {
         const resp = await fetch('/api/fbw/planning/archive/save', {
           method: 'POST',
@@ -2118,13 +2107,12 @@
         currentPlanningArchiveId = data.plan && data.plan.id ? data.plan.id : currentPlanningArchiveId;
         _upsertLocalSavedPlan(data.plan || null);
         updateWarehousePlanningHintsFromPlans(localSavedPlans);
-        showPlanningToast('Планирование сохранено в архив', 'success');
+        if (showSuccessToast) showPlanningToast('Планирование сохранено в архив', 'success');
+        return true;
       } catch (err) {
         console.error('Ошибка сохранения планирования:', err);
-        showPlanningToast(err.message || 'Ошибка сохранения планирования', 'danger');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = oldText;
+        if (showErrorToast) showPlanningToast(err.message || 'Ошибка сохранения планирования', 'danger');
+        return false;
       }
     }
 
@@ -2909,7 +2897,7 @@
     }
     
     // Функция экспорта в Excel
-    function exportToExcel() {
+    async function exportToExcel() {
       if (currentProducts.length === 0) {
         alert('Нет данных для экспорта');
         return;
@@ -2925,6 +2913,22 @@
         alert('Нет товаров для поставки. Все товары имеют нулевое количество в колонке "Поставить на склад".');
         return;
       }
+
+      const exportBtn = document.getElementById('exportExcelBtn');
+      const oldBtnHtml = exportBtn ? exportBtn.innerHTML : '';
+      if (exportBtn) {
+        exportBtn.disabled = true;
+        exportBtn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Сохраняю и выгружаю...';
+      }
+
+      const saved = await savePlanningToArchive({ showSuccessToast: false, showErrorToast: true });
+      if (!saved) {
+        if (exportBtn) {
+          exportBtn.disabled = false;
+          exportBtn.innerHTML = oldBtnHtml;
+        }
+        return;
+      }
       
       // Отладка: проверяем обновленные данные
       console.log(`Экспортируем ${productsToExport.length} товаров из ${currentProducts.length} общих`);
@@ -2938,15 +2942,15 @@
       const warehouseName = window.lastFormData ? window.lastFormData.warehouse_name : 'Неизвестный_склад';
       
       fetch('/api/fbw/planning/export-excel', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          products: currentProducts,
-          warehouse_name: warehouseName
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            products: currentProducts,
+            warehouse_name: warehouseName
+          })
         })
-      })
       .then(response => {
         if (!response.ok) {
           return response.json().then(err => Promise.reject(err));
@@ -2981,6 +2985,12 @@
       .catch(error => {
         console.error('Ошибка экспорта:', error);
         alert('Ошибка при экспорте в Excel: ' + (error.message || error.error || 'Неизвестная ошибка'));
+      })
+      .finally(() => {
+        if (exportBtn) {
+          exportBtn.disabled = false;
+          exportBtn.innerHTML = oldBtnHtml;
+        }
       });
     }
     

@@ -3123,6 +3123,51 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
     return items[:limit]
 
 
+def aggregate_cancelled_products(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Агрегирует товары только из отменённых заказов (ключ товара как в ТОП)."""
+    counts: Dict[str, int] = defaultdict(int)
+    nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
+    for r in rows:
+        if not r.get("is_cancelled", False):
+            continue
+        product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
+        product = str(product)
+        counts[product] += 1
+        nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        if product not in nm_by_product and nm:
+            nm_by_product[product] = nm
+        barcode = r.get("Баркод")
+        if product not in barcode_by_product and barcode:
+            barcode_by_product[product] = barcode
+        supplier_article = r.get("Артикул продавца")
+        if product not in supplier_article_by_product and supplier_article:
+            supplier_article_by_product[product] = supplier_article
+    nm_to_photo: Dict[Any, Any] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            photo = it.get("photo") or it.get("img")
+            if nmv is not None and nmv not in nm_to_photo:
+                nm_to_photo[nmv] = photo
+    except Exception:
+        nm_to_photo = {}
+
+    items = [{
+        "product": p,
+        "qty": c,
+        "nm_id": nm_by_product.get(p),
+        "barcode": barcode_by_product.get(p),
+        "supplier_article": supplier_article_by_product.get(p),
+        "sum": 0.0,
+        "photo": nm_to_photo.get(nm_by_product.get(p)),
+    } for p, c in counts.items()]
+    items.sort(key=lambda x: x["qty"], reverse=True)
+    return items
+
+
 def aggregate_top_products_sales(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Tuple[str, int]]:
     counts: Dict[str, int] = defaultdict(int)
     for r in rows:
@@ -5510,6 +5555,7 @@ def index():
                 updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 date_from_fmt = format_dmy(date_from)
                 date_to_fmt = format_dmy(date_to)
+                cancelled_products_snapshot = aggregate_cancelled_products(orders)
                 save_last_results({
                     "date_from": date_from,
                     "date_to": date_to,
@@ -5526,6 +5572,7 @@ def index():
                     "top_products": top_products,
                     "top_mode": top_mode,
                     "updated_at": updated_at,
+                    "cancelled_products": cancelled_products_snapshot,
                 })
             except requests.HTTPError as http_err:
                 error = f"Ошибка API: {http_err.response.status_code}"
@@ -5537,6 +5584,7 @@ def index():
     top_products_orders_filtered = aggregate_top_products_orders(
         orders, selected_warehouse or None, limit=50
     )
+    cancelled_products = aggregate_cancelled_products(orders)
 
     return render_template(
         "index.html",
@@ -5553,6 +5601,7 @@ def index():
         total_active_orders=total_active_orders,
         total_cancelled_orders=total_cancelled_orders,
         total_revenue=total_revenue,
+        cancelled_products=cancelled_products,
         updated_at=updated_at,
         # Charts
         daily_labels=daily_labels,
@@ -6259,6 +6308,92 @@ def _calc_tools_prices_margin_map(
     except Exception as e:
         print(f"Ошибка расчета маржинальности для FBW planning: {e}")
         return {}
+
+
+def _enrich_report_items_with_unit_margins(
+    items: List[Dict[str, Any]],
+    user_id: int,
+    token: str | None,
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    """Добавляет в items profit_net/profit_pct за единицу (как на /tools/prices)."""
+    if not items or not user_id:
+        return {}, {}
+
+    catalog_by_nm: dict[int, dict[str, Any]] = {}
+    catalog_by_barcode: dict[str, dict[str, Any]] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            bc = _normalize_barcode_key(it.get("barcode"))
+            if nmv is not None:
+                try:
+                    catalog_by_nm[int(nmv)] = it
+                except Exception:
+                    pass
+            if bc:
+                catalog_by_barcode[bc] = it
+    except Exception:
+        pass
+
+    products_for_margin: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    for item in items:
+        try:
+            nm_id = int(item.get("nm_id")) if item.get("nm_id") is not None else None
+        except Exception:
+            nm_id = None
+        barcode = _normalize_barcode_key(item.get("barcode"))
+        key = (nm_id, barcode)
+        if key in seen:
+            continue
+        seen.add(key)
+        if nm_id is not None and nm_id in catalog_by_nm:
+            products_for_margin.append(catalog_by_nm[nm_id])
+        elif barcode and barcode in catalog_by_barcode:
+            products_for_margin.append(catalog_by_barcode[barcode])
+        else:
+            products_for_margin.append({"nm_id": nm_id, "barcode": barcode})
+
+    margins_by_barcode = (
+        _calc_tools_prices_margin_map(token or "", products_for_margin, user_id)
+        if products_for_margin
+        else {}
+    )
+
+    margins_by_nm_id: dict[str, dict[str, float]] = {}
+    for p in products_for_margin:
+        bc = _normalize_barcode_key(p.get("barcode"))
+        try:
+            nmv = int(p.get("nm_id") or p.get("nmID"))
+        except Exception:
+            continue
+        if bc and bc in margins_by_barcode:
+            margins_by_nm_id[str(nmv)] = margins_by_barcode[bc]
+
+    def _lookup_margin(item: dict[str, Any]) -> dict[str, float] | None:
+        bc = _normalize_barcode_key(item.get("barcode"))
+        if bc and bc in margins_by_barcode:
+            return margins_by_barcode[bc]
+        try:
+            nmv = int(item.get("nm_id")) if item.get("nm_id") is not None else None
+        except Exception:
+            nmv = None
+        if nmv is not None and str(nmv) in margins_by_nm_id:
+            return margins_by_nm_id[str(nmv)]
+        return None
+
+    for item in items:
+        m = _lookup_margin(item)
+        if m:
+            item["profit_net"] = m.get("profit_net")
+            item["profit_pct"] = m.get("profit_pct")
+        else:
+            item["profit_net"] = None
+            item["profit_pct"] = None
+
+    return margins_by_barcode, margins_by_nm_id
+
 
 @app.route("/api/fbw/planning/data", methods=["GET"])
 @login_required
@@ -8104,6 +8239,7 @@ def api_orders_refresh():
         top_mode = "orders"
         warehouses = sorted({_order_row_warehouse_label(r) for r in orders})
         top_products_orders_filtered = aggregate_top_products_orders(orders, None, limit=50)
+        cancelled_products = aggregate_cancelled_products(orders)
         updated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         # Save last results snapshot
         save_last_results({
@@ -8122,6 +8258,7 @@ def api_orders_refresh():
             "top_products": top_products,
             "top_mode": top_mode,
             "updated_at": updated_at,
+            "cancelled_products": cancelled_products,
         })
         resp = {
             "total_orders": total_orders,
@@ -8140,6 +8277,7 @@ def api_orders_refresh():
             "date_from_fmt": format_dmy(date_from),
             "date_to_fmt": format_dmy(date_to),
             "top_mode": top_mode,
+            "cancelled_products": cancelled_products,
         }
         try:
             resp["cache"] = {"used_cache_days": meta.get("used_cache_days", 0), "fetched_days": meta.get("fetched_days", 0)}
@@ -8161,18 +8299,28 @@ def api_orders_refresh():
                 and cached.get("date_to") == date_to
                 and cached.get("_user_id") == (current_user.id if current_user.is_authenticated else None)
             ):
+                cached_orders = cached.get("orders") or []
+                cp = cached.get("cancelled_products")
+                if cp is None and cached_orders:
+                    cp = aggregate_cancelled_products(cached_orders)
+                elif cp is None:
+                    cp = []
                 return jsonify({
                     "total_orders": cached.get("total_orders", 0),
+                    "total_active_orders": cached.get("total_active_orders", 0),
+                    "total_cancelled_orders": cached.get("total_cancelled_orders", 0),
                     "total_revenue": cached.get("total_revenue", 0),
                     "daily_labels": cached.get("daily_labels", []),
                     "daily_orders_counts": cached.get("daily_orders_counts", []),
                     "daily_sales_counts": cached.get("daily_sales_counts", []),
                     "daily_orders_revenue": cached.get("daily_orders_revenue", []),
                     "daily_sales_revenue": cached.get("daily_sales_revenue", []),
+                    "daily_orders_cancelled_counts": cached.get("daily_orders_cancelled_counts", []),
                     "warehouse_summary_dual": cached.get("warehouse_summary_dual", []),
                     "top_products": cached.get("top_products", []),
                     "warehouses": cached.get("warehouses", []),
                     "top_products_orders_filtered": cached.get("top_products_orders_filtered", []),
+                    "cancelled_products": cp,
                     "updated_at": cached.get("updated_at", ""),
                     "date_from_fmt": format_dmy(date_from),
                     "date_to_fmt": format_dmy(date_to),
@@ -8976,6 +9124,9 @@ def report_orders_page():
 
     # Build items for the selected warehouse
     items = _build_items(warehouse, show_all=False)
+    margins_by_barcode, margins_by_nm_id = _enrich_report_items_with_unit_margins(
+        items, current_user.id, token
+    )
     
     # Вычисляем итоговые значения
     total_qty = sum(item["qty"] for item in items)
@@ -8992,6 +9143,8 @@ def report_orders_page():
         "supplier_article_by_product": supplier_article_by_product,
         "stocks_by_warehouse": stocks_by_warehouse,
         "stocks_metadata": stocks_metadata,
+        "margins_by_barcode": margins_by_barcode,
+        "margins_by_nm_id": margins_by_nm_id,
     }
 
     return render_template(
@@ -9219,6 +9372,9 @@ def api_report_orders():
             items_local.sort(key=lambda x: x["qty"], reverse=True)
             return items_local
         items = _build_items(warehouse, show_all)
+        margins_by_barcode, margins_by_nm_id = _enrich_report_items_with_unit_margins(
+            items, current_user.id, token
+        )
         
         # Вычисляем итоговые значения
         total_qty = sum(item["qty"] for item in items)
@@ -9241,6 +9397,8 @@ def api_report_orders():
                 "supplier_article_by_product": supplier_article_by_product,
                 "stocks_by_warehouse": stocks_by_warehouse,
                 "stocks_metadata": stocks_metadata,
+                "margins_by_barcode": margins_by_barcode,
+                "margins_by_nm_id": margins_by_nm_id,
             }
         }), 200
     except Exception as exc:
@@ -9314,13 +9472,14 @@ def api_report_orders_export():
             return items_local
 
         items = _build_items(warehouse) if orders else []
+        _enrich_report_items_with_unit_margins(items, current_user.id, token)
 
         # Формируем Excel
         wb = Workbook()
         ws = wb.active
         ws.title = "Отчёт по заказам"
 
-        headers = ["Артикул WB", "Баркод", "Товар", "Кол-во", "Сумма"]
+        headers = ["Артикул WB", "Баркод", "Товар", "Кол-во", "Сумма", "Прибыль чистая", "Прибыль %"]
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = Font(bold=True)
@@ -9333,6 +9492,8 @@ def api_report_orders_export():
             ws.cell(row=row, column=3, value=item.get("product"))
             ws.cell(row=row, column=4, value=item.get("qty"))
             ws.cell(row=row, column=5, value=item.get("sum"))
+            ws.cell(row=row, column=6, value=item.get("profit_net"))
+            ws.cell(row=row, column=7, value=item.get("profit_pct"))
 
         for column in ws.columns:
             max_length = 0

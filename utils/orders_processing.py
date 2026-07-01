@@ -154,6 +154,51 @@ def aggregate_top_products(rows: List[Dict[str, Any]], limit: int = 15) -> List[
     return items[:limit]
 
 
+def aggregate_cancelled_products(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Агрегирует товары только из отменённых заказов (ключ товара как в ТОП)."""
+    counts: Dict[str, int] = defaultdict(int)
+    nm_by_product: Dict[str, Any] = {}
+    barcode_by_product: Dict[str, Any] = {}
+    supplier_article_by_product: Dict[str, Any] = {}
+    for r in rows:
+        if not r.get("is_cancelled", False):
+            continue
+        product = r.get("Артикул продавца") or r.get("Артикул WB") or r.get("Баркод") or "Не указан"
+        product = str(product)
+        counts[product] += 1
+        nm = r.get("Артикул WB") or r.get("nmId") or r.get("nmID")
+        if product not in nm_by_product and nm:
+            nm_by_product[product] = nm
+        barcode = r.get("Баркод")
+        if product not in barcode_by_product and barcode:
+            barcode_by_product[product] = barcode
+        supplier_article = r.get("Артикул продавца")
+        if product not in supplier_article_by_product and supplier_article:
+            supplier_article_by_product[product] = supplier_article
+    nm_to_photo: Dict[Any, Any] = {}
+    try:
+        prod_cached = load_products_cache() or {}
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmId") or it.get("nmID")
+            photo = it.get("photo") or it.get("img")
+            if nmv is not None and nmv not in nm_to_photo:
+                nm_to_photo[nmv] = photo
+    except Exception:
+        nm_to_photo = {}
+
+    items = [{
+        "product": p,
+        "qty": c,
+        "nm_id": nm_by_product.get(p),
+        "barcode": barcode_by_product.get(p),
+        "supplier_article": supplier_article_by_product.get(p),
+        "sum": 0.0,
+        "photo": nm_to_photo.get(nm_by_product.get(p)),
+    } for p, c in counts.items()]
+    items.sort(key=lambda x: x["qty"], reverse=True)
+    return items
+
+
 def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | None = None, limit: int = 50) -> List[Dict[str, Any]]:
     """Агрегирует ТОП товаров по заказам с фильтрацией по складу"""
     counts: Dict[str, int] = defaultdict(int)

@@ -12,6 +12,7 @@
     .kpi { font-size: 1.1rem; font-weight: 600; }
     .kpi-main { font-size: 1.1rem; font-weight: 600; }
     .kpi-detail { font-size: 0.9rem; font-weight: 400; margin-top: 0.1rem; }
+    .kpi-detail #cancelledOrdersKpiLink { text-decoration: underline; cursor: pointer; }
     #exportExcelLink { color: #198754; font-weight: 600; }
     #exportExcelLink[aria-disabled="true"] { color: #adb5bd; pointer-events: none; }
     .table-responsive { max-height: 60vh; }
@@ -300,7 +301,7 @@
           <div class="kpi">
             <div class="kpi-main">🛍 Всего заказов: {{ total_orders | num_space }} шт.</div>
             <div class="kpi-detail">✅ Успешные: {{ total_active_orders | num_space }} шт.</div>
-            <div class="kpi-detail">❎ Отмененные: {{ total_cancelled_orders | num_space }} шт.</div>
+            <div class="kpi-detail">❎ {% if total_cancelled_orders %}<a href="#" id="cancelledOrdersKpiLink" class="text-primary">Отмененные: {{ total_cancelled_orders | num_space }} шт.</a>{% else %}Отмененные: {{ total_cancelled_orders | num_space }} шт.{% endif %}</div>
             <div class="kpi-detail">💲 Выручка: {{ total_revenue | money_ru }} руб.</div>
           </div>
           <div class="mt-auto d-flex justify-content-start">
@@ -442,7 +443,126 @@
 
   <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
 
+  <div class="modal fade" id="cancelledOrdersModal" tabindex="-1" aria-labelledby="cancelledOrdersModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header py-2">
+          <h5 class="modal-title" id="cancelledOrdersModalLabel">Товары из отменённых заказов</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body" style="padding: 15px;">
+          <div class="table-responsive">
+            <table class="table table-sm table-striped mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th style="width:72px;">Фото</th>
+                  <th>Товар</th>
+                  <th class="text-end">Отменено, шт.</th>
+                </tr>
+              </thead>
+              <tbody id="cancelledOrdersModalBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
+    window.__cancelledProductsData = {{ (cancelled_products or []) | tojson | safe }};
+
+    function renderCancelledModalRows(items) {
+      const tbody = document.getElementById('cancelledOrdersModalBody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      if (!items || !items.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'text-muted p-3';
+        td.textContent = 'Нет отменённых заказов по выбранному периоду';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      const dFromEl = document.getElementById('ordersDateFrom');
+      const dToEl = document.getElementById('ordersDateTo');
+      const dFrom = dFromEl ? dFromEl.value : '';
+      const dTo = dToEl ? dToEl.value : '';
+      for (const it of items) {
+        const tr = document.createElement('tr');
+        const tdPhoto = document.createElement('td');
+        tdPhoto.className = 'text-center align-middle';
+        const photo = it.photo || '';
+        if (photo) {
+          tdPhoto.innerHTML = '<img class="thumb" src="' + photo + '" alt="" />';
+        } else {
+          tdPhoto.textContent = '-';
+        }
+        const tdProd = document.createElement('td');
+        const nm = it.nm_id || '';
+        const product = it.product ?? '';
+        if (nm) {
+          const wrap = document.createElement('div');
+          const a = document.createElement('a');
+          a.href = '/product/' + nm + '?date_from=' + encodeURIComponent(dFrom) + '&date_to=' + encodeURIComponent(dTo);
+          a.className = 'text-decoration-none';
+          a.textContent = product;
+          wrap.appendChild(a);
+          const span = document.createElement('span');
+          span.className = 'ms-1 small';
+          const wbLink = document.createElement('a');
+          wbLink.href = 'https://www.wildberries.ru/catalog/' + nm + '/detail.aspx';
+          wbLink.target = '_blank';
+          wbLink.rel = 'noopener';
+          wbLink.className = 'text-muted';
+          wbLink.title = 'Открыть на WB';
+          wbLink.innerHTML = '<i class="fas fa-external-link-alt"></i>';
+          span.appendChild(wbLink);
+          wrap.appendChild(span);
+          tdProd.appendChild(wrap);
+        } else {
+          tdProd.textContent = product;
+        }
+        if (it.nm_id || it.barcode) {
+          const infoDiv = document.createElement('div');
+          infoDiv.className = 'small text-muted mt-1';
+          let infoText = '';
+          if (it.nm_id) infoText += 'Артикул WB: ' + it.nm_id;
+          if (it.nm_id && it.barcode) infoText += ' | ';
+          if (it.barcode) infoText += 'Баркод: ' + it.barcode;
+          infoDiv.textContent = infoText;
+          tdProd.appendChild(infoDiv);
+        }
+        const tdQty = document.createElement('td');
+        tdQty.className = 'text-end align-middle';
+        tdQty.textContent = (Number(it.qty) || 0).toLocaleString('ru-RU');
+        tr.appendChild(tdPhoto);
+        tr.appendChild(tdProd);
+        tr.appendChild(tdQty);
+        tbody.appendChild(tr);
+      }
+      try { bindPreview(); } catch (_) {}
+    }
+
+    function openCancelledProductsModal() {
+      renderCancelledModalRows(window.__cancelledProductsData || []);
+      const el = document.getElementById('cancelledOrdersModal');
+      if (!el) return;
+      if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+        console.warn('Bootstrap Modal недоступен');
+        return;
+      }
+      bootstrap.Modal.getOrCreateInstance(el).show();
+    }
+
+    document.addEventListener('click', function (ev) {
+      const a = ev.target && ev.target.closest ? ev.target.closest('#cancelledOrdersKpiLink') : null;
+      if (!a) return;
+      ev.preventDefault();
+      openCancelledProductsModal();
+    });
+
     // Календарь с выбором диапазона дат для страницы orders
     class OrdersDateRangeCalendar {
       constructor() {
@@ -1177,13 +1297,17 @@
         // Обновляем структурированный KPI блок
         const kpiBlock = document.querySelectorAll('.kpi')[0];
         if (kpiBlock) {
+          const cancelledLine = totalCancelledOrders > 0
+            ? `<div class="kpi-detail">❎ <a href="#" id="cancelledOrdersKpiLink" class="text-primary">Отмененные: ${totalCancelledOrders.toLocaleString('ru-RU')} шт.</a></div>`
+            : `<div class="kpi-detail">❎ Отмененные: ${totalCancelledOrders.toLocaleString('ru-RU')} шт.</div>`;
           kpiBlock.innerHTML = `
             <div class="kpi-main">🛍 Всего заказов: ${totalOrders.toLocaleString('ru-RU')} шт.</div>
             <div class="kpi-detail">✅ Успешные: ${totalActiveOrders.toLocaleString('ru-RU')} шт.</div>
-            <div class="kpi-detail">❎ Отмененные: ${totalCancelledOrders.toLocaleString('ru-RU')} шт.</div>
+            ${cancelledLine}
             <div class="kpi-detail">💲 Выручка: ${(data.total_revenue || 0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2})} руб.</div>
           `;
         }
+        window.__cancelledProductsData = Array.isArray(data.cancelled_products) ? data.cancelled_products : [];
         if (updatedAtEl) updatedAtEl.textContent = data.updated_at || '';
         // Cache info
         const cacheInfoEl = document.getElementById('cacheInfo');
