@@ -214,6 +214,23 @@
       box-shadow: 0 1px 0 #dee2e6;
       vertical-align: middle;
     }
+    #reportTable th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+    #reportTable th.sortable:hover {
+      background-color: #e9ecef !important;
+    }
+    #reportTable th.sortable .sort-icon {
+      font-size: 0.85em;
+      opacity: 0.55;
+      margin-left: 2px;
+      vertical-align: middle;
+    }
+    #reportTable th.sortable.sort-asc .sort-icon,
+    #reportTable th.sortable.sort-desc .sort-icon {
+      opacity: 1;
+    }
     
     /* Мобильное позиционирование календаря */
     @media (max-width: 768px) {
@@ -327,20 +344,24 @@
                 <th>#</th>
                 <th style="width:72px;">Фото</th>
                 <th>Товар</th>
-                <th id="repQtyHdr" class="text-end">
-                  <div>Кол-во итого:</div>
+                <th id="repQtyHdr" class="text-end sortable sort-desc" data-column="qty" title="Сортировать">
+                  <div>Кол-во итого: <i class="bi bi-arrow-down sort-icon"></i></div>
                   <div><span id="repQtyVal">{{ ((items and (items | sum(attribute='qty'))) or 0) | num_space }}</span> шт.</div>
                 </th>
                 <th id="repSumHdr" class="text-end">
                   <div>Сумма итого:</div>
                   <div><span id="repSumVal">{{ ((items and (items | sum(attribute='sum'))) or 0) | money_ru }}</span> руб.</div>
                 </th>
-                <th class="text-end">
+                <th class="text-end sortable" data-column="stock_qty" title="Сортировать">
                   <div>Текущий</div>
-                  <div>Остаток:</div>
+                  <div>Остаток: <i class="bi bi-arrow-down-up sort-icon"></i></div>
                 </th>
-                <th class="text-end">Прибыль чистая</th>
-                <th class="text-end">Прибыль %</th>
+                <th class="text-end sortable" data-column="profit_net" title="Сортировать">
+                  Прибыль чистая <i class="bi bi-arrow-down-up sort-icon"></i>
+                </th>
+                <th class="text-end sortable" data-column="profit_pct" title="Сортировать">
+                  Прибыль % <i class="bi bi-arrow-down-up sort-icon"></i>
+                </th>
               </tr>
             </thead>
             <tbody id="reportBody">
@@ -383,6 +404,7 @@
     </div>
   </div>
   <div id="imgPreview"><img id="imgPreviewImg" src="" alt="preview" /></div>
+  <script id="reportItemsInitialJson" type="application/json">{{ (items or []) | tojson | safe }}</script>
   <script>
     // Календарь с выбором диапазона дат для страницы orders
     class SalesDateRangeCalendar {
@@ -746,6 +768,196 @@
     let productPhotos = {}; // Кэш фото товаров: product -> photo
     let reportMarginsByBarcode = (reportMatrix && reportMatrix.margins_by_barcode) ? reportMatrix.margins_by_barcode : {};
     let reportMarginsByNmId = (reportMatrix && reportMatrix.margins_by_nm_id) ? reportMatrix.margins_by_nm_id : {};
+    let reportItemsCache = [];
+    let reportSort = { column: 'qty', direction: 'desc' };
+    try {
+      reportItemsCache = JSON.parse(document.getElementById('reportItemsInitialJson')?.textContent || '[]');
+    } catch {
+      reportItemsCache = [];
+    }
+
+    function sortReportItems(items) {
+      const col = reportSort.column;
+      const desc = reportSort.direction === 'desc';
+      return items.slice().sort((a, b) => {
+        if (col === 'profit_pct' || col === 'profit_net') {
+          const field = col;
+          const aMargins = resolveItemMargins(a);
+          const bMargins = resolveItemMargins(b);
+          const aRaw = aMargins[field];
+          const bRaw = bMargins[field];
+          const aNull = aRaw === null || aRaw === undefined || aRaw === '';
+          const bNull = bRaw === null || bRaw === undefined || bRaw === '';
+          if (aNull && bNull) return 0;
+          if (aNull) return 1;
+          if (bNull) return -1;
+          const av = Number(aRaw);
+          const bv = Number(bRaw);
+          if (av === bv) return 0;
+          return desc ? (bv - av) : (av - bv);
+        }
+        let av = 0;
+        let bv = 0;
+        if (col === 'qty') {
+          av = Number(a.qty) || 0;
+          bv = Number(b.qty) || 0;
+        } else if (col === 'stock_qty') {
+          av = Number(a.stock_qty) || 0;
+          bv = Number(b.stock_qty) || 0;
+        }
+        if (av === bv) return 0;
+        return desc ? (bv - av) : (av - bv);
+      });
+    }
+
+    function updateReportSortHeaders() {
+      document.querySelectorAll('#reportTable thead .sortable').forEach(th => {
+        th.classList.remove('sort-asc', 'sort-desc');
+        const icon = th.querySelector('.sort-icon');
+        if (icon) {
+          icon.className = 'bi bi-arrow-down-up sort-icon';
+        }
+        if (th.dataset.column === reportSort.column) {
+          th.classList.add(reportSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+          if (icon) {
+            icon.className = reportSort.direction === 'asc'
+              ? 'bi bi-arrow-up sort-icon'
+              : 'bi bi-arrow-down sort-icon';
+          }
+        }
+      });
+    }
+
+    function renderReportTable() {
+      const tbody = document.getElementById('reportBody');
+      if (!tbody) return;
+      const formEl = document.querySelector('form[action="/report/orders"]');
+      const dateFrom = formEl?.querySelector('input[name="date_from"]')?.value || '';
+      const dateTo = formEl?.querySelector('input[name="date_to"]')?.value || '';
+      const sorted = sortReportItems(reportItemsCache);
+      tbody.innerHTML = '';
+      if (!sorted.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.className = 'text-muted';
+        td.textContent = 'Нет данных';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        updateReportSortHeaders();
+        return;
+      }
+      sorted.forEach((it, idx) => {
+        const tr = document.createElement('tr');
+        fillReportRow(tr, it, idx, dateFrom, dateTo);
+        tbody.appendChild(tr);
+      });
+      bindPreview();
+      updateReportSortHeaders();
+    }
+
+    function setReportItems(items) {
+      reportItemsCache = Array.isArray(items) ? items.slice() : [];
+      renderReportTable();
+    }
+
+    function buildReportItemsFromMatrix(targetWh) {
+      if (!reportMatrix) return [];
+      const counts_total = reportMatrix.counts_total || {};
+      const by_wh = reportMatrix.by_wh || {};
+      const revenue_total = reportMatrix.revenue_total || {};
+      const by_wh_sum = reportMatrix.by_wh_sum || {};
+      const nm_by_product = reportMatrix.nm_by_product || {};
+      const barcode_by_product = reportMatrix.barcode_by_product || {};
+      const supplier_article_by_product = reportMatrix.supplier_article_by_product || {};
+      const stocks_by_warehouse = reportMatrix.stocks_by_warehouse || {};
+      const target = targetWh || '';
+      const allProducts = Object.keys(counts_total);
+
+      return allProducts.map(product => {
+        const bywh = by_wh[product] || {};
+        const qty = target ? (bywh[target] || 0) : (counts_total[product] || 0);
+        const bywhSum = by_wh_sum[product] || {};
+        const sum = target ? (bywhSum[target] || 0) : (revenue_total[product] || 0);
+        let stock_qty = 0;
+        const barcode = barcode_by_product[product];
+        if (barcode && stocks_by_warehouse[barcode]) {
+          if (target) {
+            stock_qty = stocks_by_warehouse[barcode][target] || 0;
+          } else {
+            stock_qty = Object.values(stocks_by_warehouse[barcode]).reduce((a, b) => a + b, 0);
+          }
+        }
+        const nm_id = nm_by_product[product] || null;
+        let photo = productPhotos[product] || null;
+        if (!photo && nm_id) {
+          photo = productPhotos[`NM_${nm_id}`] || productPhotos[`NM_${String(nm_id)}`] || null;
+        }
+        if (!photo && barcode) {
+          photo = productPhotos[`BARCODE_${barcode}`] || productPhotos[`BARCODE_${String(barcode)}`] || null;
+        }
+        let display_name = supplier_article_by_product[product];
+        if (!display_name) {
+          if (product.startsWith('BARCODE_')) {
+            display_name = `Товар с баркодом ${product.replace('BARCODE_', '')}`;
+          } else if (product.startsWith('NM_')) {
+            display_name = `Товар с артикулом WB ${product.replace('NM_', '')}`;
+          } else {
+            display_name = product;
+          }
+        }
+        const margins = resolveItemMargins({ barcode, nm_id });
+        return {
+          product: display_name,
+          nm_id,
+          barcode,
+          supplier_article: supplier_article_by_product[product],
+          qty,
+          sum,
+          photo,
+          stock_qty,
+          profit_net: margins.profit_net,
+          profit_pct: margins.profit_pct,
+        };
+      }).filter(it => {
+        const showAll = !!document.getElementById('showAllProducts')?.checked;
+        const hideZeroStock = !!document.getElementById('hideZeroStock')?.checked;
+        const onlyNotSold = !!document.getElementById('onlyNotSold')?.checked;
+        if (!showAll && (it.qty || 0) <= 0) return false;
+        if (hideZeroStock && (it.stock_qty || 0) <= 0) return false;
+        if (onlyNotSold && (it.qty || 0) > 0) return false;
+        return true;
+      });
+    }
+
+    function updateReportTotalsFromItems(items) {
+      const totalQty = items.reduce((s, x) => s + (x.qty || 0), 0);
+      const totalSum = items.reduce((s, x) => s + (Number(x.sum) || 0), 0);
+      const totalEl = document.getElementById('repTotal');
+      if (totalEl) totalEl.textContent = totalQty.toLocaleString('ru-RU');
+      const qtyVal = document.getElementById('repQtyVal');
+      if (qtyVal) qtyVal.textContent = totalQty.toLocaleString('ru-RU');
+      const sumVal = document.getElementById('repSumVal');
+      if (sumVal) {
+        sumVal.textContent = totalSum.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+    }
+
+    function bindReportSortHeaders() {
+      document.querySelectorAll('#reportTable thead .sortable').forEach(th => {
+        th.addEventListener('click', () => {
+          const col = th.dataset.column;
+          if (!col) return;
+          if (reportSort.column === col) {
+            reportSort.direction = reportSort.direction === 'desc' ? 'asc' : 'desc';
+          } else {
+            reportSort.column = col;
+            reportSort.direction = 'desc';
+          }
+          renderReportTable();
+        });
+      });
+    }
 
     function formatProfitNet(v) {
       if (v === null || v === undefined || v === '') return '—';
@@ -828,6 +1040,14 @@
         profitPctCell.classList.add('text-danger');
       }
     }
+
+    bindReportSortHeaders();
+    if (reportItemsCache.length) {
+      renderReportTable();
+    } else {
+      updateReportSortHeaders();
+    }
+
     async function reloadReport(){
       const form = document.querySelector('form[action="/report/orders"]');
       const btn = document.getElementById('reportLoadBtn');
@@ -913,19 +1133,7 @@
           });
         }
         
-        const tbody = document.getElementById('reportBody');
-        tbody.innerHTML = '';
-        
-        // Получаем даты из формы для ссылок
-        const dateFrom = form.querySelector('input[name="date_from"]')?.value || '';
-        const dateTo = form.querySelector('input[name="date_to"]')?.value || '';
-        
-        (data.items || []).forEach((it, idx) => {
-          const tr = document.createElement('tr');
-          fillReportRow(tr, it, idx, dateFrom, dateTo);
-          tbody.appendChild(tr);
-        });
-        bindPreview();
+        setReportItems(data.items || []);
         const periodEl = document.getElementById('repPeriod');
         if (periodEl) periodEl.textContent = `${data.date_from_fmt || ''} — ${data.date_to_fmt || ''}`;
         const totalEl = document.getElementById('repTotal');
@@ -1011,120 +1219,10 @@
     const whSel = document.getElementById('rWarehouse');
     if (whSel){
       whSel.addEventListener('change', () => {
-        // Только локальная фильтрация; если матрица не загружена ещё, ничего не делаем
         if (!reportMatrix) return;
-        const tbody = document.getElementById('reportBody');
-        tbody.innerHTML = '';
-        const target = whSel.value || '';
-        
-        // Получаем даты из формы для ссылок
-        const dateFrom = form.querySelector('input[name="date_from"]')?.value || '';
-        const dateTo = form.querySelector('input[name="date_to"]')?.value || '';
-        
-        // Преобразуем матрицу в массив товаров
-        const counts_total = reportMatrix.counts_total || {};
-        const by_wh = reportMatrix.by_wh || {};
-        const revenue_total = reportMatrix.revenue_total || {};
-        const by_wh_sum = reportMatrix.by_wh_sum || {};
-        const nm_by_product = reportMatrix.nm_by_product || {};
-        const barcode_by_product = reportMatrix.barcode_by_product || {};
-        const supplier_article_by_product = reportMatrix.supplier_article_by_product || {};
-        const stocks_by_warehouse = reportMatrix.stocks_by_warehouse || {};
-        
-        // Получаем все товары из counts_total
-        const allProducts = Object.keys(counts_total);
-        
-        const items = allProducts.map(product => {
-          // Получаем количество для выбранного склада или общее
-          const bywh = by_wh[product] || {};
-          const qty = target ? (bywh[target] || 0) : (counts_total[product] || 0);
-          
-          // Получаем сумму для выбранного склада или общую
-          const bywhSum = by_wh_sum[product] || {};
-          const sum = target ? (bywhSum[target] || 0) : (revenue_total[product] || 0);
-          
-          // Получаем остатки для выбранного склада
-          let stock_qty = 0;
-          const barcode = barcode_by_product[product];
-          if (barcode && stocks_by_warehouse[barcode]) {
-            if (target) {
-              // Если выбран конкретный склад, берем остаток только с этого склада
-              stock_qty = stocks_by_warehouse[barcode][target] || 0;
-            } else {
-              // Если не выбран склад, суммируем остатки по всем складам
-              stock_qty = Object.values(stocks_by_warehouse[barcode]).reduce((a, b) => a + b, 0);
-            }
-          }
-          
-          // Получаем nm_id из матрицы
-          const nm_id = nm_by_product[product] || null;
-
-          // Получаем фото из кэша по ключу группировки
-          // Если не найдено, пробуем найти по nm_id или barcode с префиксами
-          let photo = productPhotos[product] || null;
-          if (!photo && nm_id) {
-            // Пробуем найти фото по nm_id с префиксом NM_
-            photo = productPhotos[`NM_${nm_id}`] || productPhotos[`NM_${String(nm_id)}`] || null;
-          }
-          if (!photo && barcode) {
-            // Пробуем найти фото по barcode с префиксом BARCODE_
-            photo = productPhotos[`BARCODE_${barcode}`] || productPhotos[`BARCODE_${String(barcode)}`] || null;
-          }
-          
-          // Определяем название товара для отображения: используем актуальный артикул продавца, если есть
-          let display_name = supplier_article_by_product[product];
-          if (!display_name) {
-            // Если артикула продавца нет, убираем префикс из ключа группировки
-            if (product.startsWith('BARCODE_')) {
-              display_name = `Товар с баркодом ${product.replace('BARCODE_', '')}`;
-            } else if (product.startsWith('NM_')) {
-              display_name = `Товар с артикулом WB ${product.replace('NM_', '')}`;
-            } else {
-              display_name = product;
-            }
-          }
-          
-          const margins = resolveItemMargins({ barcode, nm_id });
-          return {
-            product: display_name,
-            nm_id: nm_id,
-            barcode: barcode,
-            supplier_article: supplier_article_by_product[product],
-            qty: qty,
-            sum: sum,
-            photo: photo,
-            stock_qty: stock_qty,
-            profit_net: margins.profit_net,
-            profit_pct: margins.profit_pct,
-          };
-        }).filter(it => {
-          const showAll = !!showAllCheckbox?.checked;
-          const hideZeroStock = !!hideZeroStockCheckbox?.checked;
-          const onlyNotSold = !!onlyNotSoldCheckbox?.checked;
-          // При show_all показываем весь набор товаров, иначе только с заказами
-          if (!showAll && (it.qty || 0) <= 0) return false;
-          if (hideZeroStock && (it.stock_qty || 0) <= 0) return false;
-          if (onlyNotSold && (it.qty || 0) > 0) return false;
-          return true;
-        }).sort((a,b) => {
-          // Sort by quantity first, then by stock quantity
-          const qtyA = a.qty || 0;
-          const qtyB = b.qty || 0;
-          if (qtyA !== qtyB) return qtyB - qtyA;
-          return (b.stock_qty || 0) - (a.stock_qty || 0);
-        });
-        items.forEach((it, idx) => {
-          const tr = document.createElement('tr');
-          fillReportRow(tr, it, idx, dateFrom, dateTo);
-          tbody.appendChild(tr);
-        });
-        bindPreview();
-        const totalEl = document.getElementById('repTotal');
-        const totalQty = items.reduce((s, x) => s + (x.qty||0), 0);
-        if (totalEl) totalEl.textContent = (totalQty || 0).toLocaleString('ru-RU');
-        const qtyVal2 = document.getElementById('repQtyVal'); if (qtyVal2) qtyVal2.textContent = (totalQty||0).toLocaleString('ru-RU');
-        const totalSum2 = items.reduce((s, x) => s + (Number(x.sum)||0), 0);
-        const sumVal2 = document.getElementById('repSumVal'); if (sumVal2) sumVal2.textContent = (Number(totalSum2)||0).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const items = buildReportItemsFromMatrix(whSel.value || '');
+        setReportItems(items);
+        updateReportTotalsFromItems(items);
       });
     }
     // Инициализация календаря orders при загрузке страницы
