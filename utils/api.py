@@ -14,7 +14,7 @@ from utils.constants import (
     FBS_NEW_URL, FBS_ORDERS_URL, FBS_ORDERS_STATUS_URL,
     DBS_NEW_URL, DBS_STATUS_URL, DBS_ORDERS_URL,
     SELLER_INFO_URL, ACCEPT_COEFS_URL,
-    FBS_WAREHOUSES_URL, FBS_STOCKS_BY_WAREHOUSE_URL,
+    FBS_WAREHOUSES_URL, WB_OFFICES_URL, FBS_STOCKS_BY_WAREHOUSE_URL, SUPPLIES_WAREHOUSES_URL,
     STOCKS_API_URL, WB_CARDS_LIST_URL,
     SUPPLIES_API_MIN_INTERVAL_S, DISCOUNTS_PRICES_API_URL,
     COMMISSION_API_URL, DIMENSIONS_API_URL, WAREHOUSES_API_URL
@@ -667,7 +667,21 @@ def fetch_acceptance_coefficients(token: str) -> List[Dict[str, Any]] | None:
     headers = {"Authorization": f"Bearer {token}"}
     try:
         resp = get_with_retry(ACCEPT_COEFS_URL, headers, params={})
-        return resp.json()
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            # Be tolerant to wrapper objects if WB changes payload shape.
+            for key in ("response", "data", "result", "items"):
+                payload = data.get(key)
+                if isinstance(payload, list):
+                    return payload
+                if isinstance(payload, dict):
+                    for nested_key in ("data", "result", "items"):
+                        nested = payload.get(nested_key)
+                        if isinstance(nested, list):
+                            return nested
+        return []
     except Exception:
         return None
 
@@ -680,6 +694,184 @@ def fetch_fbs_warehouses(token: str) -> list[dict[str, Any]]:
         return resp.json() or []
     except Exception:
         return []
+
+
+def fetch_supplies_warehouses(token: str) -> list[dict[str, Any]]:
+    """Получает список FBW складов с адресами."""
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(SUPPLIES_WAREHOUSES_URL, headers, params={})
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        try:
+            headers2 = {"Authorization": f"{token}"}
+            resp = get_with_retry(SUPPLIES_WAREHOUSES_URL, headers2, params={})
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+
+def fetch_wb_offices(token: str) -> list[dict[str, Any]]:
+    """Получает список складов WB (offices) с адресом, cargoType и deliveryType."""
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        resp = get_with_retry(WB_OFFICES_URL, headers, params={})
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def fetch_acceptance_warehouse_metadata(token: str) -> dict[str, dict[str, Any]]:
+    """Возвращает индекс метаданных складов для страницы коэффициентов."""
+    from utils.helpers import (
+        ACCEPTANCE_CARGO_LABELS,
+        ACCEPTANCE_DELIVERY_LABELS,
+        _merge_meta_dict,
+        _finalize_meta_entry,
+        _normalize_wh_key,
+        _base_wh_name,
+        _cargo_labels_from_name,
+    )
+
+    store: dict[str, dict[str, Any]] = {}
+    entries_by_id: dict[int, dict[str, Any]] = {}
+
+    def _resolve_entry(name: str | None = None, warehouse_id: Any | None = None) -> dict[str, Any]:
+        entry: dict[str, Any] | None = None
+        if warehouse_id is not None:
+            try:
+                entry = entries_by_id.get(int(warehouse_id))
+            except Exception:
+                entry = None
+        if entry is None and name:
+            entry = store.get(name) or store.get(_normalize_wh_key(name)) or store.get(_base_wh_name(name))
+        if entry is None:
+            entry = {"cargo_types": [], "delivery_types": []}
+        return entry
+
+    def _register(name: str | None, warehouse_id: Any | None, patch: dict[str, Any]) -> dict[str, Any]:
+        entry = _resolve_entry(name, warehouse_id)
+        _merge_meta_dict(entry, patch)
+        if warehouse_id is not None:
+            try:
+                wid = int(warehouse_id)
+                entries_by_id[wid] = entry
+                store[f"id:{wid}"] = entry
+                entry["warehouse_id"] = wid
+            except Exception:
+                pass
+        if name:
+            clean = str(name).strip()
+            if clean:
+                store[clean] = entry
+                store[_normalize_wh_key(clean)] = entry
+                base = _base_wh_name(clean)
+                if base:
+                    store[base] = entry
+        return entry
+
+    def _register_cargo_delivery(
+        name: str | None,
+        warehouse_id: Any | None,
+        cargo_raw: Any,
+        delivery_raw: Any,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        patch: dict[str, Any] = dict(extra or {})
+        cargo_types: list[str] = list(patch.get("cargo_types") or [])
+        delivery_types: list[str] = list(patch.get("delivery_types") or [])
+        try:
+            if cargo_raw is not None:
+                label = ACCEPTANCE_CARGO_LABELS.get(int(cargo_raw), f"Тип груза {cargo_raw}")
+                if label not in cargo_types:
+                    cargo_types.append(label)
+        except Exception:
+            pass
+        try:
+            if delivery_raw is not None:
+                label = ACCEPTANCE_DELIVERY_LABELS.get(int(delivery_raw), f"Тип доставки {delivery_raw}")
+                if label not in delivery_types:
+                    delivery_types.append(label)
+        except Exception:
+            pass
+        if name:
+            for label in _cargo_labels_from_name(name):
+                if label not in cargo_types:
+                    cargo_types.append(label)
+        if cargo_types:
+            patch["cargo_types"] = cargo_types
+        if delivery_types:
+            patch["delivery_types"] = delivery_types
+        _register(name, warehouse_id, patch)
+
+    for office in fetch_wb_offices(token) or []:
+        name = str(office.get("name") or office.get("warehouseName") or "").strip()
+        if not name:
+            continue
+        office_id = office.get("id")
+        _register_cargo_delivery(
+            name,
+            office_id,
+            office.get("cargoType"),
+            office.get("deliveryType"),
+            {
+                "address": str(office.get("address") or office.get("fullAddress") or "").strip(),
+                "city": str(office.get("city") or "").strip(),
+                "office_id": office_id,
+                "is_fbs": int(office.get("deliveryType") or 0) == 1,
+            },
+        )
+
+    for warehouse in fetch_fbs_warehouses(token) or []:
+        name = str(warehouse.get("name") or warehouse.get("warehouseName") or "").strip()
+        if not name:
+            continue
+        wid = warehouse.get("id") or warehouse.get("warehouseId") or warehouse.get("warehouseID")
+        _register_cargo_delivery(
+            name,
+            wid,
+            warehouse.get("cargoType"),
+            warehouse.get("deliveryType"),
+            {
+                "address": str(warehouse.get("address") or warehouse.get("fullAddress") or "").strip(),
+                "city": str(warehouse.get("city") or "").strip(),
+                "is_fbs": int(warehouse.get("deliveryType") or 0) == 1,
+            },
+        )
+
+    for warehouse in fetch_supplies_warehouses(token) or []:
+        name = str(warehouse.get("name") or warehouse.get("warehouseName") or warehouse.get("officeName") or "").strip()
+        if not name:
+            continue
+        wid = warehouse.get("ID") or warehouse.get("id") or warehouse.get("warehouseID") or warehouse.get("warehouseId")
+        patch: dict[str, Any] = {
+            "address": str(warehouse.get("address") or warehouse.get("fullAddress") or "").strip(),
+            "city": str(warehouse.get("city") or warehouse.get("settlement") or "").strip(),
+            "is_fbw": True,
+        }
+        cargo_types = _cargo_labels_from_name(name)
+        if not cargo_types:
+            cargo_types = [ACCEPTANCE_CARGO_LABELS[1]]
+        patch["cargo_types"] = cargo_types
+        patch["delivery_types"] = [ACCEPTANCE_DELIVERY_LABELS[1]]
+        _register(name, wid, patch)
+
+    seen: set[int] = set()
+    for entry in list(entries_by_id.values()) + list(store.values()):
+        oid = id(entry)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        _finalize_meta_entry(entry)
+
+    return store
 
 
 def fetch_fbs_stocks_by_warehouse(token: str, warehouse_id: int, skus: list[str]) -> list[dict[str, Any]]:

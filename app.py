@@ -529,7 +529,7 @@ DBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders"
 
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
-ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
+ACCEPT_COEFS_URL = "https://common-api.wildberries.ru/api/tariffs/v1/acceptance/coefficients"
 # FBW supplies API
 FBW_SUPPLIES_LIST_URL = "https://supplies-api.wildberries.ru/api/v1/supplies"
 FBW_SUPPLY_DETAILS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}"
@@ -3764,13 +3764,39 @@ def fetch_acceptance_coefficients(token: str) -> List[Dict[str, Any]] | None:
     headers1 = {"Authorization": f"Bearer {token}"}
     try:
         resp = get_with_retry(ACCEPT_COEFS_URL, headers1, params={})
-        return resp.json()
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("response", "data", "result", "items"):
+                payload = data.get(key)
+                if isinstance(payload, list):
+                    return payload
+                if isinstance(payload, dict):
+                    for nested_key in ("data", "result", "items"):
+                        nested = payload.get(nested_key)
+                        if isinstance(nested, list):
+                            return nested
+        return []
     except Exception:
         # Fallback raw token
         headers2 = {"Authorization": f"{token}"}
         try:
             resp = get_with_retry(ACCEPT_COEFS_URL, headers2, params={})
-            return resp.json()
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                for key in ("response", "data", "result", "items"):
+                    payload = data.get(key)
+                    if isinstance(payload, list):
+                        return payload
+                    if isinstance(payload, dict):
+                        for nested_key in ("data", "result", "items"):
+                            nested = payload.get(nested_key)
+                            if isinstance(nested, list):
+                                return nested
+            return []
         except Exception:
             return None
 
@@ -3782,16 +3808,23 @@ def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
     date_keys = [d.strftime("%Y-%m-%d") for d in date_objs]
     date_labels = [d.strftime("%d-%m") for d in date_objs]
 
-    # Filter only box type 'Короба' (boxTypeID == 2) for robustness also match by name
+    # WB changed acceptance tariffs over time; boxTypeID values are not stable enough
+    # to hardcode a single numeric id here. Prefer boxTypeName when available and
+    # otherwise keep the record instead of dropping the whole warehouse/day.
     filtered: List[Dict[str, Any]] = []
     for it in items or []:
         try:
             bt_id = it.get("boxTypeID")
             bt_name = str(it.get("boxTypeName") or "").lower()
-            if (bt_id == 2) or ("короб" in bt_name):
+            if ("короб" in bt_name) or ("box" in bt_name) or bt_name == "":
+                filtered.append(it)
+            elif bt_id in (2, "2"):
                 filtered.append(it)
         except Exception:
             continue
+
+    if not filtered:
+        filtered = [it for it in (items or []) if isinstance(it, dict)]
 
     # Unique warehouses from filtered
     warehouses: List[str] = sorted({str(it.get("warehouseName") or "") for it in filtered if it})
@@ -3810,10 +3843,22 @@ def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
                 coef_val = float(raw_coef)
             except Exception:
                 coef_val = None
-            grid[wname][dkey] = {
+            candidate = {
                 "coef": coef_val,
-                "allow": bool(it.get("allowUnload")),
+                "allow": it.get("allowUnload"),
             }
+            prev = grid[wname].get(dkey)
+            if not prev:
+                grid[wname][dkey] = candidate
+                continue
+            prev_coef = prev.get("coef")
+            if prev_coef is None:
+                grid[wname][dkey] = candidate
+            elif coef_val is not None and prev_coef is not None:
+                if float(prev_coef) < 0 <= float(coef_val):
+                    grid[wname][dkey] = candidate
+                elif float(coef_val) >= 0 and float(prev_coef) >= 0 and float(coef_val) < float(prev_coef):
+                    grid[wname][dkey] = candidate
         except Exception:
             continue
 
@@ -11928,6 +11973,11 @@ def coefficients_page():
     date_keys: List[str] = []
     date_labels: List[str] = []
     grid: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    raw_items: List[Dict[str, Any]] = []
+    box_types: List[str] = []
+    cargo_types: List[str] = []
+    delivery_types: List[str] = []
+    warehouse_meta: Dict[str, Dict[str, Any]] = {}
     generated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     period_label = None
 
@@ -11935,10 +11985,21 @@ def coefficients_page():
         error = "Укажите токен API на странице Настройки"
     else:
         try:
+            from utils.helpers import (
+                build_acceptance_grid as build_acceptance_grid_v2,
+                normalize_acceptance_items,
+                extract_acceptance_filter_options,
+                enrich_warehouse_meta_for_names,
+            )
+            from utils.api import fetch_acceptance_warehouse_metadata
             items = fetch_acceptance_coefficients(token)
             if not isinstance(items, list):
                 items = []
-            warehouses, date_keys, date_labels, grid = build_acceptance_grid(items, days=14)
+            warehouse_meta = fetch_acceptance_warehouse_metadata(token)
+            raw_items = normalize_acceptance_items(items, warehouse_meta)
+            box_types, cargo_types, delivery_types = extract_acceptance_filter_options(items, warehouse_meta)
+            warehouses, date_keys, date_labels, grid = build_acceptance_grid_v2(raw_items, days=14)
+            warehouse_meta = enrich_warehouse_meta_for_names(warehouse_meta, warehouses, items)
             if date_keys:
                 try:
                     start = datetime.strptime(date_keys[0], "%Y-%m-%d").date()
@@ -11960,6 +12021,11 @@ def coefficients_page():
         grid=grid,
         generated_at=generated_at,
         period_label=period_label,
+        raw_items=raw_items,
+        box_types=box_types,
+        cargo_types=cargo_types,
+        delivery_types=delivery_types,
+        warehouse_meta=warehouse_meta,
     )
 @app.route("/api/acceptance-coefficients", methods=["GET"]) 
 @login_required
@@ -11968,15 +12034,31 @@ def api_acceptance_coefficients():
     if not token:
         return jsonify({"error": "no_token"}), 401
     try:
+        from utils.helpers import (
+            build_acceptance_grid as build_acceptance_grid_v2,
+            normalize_acceptance_items,
+            extract_acceptance_filter_options,
+            enrich_warehouse_meta_for_names,
+        )
+        from utils.api import fetch_acceptance_warehouse_metadata
         items = fetch_acceptance_coefficients(token) or []
         if not isinstance(items, list):
             items = []
-        warehouses, date_keys, date_labels, grid = build_acceptance_grid(items, days=14)
+        warehouse_meta = fetch_acceptance_warehouse_metadata(token)
+        raw_items = normalize_acceptance_items(items, warehouse_meta)
+        box_types, cargo_types, delivery_types = extract_acceptance_filter_options(items, warehouse_meta)
+        warehouses, date_keys, date_labels, grid = build_acceptance_grid_v2(raw_items, days=14)
+        warehouse_meta = enrich_warehouse_meta_for_names(warehouse_meta, warehouses, items)
         return jsonify({
             "warehouses": warehouses,
             "date_keys": date_keys,
             "date_labels": date_labels,
             "grid": grid,
+            "raw_items": raw_items,
+            "box_types": box_types,
+            "cargo_types": cargo_types,
+            "delivery_types": delivery_types,
+            "warehouse_meta": warehouse_meta,
             "lastUpdated": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
         })
     except requests.HTTPError as http_err:

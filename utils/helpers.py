@@ -316,10 +316,276 @@ def write_changelog_md(content: str) -> None:
         pass
 
 
-def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
-    """Строит сетку коэффициентов приёмки"""
+ACCEPTANCE_CARGO_LABELS = {
+    1: "МГТ (малогабаритный)",
+    2: "СГТ (сверхгабаритный)",
+    3: "КГТ+ (крупногабаритный)",
+}
+ACCEPTANCE_DELIVERY_LABELS = {
+    1: "FBS",
+    2: "DBS",
+    3: "DBW",
+    5: "C&C",
+    6: "EDBS",
+}
+
+
+def _acceptance_box_type_label(item: Dict[str, Any]) -> str:
+    name = str(item.get("boxTypeName") or item.get("box_type") or "").strip()
+    if name:
+        return name
+    raw_id = item.get("boxTypeID") or item.get("box_type_id")
+    try:
+        box_type_map = {
+            1: "Без коробов",
+            2: "Короба",
+            3: "Монопаллета",
+            4: "Суперсейф",
+            5: "Паллета",
+        }
+        return box_type_map.get(int(raw_id), f"Тип {raw_id}")
+    except Exception:
+        return ""
+
+
+def _acceptance_cargo_type_label(item: Dict[str, Any], warehouse_meta: Dict[str, Any] | None = None) -> str:
+    for key in ("virtualTypeName", "cargoTypeName", "cargo_type", "cargoType"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    if warehouse_meta:
+        meta_value = str((warehouse_meta or {}).get("cargo_type") or "").strip()
+        if meta_value:
+            return meta_value
+    raw_id = item.get("virtualTypeID") or item.get("cargoTypeID") or item.get("cargo_type_id")
+    try:
+        return ACCEPTANCE_CARGO_LABELS.get(int(raw_id), f"Тип груза {raw_id}")
+    except Exception:
+        return ""
+
+
+def _normalize_wh_key(name: str) -> str:
+    s = str(name or "").strip().lower().replace("ё", "е")
+    return re.sub(r"\s+", " ", s)
+
+
+def _base_wh_name(name: str) -> str:
+    s = _normalize_wh_key(name)
+    for suffix in (" сгт", " мгт", " кгт+", " кгт"):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].strip()
+    if "(" in s:
+        s = s.split("(", 1)[0].strip()
+    return s
+
+
+def _cargo_labels_from_name(name: str) -> list[str]:
+    labels: list[str] = []
+    norm = _normalize_wh_key(name)
+    if re.search(r"\bсгт\b", norm) or norm.endswith(" сгт"):
+        labels.append(ACCEPTANCE_CARGO_LABELS[2])
+    if re.search(r"\bкгт\+?\b", norm):
+        labels.append(ACCEPTANCE_CARGO_LABELS[3])
+    if re.search(r"\bмгт\b", norm) or norm.endswith(" мгт"):
+        labels.append(ACCEPTANCE_CARGO_LABELS[1])
+    return labels
+
+
+def _merge_meta_dict(entry: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    entry.setdefault("cargo_types", [])
+    entry.setdefault("delivery_types", [])
+    for field in ("address", "city"):
+        val = str(patch.get(field) or "").strip()
+        if val and not str(entry.get(field) or "").strip():
+            entry[field] = val
+    for field in ("warehouse_id", "office_id"):
+        if patch.get(field) is not None and entry.get(field) is None:
+            entry[field] = patch.get(field)
+    if patch.get("is_fbw"):
+        entry["is_fbw"] = True
+    if patch.get("is_fbs"):
+        entry["is_fbs"] = True
+    for list_field in ("cargo_types", "delivery_types"):
+        for value in patch.get(list_field) or []:
+            label = str(value or "").strip()
+            if label and label not in entry[list_field]:
+                entry[list_field].append(label)
+    return entry
+
+
+def _finalize_meta_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    if entry.get("cargo_types"):
+        entry["cargo_type"] = ", ".join(sorted(entry["cargo_types"]))
+    if entry.get("delivery_types"):
+        entry["delivery_type"] = ", ".join(sorted(entry["delivery_types"]))
+    return entry
+
+
+def _unique_meta_values(meta_map: Dict[str, Dict[str, Any]] | None) -> list[Dict[str, Any]]:
+    seen: set[int] = set()
+    result: list[Dict[str, Any]] = []
+    for key, meta in (meta_map or {}).items():
+        if str(key).startswith("id:"):
+            continue
+        oid = id(meta)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        result.append(meta)
+    return result
+
+
+def _lookup_warehouse_meta(
+    warehouse_meta_map: Dict[str, Dict[str, Any]] | None,
+    warehouse_name: str,
+    warehouse_id: Any | None = None,
+) -> Dict[str, Any]:
+    if not warehouse_meta_map:
+        return {}
+    if warehouse_id is not None:
+        try:
+            entry = warehouse_meta_map.get(f"id:{int(warehouse_id)}")
+            if entry:
+                return entry
+        except Exception:
+            pass
+    name = str(warehouse_name or "").strip()
+    if not name:
+        return {}
+    for key in (name, _normalize_wh_key(name), _base_wh_name(name)):
+        if key and key in warehouse_meta_map:
+            return warehouse_meta_map[key]
+    base = _base_wh_name(name)
+    norm = _normalize_wh_key(name)
+    for key, value in warehouse_meta_map.items():
+        if str(key).startswith("id:"):
+            continue
+        if base and _base_wh_name(str(key)) == base:
+            return value
+        if _normalize_wh_key(str(key)) == norm:
+            return value
+    return {}
+
+
+def normalize_acceptance_items(
+    items: List[Dict[str, Any]] | None,
+    warehouse_meta_map: Dict[str, Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Нормализует ответ WB по коэффициентам приёмки для UI/фильтров."""
+    normalized: List[Dict[str, Any]] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        warehouse_name = str(it.get("warehouseName") or it.get("warehouse") or "").strip()
+        warehouse_id = it.get("warehouseID") or it.get("warehouseId") or it.get("warehouse_id")
+        date_key = str(it.get("date") or "")[:10]
+        if not warehouse_name or not date_key:
+            continue
+        warehouse_meta = _lookup_warehouse_meta(warehouse_meta_map, warehouse_name, warehouse_id)
+        raw_coef = it.get("coefficient")
+        try:
+            coef_val = float(raw_coef)
+        except Exception:
+            coef_val = None
+        cargo_types = list(warehouse_meta.get("cargo_types") or [])
+        if not cargo_types and warehouse_meta.get("cargo_type"):
+            cargo_types = [str(warehouse_meta.get("cargo_type") or "").strip()]
+        delivery_types = list(warehouse_meta.get("delivery_types") or [])
+        if not delivery_types and warehouse_meta.get("delivery_type"):
+            delivery_types = [
+                part.strip()
+                for part in str(warehouse_meta.get("delivery_type") or "").split(",")
+                if part.strip()
+            ]
+        normalized.append({
+            "warehouseName": warehouse_name,
+            "date": date_key,
+            "coefficient": coef_val,
+            "allowUnload": it.get("allowUnload"),
+            "box_type": _acceptance_box_type_label(it),
+            "cargo_type": _acceptance_cargo_type_label(it, warehouse_meta),
+            "cargo_types": cargo_types,
+            "delivery_type": str(warehouse_meta.get("delivery_type") or "").strip(),
+            "delivery_types": delivery_types,
+            "address": str(warehouse_meta.get("address") or "").strip(),
+            "boxTypeID": it.get("boxTypeID"),
+            "virtualTypeID": it.get("virtualTypeID"),
+        })
+    return normalized
+
+
+def enrich_warehouse_meta_for_names(
+    warehouse_meta_map: Dict[str, Dict[str, Any]] | None,
+    warehouse_names: List[str] | None,
+    coefficient_items: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Возвращает метаданные, проиндексированные по именам складов из tariffs."""
+    enriched: Dict[str, Dict[str, Any]] = {}
+    names_with_ids: dict[str, Any] = {}
+    for name in warehouse_names or []:
+        clean = str(name or "").strip()
+        if clean:
+            names_with_ids.setdefault(clean, None)
+    for it in coefficient_items or []:
+        if not isinstance(it, dict):
+            continue
+        clean = str(it.get("warehouseName") or it.get("warehouse") or "").strip()
+        if not clean:
+            continue
+        wid = it.get("warehouseID") or it.get("warehouseId") or it.get("warehouse_id")
+        if names_with_ids.get(clean) is None and wid is not None:
+            names_with_ids[clean] = wid
+        elif clean not in names_with_ids:
+            names_with_ids[clean] = wid
+    for name, wid in names_with_ids.items():
+        matched = _lookup_warehouse_meta(warehouse_meta_map, name, wid)
+        if matched:
+            enriched[name] = matched
+    return enriched
+
+
+def extract_acceptance_filter_options(
+    items: List[Dict[str, Any]] | None,
+    warehouse_meta_map: Dict[str, Dict[str, Any]] | None = None,
+) -> tuple[List[str], List[str], List[str]]:
+    normalized = normalize_acceptance_items(items, warehouse_meta_map)
+    box_types = sorted({str(it.get("box_type") or "").strip() for it in normalized if str(it.get("box_type") or "").strip()})
+    cargo_set: set[str] = set()
+    delivery_set: set[str] = set()
+    for meta in _unique_meta_values(warehouse_meta_map):
+        for value in meta.get("cargo_types") or []:
+            label = str(value or "").strip()
+            if label:
+                cargo_set.add(label)
+        cargo_single = str(meta.get("cargo_type") or "").strip()
+        if cargo_single:
+            for part in cargo_single.split(","):
+                part = part.strip()
+                if part:
+                    cargo_set.add(part)
+        for value in meta.get("delivery_types") or []:
+            label = str(value or "").strip()
+            if label:
+                delivery_set.add(label)
+        delivery_single = str(meta.get("delivery_type") or "").strip()
+        if delivery_single:
+            for part in delivery_single.split(","):
+                part = part.strip()
+                if part:
+                    delivery_set.add(part)
+    cargo_types = sorted(cargo_set) or sorted(ACCEPTANCE_CARGO_LABELS.values())
+    delivery_types = sorted(delivery_set) or sorted(ACCEPTANCE_DELIVERY_LABELS.values())
+    return box_types, cargo_types, delivery_types
+
+
+def build_acceptance_grid(
+    items: List[Dict[str, Any]],
+    days: int = 14,
+    selected_box_types: List[str] | None = None,
+    selected_cargo_types: List[str] | None = None,
+):
+    """Строит сетку коэффициентов приёмки."""
     from datetime import timedelta
-    from collections import defaultdict
     
     # Prepare date list: today + next N days
     today = datetime.now(MOSCOW_TZ).date()
@@ -327,16 +593,19 @@ def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
     date_keys = [d.strftime("%Y-%m-%d") for d in date_objs]
     date_labels = [d.strftime("%d-%m") for d in date_objs]
 
-    # Filter only box type 'Короба' (boxTypeID == 2) for robustness also match by name
+    normalized = normalize_acceptance_items(items)
+    selected_box_types_set = {str(x).strip() for x in (selected_box_types or []) if str(x).strip()}
+    selected_cargo_types_set = {str(x).strip() for x in (selected_cargo_types or []) if str(x).strip()}
+
     filtered: List[Dict[str, Any]] = []
-    for it in items or []:
-        try:
-            bt_id = it.get("boxTypeID")
-            bt_name = str(it.get("boxTypeName") or "").lower()
-            if (bt_id == 2) or ("короб" in bt_name):
-                filtered.append(it)
-        except Exception:
+    for it in normalized:
+        box_type = str(it.get("box_type") or "").strip()
+        cargo_type = str(it.get("cargo_type") or "").strip()
+        if selected_box_types_set and box_type not in selected_box_types_set:
             continue
+        if selected_cargo_types_set and cargo_type not in selected_cargo_types_set:
+            continue
+        filtered.append(it)
 
     # Unique warehouses from filtered
     warehouses: List[str] = sorted({str(it.get("warehouseName") or "") for it in filtered if it})
@@ -350,15 +619,27 @@ def build_acceptance_grid(items: List[Dict[str, Any]], days: int = 14):
             dkey = str(it.get("date") or "")[:10]
             if wname not in grid or dkey not in date_keys:
                 continue
-            raw_coef = it.get("coefficient")
-            try:
-                coef_val = float(raw_coef)
-            except Exception:
-                coef_val = None
-            grid[wname][dkey] = {
+            coef_val = it.get("coefficient")
+            candidate = {
                 "coef": coef_val,
-                "allow": bool(it.get("allowUnload")),
+                "allow": it.get("allowUnload"),
+                "box_type": it.get("box_type"),
+                "cargo_type": it.get("cargo_type"),
             }
+            prev = grid[wname].get(dkey)
+            if not prev:
+                grid[wname][dkey] = candidate
+                continue
+
+            prev_coef = prev.get("coef")
+            # Prefer available non-negative coefficients over blocked/empty ones.
+            if prev_coef is None:
+                grid[wname][dkey] = candidate
+            elif coef_val is not None and prev_coef is not None:
+                if float(prev_coef) < 0 <= float(coef_val):
+                    grid[wname][dkey] = candidate
+                elif float(coef_val) >= 0 and float(prev_coef) >= 0 and float(coef_val) < float(prev_coef):
+                    grid[wname][dkey] = candidate
         except Exception:
             continue
 

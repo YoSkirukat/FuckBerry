@@ -10,6 +10,7 @@ WB_TOKEN_EXPIRY_BANNER_DAYS = int(os.getenv("WB_TOKEN_EXPIRY_BANNER_DAYS", "20")
 
 # FBS warehouses/stocks
 FBS_WAREHOUSES_URL = "https://marketplace-api.wildberries.ru/api/v3/warehouses"
+WB_OFFICES_URL = "https://marketplace-api.wildberries.ru/api/v3/offices"
 FBS_STOCKS_BY_WAREHOUSE_URL = "https://marketplace-api.wildberries.ru/api/v3/stocks/{warehouseId}"
 
 # Supplies API warehouses (for labels tool)
@@ -54,7 +55,8 @@ DBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders"
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"
 
 # Acceptance coefficients
-ACCEPT_COEFS_URL = "https://supplies-api.wildberries.ru/api/v1/acceptance/coefficients"
+# WB moved this method from supplies-api to common-api tariffs section.
+ACCEPT_COEFS_URL = "https://common-api.wildberries.ru/api/tariffs/v1/acceptance/coefficients"
 
 # FBW supplies API
 FBW_SUPPLIES_LIST_URL = "https://supplies-api.wildberries.ru/api/v1/supplies"

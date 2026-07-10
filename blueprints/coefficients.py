@@ -6,8 +6,8 @@ from flask_login import login_required, current_user
 from utils.wb_token import effective_wb_api_token
 from datetime import datetime
 from typing import List, Dict, Any
-from utils.api import fetch_acceptance_coefficients
-from utils.helpers import build_acceptance_grid
+from utils.api import fetch_acceptance_coefficients, fetch_acceptance_warehouse_metadata
+from utils.helpers import build_acceptance_grid, normalize_acceptance_items, extract_acceptance_filter_options, enrich_warehouse_meta_for_names
 
 coefficients_bp = Blueprint('coefficients', __name__)
 
@@ -23,6 +23,11 @@ def coefficients_page():
     date_keys: List[str] = []
     date_labels: List[str] = []
     grid: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    raw_items: List[Dict[str, Any]] = []
+    box_types: List[str] = []
+    cargo_types: List[str] = []
+    delivery_types: List[str] = []
+    warehouse_meta: Dict[str, Dict[str, Any]] = {}
     generated_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     period_label = None
 
@@ -33,7 +38,11 @@ def coefficients_page():
             items = fetch_acceptance_coefficients(token)
             if not isinstance(items, list):
                 items = []
-            warehouses, date_keys, date_labels, grid = build_acceptance_grid(items, days=14)
+            warehouse_meta = fetch_acceptance_warehouse_metadata(token)
+            raw_items = normalize_acceptance_items(items, warehouse_meta)
+            box_types, cargo_types, delivery_types = extract_acceptance_filter_options(items, warehouse_meta)
+            warehouses, date_keys, date_labels, grid = build_acceptance_grid(raw_items, days=14)
+            warehouse_meta = enrich_warehouse_meta_for_names(warehouse_meta, warehouses, items)
             if date_keys:
                 try:
                     start = datetime.strptime(date_keys[0], "%Y-%m-%d").date()
@@ -55,6 +64,11 @@ def coefficients_page():
         grid=grid,
         generated_at=generated_at,
         period_label=period_label,
+        raw_items=raw_items,
+        box_types=box_types,
+        cargo_types=cargo_types,
+        delivery_types=delivery_types,
+        warehouse_meta=warehouse_meta,
     )
 
 
@@ -69,12 +83,22 @@ def api_acceptance_coefficients():
         items = fetch_acceptance_coefficients(token)
         if not isinstance(items, list):
             items = []
-        warehouses, date_keys, date_labels, grid = build_acceptance_grid(items, days=14)
+        warehouse_meta = fetch_acceptance_warehouse_metadata(token)
+        raw_items = normalize_acceptance_items(items, warehouse_meta)
+        box_types, cargo_types, delivery_types = extract_acceptance_filter_options(items, warehouse_meta)
+        warehouses, date_keys, date_labels, grid = build_acceptance_grid(raw_items, days=14)
+        warehouse_meta = enrich_warehouse_meta_for_names(warehouse_meta, warehouses, items)
         return jsonify({
             "warehouses": warehouses,
             "date_keys": date_keys,
             "date_labels": date_labels,
-            "grid": grid
+            "grid": grid,
+            "raw_items": raw_items,
+            "box_types": box_types,
+            "cargo_types": cargo_types,
+            "delivery_types": delivery_types,
+            "warehouse_meta": warehouse_meta,
+            "lastUpdated": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
         })
     except requests.HTTPError as http_err:
         return jsonify({"error": f"api_{http_err.response.status_code}"}), 500

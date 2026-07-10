@@ -14,12 +14,31 @@
     .table-responsive { max-height: 70vh; }
     .table-sm td, .table-sm th { font-size: 0.85rem; }
     .wh-filter-wrap { position: relative; }
+    .filter-input-group { position: relative; }
+    .filter-input-group .form-control { padding-right: 2rem; }
+    .filter-input-group .form-control.summary-mode { color: #212529; cursor: pointer; }
+    .filter-clear-btn {
+      position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+      border: 0; background: transparent; color: #6c757d; font-size: 1.1rem; line-height: 1;
+      width: 1.75rem; height: 1.75rem; padding: 0; border-radius: .2rem; z-index: 2;
+    }
+    .filter-clear-btn:hover { color: #212529; background: rgba(0,0,0,.06); }
     .wh-dropdown { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; background: #fff; border: 1px solid rgba(0,0,0,.125); border-radius: .25rem; box-shadow: 0 .5rem 1rem rgba(0,0,0,.15); z-index: 1050; display: none; }
-    .wh-dropdown .panel { max-height: 220px; overflow: auto; padding: .5rem .75rem; }
-    .wh-dropdown .panel .form-check { min-width: 220px; }
+    .wh-dropdown .panel { max-height: 280px; overflow: auto; padding: .5rem .75rem; }
+    .wh-dropdown .panel.panel-list { display: flex; flex-direction: column; gap: .15rem; }
+    .wh-dropdown .panel.panel-list .form-check { min-width: 0; width: 100%; margin-bottom: 0; }
+    .wh-dropdown .panel.panel-list .form-check-label { width: 100%; }
     .wh-actions { padding: .5rem .75rem; border-bottom: 1px solid rgba(0,0,0,.075); display:flex; gap:.5rem; justify-content: space-between; align-items:center; }
     .wh-actions .btn-link { text-decoration: none; padding: 0; }
-    .wh-filter-wrap:focus-within .wh-dropdown { display: block; }
+    .wh-meta-badges { display: flex; flex-wrap: wrap; gap: .2rem; margin-top: .35rem; }
+    .wh-badge {
+      display: inline-block; font-size: .68rem; font-weight: 600; line-height: 1.2;
+      padding: .12rem .4rem; border-radius: .25rem; white-space: nowrap;
+    }
+    .wh-badge-cargo { background: #e7f3ff; color: #0a58ca; border: 1px solid #b6d4fe; }
+    .wh-badge-delivery { background: #f1f3f5; color: #495057; border: 1px solid #dee2e6; }
+    .wh-badge-fbw { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+    td.sticky-col .small { line-height: 1.25; }
   </style>
   {% endblock %}
 </head>
@@ -41,15 +60,20 @@
 
     <div class="card mb-3">
       <div class="card-body">
+        <div class="row g-3">
+        <div class="col-12 col-md-6">
         <label for="whSearchInput" class="form-label mb-1">Фильтр складов</label>
-        <div class="wh-filter-wrap col-12 col-md-6">
-          <input id="whSearchInput" type="search" class="form-control form-control-sm" placeholder="Начните вводить название склада" autocomplete="off" />
+        <div class="wh-filter-wrap" id="whFilterWrap">
+          <div class="filter-input-group">
+            <input id="whSearchInput" type="text" class="form-control form-control-sm summary-mode" placeholder="Начните вводить название склада" autocomplete="off" readonly />
+            <button id="whClearBtn" type="button" class="filter-clear-btn" title="Сбросить фильтр" aria-label="Сбросить фильтр">&times;</button>
+          </div>
           <div id="whDropdown" class="wh-dropdown">
             <div class="wh-actions">
               <button id="whSelectAll" class="btn btn-link btn-sm" type="button">Поставить все галки</button>
               <button id="whClearAll" class="btn btn-link btn-sm" type="button">Снять все галки</button>
             </div>
-            <div id="whCheckboxes" class="panel d-flex flex-wrap gap-3">
+            <div id="whCheckboxes" class="panel panel-list">
               {% for w in warehouses %}
                 {% set id = 'wh_' ~ loop.index %}
                 <div class="form-check">
@@ -61,6 +85,65 @@
           </div>
           <div class="small text-muted mt-1">Отображаются только выбранные склады. Выбранные сохраняются для следующего визита.</div>
         </div>
+        </div>
+        <div class="col-12 col-md-3" id="cargoFilterCol"{% if not cargo_types %} style="display:none"{% endif %}>
+          <label for="cargoSearchInput" class="form-label mb-1">Вид груза</label>
+          <div class="wh-filter-wrap" id="cargoFilterWrap">
+            <div class="filter-input-group">
+              <input id="cargoSearchInput" type="text" class="form-control form-control-sm summary-mode" placeholder="МГТ, СГТ, КГТ..." autocomplete="off" readonly />
+              <button id="cargoClearBtn" type="button" class="filter-clear-btn" title="Сбросить фильтр" aria-label="Сбросить фильтр">&times;</button>
+            </div>
+            <div id="cargoDropdown" class="wh-dropdown">
+              <div class="wh-actions">
+                <button id="cargoSelectAll" class="btn btn-link btn-sm" type="button">Все</button>
+                <button id="cargoClearAll" class="btn btn-link btn-sm" type="button">Снять</button>
+              </div>
+              <div id="cargoCheckboxes" class="panel panel-list">
+                {% for c in cargo_types %}
+                  {% set id = 'cargo_' ~ loop.index %}
+                  <div class="form-check">
+                    <input class="form-check-input cargo-opt" type="checkbox" value="{{ c }}" id="{{ id }}" checked>
+                    <label class="form-check-label" for="{{ id }}">{{ c }}</label>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="small text-muted mt-1">МГТ, СГТ, КГТ+ — тип товара, который принимает склад.</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-3" id="deliveryFilterCol"{% if not delivery_types %} style="display:none"{% endif %}>
+          <label for="deliverySearchInput" class="form-label mb-1">Тип доставки</label>
+          <div class="wh-filter-wrap" id="deliveryFilterWrap">
+            <div class="filter-input-group">
+              <input id="deliverySearchInput" type="text" class="form-control form-control-sm summary-mode" placeholder="FBS, DBS, DBW..." autocomplete="off" readonly />
+              <button id="deliveryClearBtn" type="button" class="filter-clear-btn" title="Сбросить фильтр" aria-label="Сбросить фильтр">&times;</button>
+            </div>
+            <div id="deliveryDropdown" class="wh-dropdown">
+              <div class="wh-actions">
+                <button id="deliverySelectAll" class="btn btn-link btn-sm" type="button">Все</button>
+                <button id="deliveryClearAll" class="btn btn-link btn-sm" type="button">Снять</button>
+              </div>
+              <div id="deliveryCheckboxes" class="panel panel-list">
+                {% for d in delivery_types %}
+                  {% set id = 'delivery_' ~ loop.index %}
+                  <div class="form-check">
+                    <input class="form-check-input delivery-opt" type="checkbox" value="{{ d }}" id="{{ id }}" checked>
+                    <label class="form-check-label" for="{{ id }}">{{ d }}</label>
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="small text-muted mt-1">FBS, DBS, DBW, C&amp;C, EDBS — из списка складов WB.</div>
+          </div>
+        </div>
+        </div>
+        {% if not cargo_types %}
+          <div class="small text-muted mt-3" id="cargoFilterHint">
+            Фильтр по виду груза недоступен: WB не вернул данные о типах товара для складов.
+          </div>
+        {% else %}
+          <div class="small text-muted mt-3 d-none" id="cargoFilterHint"></div>
+        {% endif %}
       </div>
     </div>
 
@@ -78,8 +161,36 @@
             </thead>
             <tbody id="coefBody">
               {% for w in warehouses %}
+                {% set meta = warehouse_meta.get(w) if warehouse_meta else none %}
+                {% set cargo_badges = meta.get('cargo_types', []) if meta else [] %}
+                {% if meta and not cargo_badges and meta.get('cargo_type') %}
+                  {% set cargo_badges = meta.get('cargo_type').split(',') %}
+                {% endif %}
+                {% set delivery_badges = meta.get('delivery_types', []) if meta else [] %}
+                {% if meta and not delivery_badges and meta.get('delivery_type') %}
+                  {% set delivery_badges = meta.get('delivery_type').split(',') %}
+                {% endif %}
                 <tr data-warehouse="{{ w }}">
-                  <td class="sticky-col fw-semibold">{{ w }}</td>
+                  <td class="sticky-col fw-semibold">
+                    <div>{{ w }}</div>
+                    {% if meta and meta.get('address') %}
+                      <div class="small text-muted fw-normal">{{ meta.get('address') }}</div>
+                    {% endif %}
+                    {% if cargo_badges or delivery_badges or (meta and meta.get('is_fbw')) %}
+                      <div class="wh-meta-badges">
+                        {% for c in cargo_badges %}
+                          {% set c_short = (c|string).split('(')[0].strip() %}
+                          <span class="wh-badge wh-badge-cargo" title="{{ c }}">{{ c_short }}</span>
+                        {% endfor %}
+                        {% if meta and meta.get('is_fbw') %}
+                          <span class="wh-badge wh-badge-fbw" title="Склад приёмки поставок (FBW)">FBW</span>
+                        {% endif %}
+                        {% for d in delivery_badges %}
+                          <span class="wh-badge wh-badge-delivery">{{ (d|string).strip() }}</span>
+                        {% endfor %}
+                      </div>
+                    {% endif %}
+                  </td>
                   {% for dkey in date_keys %}
                     {% set cell = grid[w][dkey] %}
                     {% set coef = cell.coef %}
@@ -114,7 +225,262 @@
     </div>
   </div>
 
+  <script id="acceptanceRawItemsJson" type="application/json">{{ (raw_items or []) | tojson | safe }}</script>
+  <script id="acceptanceDateKeysJson" type="application/json">{{ (date_keys or []) | tojson | safe }}</script>
+  <script id="acceptanceDateLabelsJson" type="application/json">{{ (date_labels or []) | tojson | safe }}</script>
   <script>
+    let acceptanceRawItems = JSON.parse(document.getElementById('acceptanceRawItemsJson').textContent || '[]');
+    let acceptanceDateKeys = JSON.parse(document.getElementById('acceptanceDateKeysJson').textContent || '[]');
+    let acceptanceDateLabels = JSON.parse(document.getElementById('acceptanceDateLabelsJson').textContent || '[]');
+    let acceptanceWarehouseMeta = {{ (warehouse_meta or {}) | tojson | safe }};
+
+    const WH_KEY = 'coeff_wh_selected';
+    const CARGO_KEY = 'coeff_cargo_selected';
+    const DELIVERY_KEY = 'coeff_delivery_selected';
+
+    function metaTypeList(meta, pluralKey, singleKey){
+      if (!meta) return [];
+      const list = Array.isArray(meta[pluralKey]) ? meta[pluralKey] : [];
+      if (list.length) return list.map(v => String(v || '').trim()).filter(Boolean);
+      const single = String(meta[singleKey] || '').trim();
+      if (!single) return [];
+      return single.split(',').map(v => v.trim()).filter(Boolean);
+    }
+
+    function getWarehouseMeta(whName){
+      if (acceptanceWarehouseMeta[whName]) return acceptanceWarehouseMeta[whName];
+      const lower = String(whName || '').toLowerCase();
+      for (const [key, value] of Object.entries(acceptanceWarehouseMeta || {})) {
+        if (String(key).toLowerCase() === lower) return value;
+      }
+      return {};
+    }
+
+    function warehouseMatchesFilters(whName, selectedCargo, selectedDelivery){
+      const meta = getWarehouseMeta(whName);
+      const cargoTypes = metaTypeList(meta, 'cargo_types', 'cargo_type');
+      const deliveryTypes = metaTypeList(meta, 'delivery_types', 'delivery_type');
+      if (selectedCargo.size) {
+        if (!cargoTypes.length) return false;
+        if (!cargoTypes.some(c => selectedCargo.has(c))) return false;
+      }
+      if (selectedDelivery.size) {
+        if (!deliveryTypes.length) return false;
+        if (!deliveryTypes.some(d => selectedDelivery.has(d))) return false;
+      }
+      return true;
+    }
+
+    function warehouseAddress(whName){
+      return String((getWarehouseMeta(whName).address) || '').trim();
+    }
+
+    function escapeHtml(text){
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function buildWarehouseCellHtml(whName){
+      const meta = getWarehouseMeta(whName);
+      const cargoTypes = metaTypeList(meta, 'cargo_types', 'cargo_type').map(shortenCargoLabel);
+      const deliveryTypes = metaTypeList(meta, 'delivery_types', 'delivery_type');
+      const addr = String(meta.address || '').trim();
+      let html = `<div>${escapeHtml(whName)}</div>`;
+      if (addr) html += `<div class="small text-muted fw-normal">${escapeHtml(addr)}</div>`;
+      if (cargoTypes.length || deliveryTypes.length || meta.is_fbw) {
+        html += '<div class="wh-meta-badges">';
+        metaTypeList(meta, 'cargo_types', 'cargo_type').forEach((full, idx) => {
+          const short = cargoTypes[idx] || shortenCargoLabel(full);
+          html += `<span class="wh-badge wh-badge-cargo" title="${escapeHtml(full)}">${escapeHtml(short)}</span>`;
+        });
+        if (meta.is_fbw) {
+          html += '<span class="wh-badge wh-badge-fbw" title="Склад приёмки поставок (FBW)">FBW</span>';
+        }
+        deliveryTypes.forEach(d => {
+          html += `<span class="wh-badge wh-badge-delivery">${escapeHtml(d)}</span>`;
+        });
+        html += '</div>';
+      }
+      return html;
+    }
+
+    function getStoredList(key){
+      try { const arr = JSON.parse(localStorage.getItem(key)||'[]'); return Array.isArray(arr)?arr:[]; } catch(_) { return []; }
+    }
+    function saveStoredList(key, list){ try { localStorage.setItem(key, JSON.stringify(list||[])); } catch(_){} }
+
+    function getSelectedValues(selector){
+      return Array.from(document.querySelectorAll(selector + ':checked')).map(i => i.value);
+    }
+
+    function shortenCargoLabel(value){
+      const text = String(value || '').trim();
+      const match = text.match(/^(МГТ|СГТ|КГТ\+?)/);
+      return match ? match[1] : text;
+    }
+
+    function buildSelectionSummary(itemSelector, formatter){
+      const all = Array.from(document.querySelectorAll(itemSelector));
+      const checked = all.filter(chk => chk.checked);
+      const total = all.length;
+      if (!total) return '';
+      if (!checked.length) return 'Ничего не выбрано';
+      if (checked.length === total) return 'Все';
+      if (formatter) return formatter(checked, total);
+      return checked.map(chk => chk.value).join(', ');
+    }
+
+    function warehouseSummary(checked, total){
+      if (checked.length <= 2) return checked.map(chk => chk.value).join(', ');
+      return `Выбрано: ${checked.length} из ${total}`;
+    }
+
+    function cargoSummary(checked){
+      return checked.map(chk => shortenCargoLabel(chk.value)).join(', ');
+    }
+
+    function deliverySummary(checked){
+      return checked.map(chk => chk.value).join(', ');
+    }
+
+    function setInputSummaryMode(input, enabled){
+      if (!input) return;
+      input.readOnly = !!enabled;
+      input.classList.toggle('summary-mode', !!enabled);
+      input.dataset.mode = enabled ? 'summary' : 'search';
+    }
+
+    function updateFilterInputSummary(input, itemSelector, formatter, force){
+      if (!input) return;
+      if (!force && input.dataset.mode === 'search') return;
+      const summary = buildSelectionSummary(itemSelector, formatter);
+      input.value = summary;
+      setInputSummaryMode(input, true);
+    }
+
+    function resetListVisibility(listSelector){
+      document.querySelectorAll(`${listSelector} .form-check`).forEach(fc => {
+        fc.style.display = '';
+      });
+    }
+
+    function applyFilterChange(storageKey, itemSelector, input, listSelector, formatter){
+      saveStoredList(storageKey, getSelectedValues(itemSelector));
+      updateFilterInputSummary(input, itemSelector, formatter);
+      renderAcceptanceTable();
+    }
+
+    function resetFilterToAll(itemSelector, storageKey, input, listSelector, formatter){
+      document.querySelectorAll(itemSelector).forEach(chk => { chk.checked = true; });
+      resetListVisibility(listSelector);
+      setInputSummaryMode(input, true);
+      applyFilterChange(storageKey, itemSelector, input, listSelector, formatter);
+    }
+
+    function chooseBetterCandidate(prev, candidate){
+      if (!prev) return candidate;
+      const prevCoef = prev.coef;
+      const coef = candidate.coef;
+      if (prevCoef === null || prevCoef === undefined) return candidate;
+      if (coef === null || coef === undefined) return prev;
+      if (Number(prevCoef) < 0 && Number(coef) >= 0) return candidate;
+      if (Number(prevCoef) >= 0 && Number(coef) >= 0 && Number(coef) < Number(prevCoef)) return candidate;
+      return prev;
+    }
+
+    function buildGridFromItems(items){
+      const selectedCargo = new Set(getSelectedValues('.cargo-opt'));
+      const selectedDelivery = new Set(getSelectedValues('.delivery-opt'));
+      const selectedWh = new Set(getSelectedValues('.wh-opt'));
+      const filtered = (items || []).filter(it => {
+        const wh = String(it.warehouseName || '').trim();
+        if (!wh) return false;
+        if (selectedWh.size && !selectedWh.has(wh)) return false;
+        if (!warehouseMatchesFilters(wh, selectedCargo, selectedDelivery)) return false;
+        return true;
+      });
+
+      const warehouses = Array.from(new Set(filtered.map(it => String(it.warehouseName || '').trim()).filter(Boolean)));
+      const grid = {};
+      warehouses.forEach(w => { grid[w] = {}; });
+      filtered.forEach(it => {
+        const w = String(it.warehouseName || '').trim();
+        const d = String(it.date || '').slice(0, 10);
+        if (!w || !d || !acceptanceDateKeys.includes(d)) return;
+        const candidate = {
+          coef: it.coefficient ?? null,
+          allow: it.allowUnload,
+          box_type: it.box_type || '',
+          cargo_type: it.cargo_type || '',
+        };
+        grid[w][d] = chooseBetterCandidate(grid[w][d], candidate);
+      });
+      warehouses.forEach(w => {
+        acceptanceDateKeys.forEach(d => {
+          if (!grid[w][d]) grid[w][d] = { coef: null, allow: null, box_type: '', cargo_type: '' };
+        });
+      });
+      warehouses.sort((a, b) => {
+        const count = (name) => acceptanceDateKeys.reduce((acc, d) => {
+          const coef = grid[name]?.[d]?.coef;
+          return acc + ((coef !== null && coef !== undefined && Number(coef) >= 0) ? 1 : 0);
+        }, 0);
+        return count(b) - count(a);
+      });
+      return { warehouses, grid };
+    }
+
+    function renderAcceptanceTable(){
+      const tbody = document.getElementById('coefBody');
+      const table = document.getElementById('coefTable');
+      if (!tbody || !table) return;
+      const theadRow = table.tHead.rows[0];
+      while (theadRow.cells.length > 1) theadRow.deleteCell(1);
+      for (const lab of acceptanceDateLabels) {
+        const th = document.createElement('th'); th.className='text-center'; th.textContent = lab; theadRow.appendChild(th);
+      }
+
+      const built = buildGridFromItems(acceptanceRawItems);
+      tbody.innerHTML = '';
+      if (!built.warehouses.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 1 + acceptanceDateLabels.length;
+        td.className = 'text-muted';
+        td.textContent = 'Нет данных для выбранных фильтров';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      for (const w of built.warehouses) {
+        const tr = document.createElement('tr'); tr.setAttribute('data-warehouse', w);
+        const tdw = document.createElement('td'); tdw.className='sticky-col fw-semibold';
+        tdw.innerHTML = buildWarehouseCellHtml(w);
+        tr.appendChild(tdw);
+        for (const dkey of acceptanceDateKeys) {
+          const cell = (built.grid[w] && built.grid[w][dkey]) || {coef:null, allow:null};
+          const coef = cell.coef;
+          const allow = cell.allow;
+          let cls = 'cell-na';
+          if (coef !== null && coef !== undefined) {
+            if (Number(coef) === -1) cls = 'cell-block'; else if (Number(coef) >= 0) cls = 'cell-free';
+          }
+          const td = document.createElement('td'); td.className = 'text-center ' + cls;
+          if (coef === null || coef === undefined || Number(coef) === -1) {
+            td.textContent = '-';
+          } else {
+            td.textContent = String(parseInt(coef, 10));
+            if (allow !== null && allow === false) td.textContent += ', недоступно';
+          }
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+    }
+
     document.getElementById('refreshBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('refreshBtn');
       const last = document.getElementById('lastUpdated');
@@ -123,55 +489,30 @@
         const res = await fetch('/api/acceptance-coefficients');
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
-        // rebuild table body
-        const tbody = document.getElementById('coefBody');
-        const table = document.getElementById('coefTable');
-        // rebuild header
-        const theadRow = table.tHead.rows[0];
-        while (theadRow.cells.length > 1) theadRow.deleteCell(1);
-        for (const lab of data.date_labels) {
-          const th = document.createElement('th'); th.className='text-center'; th.textContent = lab; theadRow.appendChild(th);
-        }
-        // body
-        tbody.innerHTML = '';
-        const dateKeys = data.date_keys;
-        const grid = data.grid;
-        for (const w of data.warehouses) {
-          const tr = document.createElement('tr'); tr.setAttribute('data-warehouse', w);
-          const tdw = document.createElement('td'); tdw.className='sticky-col fw-semibold'; tdw.textContent = w; tr.appendChild(tdw);
-          for (const dkey of dateKeys) {
-            const cell = (grid[w] && grid[w][dkey]) || {coef:null, allow:null};
-            const coef = cell.coef;
-            const allow = cell.allow;
-            let cls = 'cell-na';
-            if (coef !== null && coef !== undefined) {
-              if (Number(coef) === -1) cls = 'cell-block'; else if (Number(coef) >= 0) cls = 'cell-free';
-            }
-            const td = document.createElement('td'); td.className = 'text-center ' + cls;
-            if (coef === null || coef === undefined || Number(coef) === -1) {
-              td.textContent = '-';
-            } else {
-              td.textContent = String(parseInt(coef, 10));
-              if (allow !== null && allow === false) td.textContent += ', недоступно';
-            }
-            tr.appendChild(td);
-          }
-          tbody.appendChild(tr);
-        }
+        acceptanceRawItems = Array.isArray(data.raw_items) ? data.raw_items : [];
+        acceptanceDateKeys = Array.isArray(data.date_keys) ? data.date_keys : acceptanceDateKeys;
+        acceptanceDateLabels = Array.isArray(data.date_labels) ? data.date_labels : acceptanceDateLabels;
+        acceptanceWarehouseMeta = data.warehouse_meta || acceptanceWarehouseMeta || {};
         if (last) last.textContent = data.lastUpdated;
-        // rebuild warehouse filter list
-        const whBox = document.getElementById('whCheckboxes');
-        if (whBox) {
-          whBox.innerHTML = '';
-          (data.warehouses || []).forEach((w, idx) => {
-            const id = 'wh_' + (idx + 1);
-            const wrap = document.createElement('div'); wrap.className = 'form-check';
-            wrap.innerHTML = `<input class=\"form-check-input wh-opt\" type=\"checkbox\" value=\"${w}\" id=\"${id}\" checked><label class=\"form-check-label\" for=\"${id}\">${w}</label>`;
-            whBox.appendChild(wrap);
-          });
-          bindWarehouseFilter();
-          applyWarehouseFilter();
+        rebuildFilterList('whCheckboxes', 'wh-opt', data.warehouses || [], getStoredList(WH_KEY), 'wh_');
+        rebuildFilterList('cargoCheckboxes', 'cargo-opt', data.cargo_types || [], getStoredList(CARGO_KEY), 'cargo_');
+        rebuildFilterList('deliveryCheckboxes', 'delivery-opt', data.delivery_types || [], getStoredList(DELIVERY_KEY), 'delivery_');
+        const cargoCol = document.getElementById('cargoFilterCol');
+        const deliveryCol = document.getElementById('deliveryFilterCol');
+        const cargoHint = document.getElementById('cargoFilterHint');
+        const hasCargoTypes = Array.isArray(data.cargo_types) && data.cargo_types.length > 0;
+        const hasDeliveryTypes = Array.isArray(data.delivery_types) && data.delivery_types.length > 0;
+        if (cargoCol) cargoCol.style.display = hasCargoTypes ? '' : 'none';
+        if (deliveryCol) deliveryCol.style.display = hasDeliveryTypes ? '' : 'none';
+        if (cargoHint) {
+          cargoHint.classList.toggle('d-none', hasCargoTypes);
+          if (!hasCargoTypes) {
+            cargoHint.textContent = 'Фильтр по виду груза недоступен: WB не вернул данные о типах товара для складов.';
+          }
         }
+        bindAllFilters();
+        updateAllFilterSummaries();
+        renderAcceptanceTable();
       } catch (e) {
         console.error(e);
       } finally {
@@ -179,60 +520,170 @@
       }
     });
 
-    // Warehouse filter helpers with persistence
-    const WH_KEY = 'coeff_wh_selected';
-    function getSelectedWarehouses(){
-      try { const arr = JSON.parse(localStorage.getItem(WH_KEY)||'[]'); return Array.isArray(arr)?arr:[]; } catch(_) { return []; }
-    }
-    function saveSelectedWarehouses(list){ try { localStorage.setItem(WH_KEY, JSON.stringify(list||[])); } catch(_){} }
-
-    function applyWarehouseFilter(){
-      const selected = new Set(Array.from(document.querySelectorAll('.wh-opt:checked')).map(i=>i.value));
-      const rows = document.querySelectorAll('#coefBody tr');
-      rows.forEach(tr => {
-        const w = tr.getAttribute('data-warehouse') || '';
-        tr.style.display = selected.size === 0 ? 'none' : (selected.has(w) ? '' : 'none');
+    function rebuildFilterList(containerId, itemClass, values, savedValues, prefix){
+      const box = document.getElementById(containerId);
+      if (!box) return;
+      const saved = new Set(savedValues || []);
+      box.innerHTML = '';
+      (values || []).forEach((value, idx) => {
+        const id = `${prefix}${idx + 1}`;
+        const checked = saved.size ? saved.has(value) : true;
+        const wrap = document.createElement('div');
+        wrap.className = 'form-check';
+        const safeValue = String(value).replace(/"/g, '&quot;');
+        wrap.innerHTML = `<input class="form-check-input ${itemClass}" type="checkbox" value="${safeValue}" id="${id}" ${checked ? 'checked' : ''}><label class="form-check-label" for="${id}">${value}</label>`;
+        box.appendChild(wrap);
       });
-      saveSelectedWarehouses(Array.from(selected));
     }
 
-    function bindWarehouseFilter(){
-      // open/close dropdown
-      const wrap = document.querySelector('.wh-filter-wrap');
-      const dropdown = document.getElementById('whDropdown');
-      const input = document.getElementById('whSearchInput');
+    function restoreCheckboxes(selector, storageKey){
+      const saved = new Set(getStoredList(storageKey));
+      if (!saved.size) return;
+      document.querySelectorAll(selector).forEach(chk => {
+        chk.checked = saved.has(chk.value);
+      });
+    }
+
+    function bindFilterDropdown(cfg){
+      const wrap = document.querySelector(cfg.wrapSelector);
+      const dropdown = document.getElementById(cfg.dropdownId);
+      const input = document.getElementById(cfg.inputId);
+      const clearBtn = document.getElementById(cfg.clearBtnId);
       if (!wrap || !dropdown || !input) return;
-      const showDD = ()=>{ dropdown.style.display='block'; };
-      input.addEventListener('focus', showDD);
-      input.addEventListener('click', showDD);
-      // закрытие по клику вне, но не мешаем CSS focus-within
-      document.addEventListener('click', (e)=>{ if (!wrap.contains(e.target)) dropdown.style.display='none'; });
-      // не открываем выпадающий список автоматически при загрузке страницы
-      // search
-      input.addEventListener('input', function(){
+
+      const showDropdown = () => { dropdown.style.display = 'block'; };
+      const hideDropdown = () => { dropdown.style.display = 'none'; };
+
+      const enterSearchMode = () => {
+        setInputSummaryMode(input, false);
+        input.value = '';
+        showDropdown();
+      };
+
+      const leaveSearchMode = () => {
+        resetListVisibility(cfg.listSelector);
+        updateFilterInputSummary(input, cfg.itemSelector, cfg.summaryFormatter);
+        hideDropdown();
+      };
+
+      input.onfocus = enterSearchMode;
+      input.onclick = () => {
+        if (input.dataset.mode === 'summary') enterSearchMode();
+        else showDropdown();
+      };
+      input.oninput = function(){
         const q = (this.value || '').toLowerCase().trim();
-        document.querySelectorAll('#whCheckboxes .form-check').forEach(fc => {
+        document.querySelectorAll(`${cfg.listSelector} .form-check`).forEach(fc => {
           const txt = fc.textContent.toLowerCase();
           fc.style.display = q === '' || txt.indexOf(q) !== -1 ? '' : 'none';
         });
+      };
+      input.onblur = () => {
+        window.setTimeout(() => {
+          if (!wrap.contains(document.activeElement)) leaveSearchMode();
+        }, 120);
+      };
+
+      const selAll = document.getElementById(cfg.selectAllId);
+      const clrAll = document.getElementById(cfg.clearAllId);
+      const onSelectionChange = () => {
+        saveStoredList(cfg.storageKey, getSelectedValues(cfg.itemSelector));
+        updateFilterInputSummary(input, cfg.itemSelector, cfg.summaryFormatter, true);
+        renderAcceptanceTable();
+      };
+
+      if (selAll) selAll.onclick = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        document.querySelectorAll(cfg.itemSelector).forEach(chk => { chk.checked = true; });
+        onSelectionChange();
+      };
+      if (clrAll) clrAll.onclick = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        document.querySelectorAll(cfg.itemSelector).forEach(chk => { chk.checked = false; });
+        onSelectionChange();
+      };
+      if (clearBtn) clearBtn.onclick = (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        resetFilterToAll(cfg.itemSelector, cfg.storageKey, input, cfg.listSelector, cfg.summaryFormatter);
+      };
+
+      document.querySelectorAll(cfg.itemSelector).forEach(chk => {
+        chk.onchange = onSelectionChange;
       });
-      // select/clear all
-      const selAll = document.getElementById('whSelectAll');
-      const clrAll = document.getElementById('whClearAll');
-      if (selAll) selAll.addEventListener('click', (ev)=>{ ev.preventDefault(); ev.stopPropagation(); document.querySelectorAll('#whCheckboxes .wh-opt').forEach(c=>{ c.checked = true; }); applyWarehouseFilter(); });
-      if (clrAll) clrAll.addEventListener('click', (ev)=>{ ev.preventDefault(); ev.stopPropagation(); document.querySelectorAll('#whCheckboxes .wh-opt').forEach(c=>{ c.checked = false; }); applyWarehouseFilter(); });
-      // checkbox changes
-      document.querySelectorAll('.wh-opt').forEach(chk => { chk.addEventListener('change', applyWarehouseFilter); });
-      // restore selection from storage
-      const saved = new Set(getSelectedWarehouses());
-      if (saved.size > 0) {
-        document.querySelectorAll('.wh-opt').forEach(chk => { chk.checked = saved.has(chk.value); });
-      }
-      applyWarehouseFilter();
     }
 
-    // initial bind after page load
-    bindWarehouseFilter();
+    const FILTER_CONFIGS = [
+      {
+        wrapSelector: '#whFilterWrap',
+        dropdownId: 'whDropdown',
+        inputId: 'whSearchInput',
+        clearBtnId: 'whClearBtn',
+        listSelector: '#whCheckboxes',
+        selectAllId: 'whSelectAll',
+        clearAllId: 'whClearAll',
+        itemSelector: '.wh-opt',
+        storageKey: WH_KEY,
+        summaryFormatter: warehouseSummary,
+      },
+      {
+        wrapSelector: '#cargoFilterWrap',
+        dropdownId: 'cargoDropdown',
+        inputId: 'cargoSearchInput',
+        clearBtnId: 'cargoClearBtn',
+        listSelector: '#cargoCheckboxes',
+        selectAllId: 'cargoSelectAll',
+        clearAllId: 'cargoClearAll',
+        itemSelector: '.cargo-opt',
+        storageKey: CARGO_KEY,
+        summaryFormatter: cargoSummary,
+      },
+      {
+        wrapSelector: '#deliveryFilterWrap',
+        dropdownId: 'deliveryDropdown',
+        inputId: 'deliverySearchInput',
+        clearBtnId: 'deliveryClearBtn',
+        listSelector: '#deliveryCheckboxes',
+        selectAllId: 'deliverySelectAll',
+        clearAllId: 'deliveryClearAll',
+        itemSelector: '.delivery-opt',
+        storageKey: DELIVERY_KEY,
+        summaryFormatter: deliverySummary,
+      },
+    ];
+
+    function bindAllFilters(){
+      FILTER_CONFIGS.forEach(bindFilterDropdown);
+    }
+
+    function updateAllFilterSummaries(){
+      FILTER_CONFIGS.forEach(cfg => {
+        const input = document.getElementById(cfg.inputId);
+        updateFilterInputSummary(input, cfg.itemSelector, cfg.summaryFormatter);
+      });
+    }
+
+    document.addEventListener('click', (e)=>{
+      document.querySelectorAll('.wh-filter-wrap').forEach(wrap => {
+        const dd = wrap.querySelector('.wh-dropdown');
+        if (!dd) return;
+        if (!wrap.contains(e.target)) {
+          dd.style.display = 'none';
+          const input = wrap.querySelector('input[type="text"]');
+          const cfg = FILTER_CONFIGS.find(c => c.wrapSelector === '#' + wrap.id);
+          if (input && cfg) {
+            resetListVisibility(cfg.listSelector);
+            updateFilterInputSummary(input, cfg.itemSelector, cfg.summaryFormatter);
+          }
+        }
+      });
+    });
+
+    restoreCheckboxes('.wh-opt', WH_KEY);
+    restoreCheckboxes('.cargo-opt', CARGO_KEY);
+    restoreCheckboxes('.delivery-opt', DELIVERY_KEY);
+    bindAllFilters();
+    updateAllFilterSummaries();
+    renderAcceptanceTable();
   </script>
   {% include '_footer.html' %}
 </body>
