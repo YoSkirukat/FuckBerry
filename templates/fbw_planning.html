@@ -1722,12 +1722,19 @@
       console.log(`Конвертированные даты: ${dateFromFormatted} - ${dateToFormatted}`);
       
       // Загружаем все данные одним запросом (оптимизация против 429)
-      fetch(`/api/fbw/planning/data?warehouse_id=${warehouseId}&date_from=${dateFromFormatted}&date_to=${dateToFormatted}`)
+      const planningController = new AbortController();
+      const planningTimeoutId = setTimeout(() => planningController.abort(), 120000);
+      fetch(
+        `/api/fbw/planning/data?warehouse_id=${warehouseId}&date_from=${dateFromFormatted}&date_to=${dateToFormatted}`,
+        { signal: planningController.signal }
+      )
       .then(response => {
         // Проверяем статус ответа
         if (!response.ok) {
           if (response.status === 429) {
             throw new Error('Превышен лимит запросов к API Wildberries. Попробуйте через несколько минут.');
+          } else if (response.status === 503) {
+            throw new Error('Обновление остатков уже выполняется. Попробуйте через минуту.');
           } else if (response.status === 502) {
             throw new Error('Временная недоступность API Wildberries. Попробуйте позже.');
           } else {
@@ -1913,8 +1920,13 @@
       })
       .catch(error => {
         console.error('Ошибка загрузки данных:', error);
-        showError('Ошибка загрузки данных: ' + error.message);
-      });
+        if (error.name === 'AbortError') {
+          showError('Превышено время ожидания ответа сервера. Попробуйте ещё раз.');
+        } else {
+          showError('Ошибка загрузки данных: ' + error.message);
+        }
+      })
+      .finally(() => clearTimeout(planningTimeoutId));
     }
     
     function showResultsWithProducts(products, formData) {
@@ -3002,7 +3014,7 @@
         console.log('Примеры товаров в checkPendingSupplies:', products.slice(0, 3));
         const startTime = performance.now();
         
-        const response = await fetch(`/api/fbw/planning/supplies?warehouse_name=${encodeURIComponent(warehouseName)}&force_refresh=false`);
+        const response = await fetch(`/api/fbw/planning/supplies?warehouse_name=${encodeURIComponent(warehouseName)}&force_refresh=true`);
         const data = await response.json();
         
         const endTime = performance.now();

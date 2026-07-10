@@ -666,6 +666,108 @@ def build_acceptance_grid(
     return warehouses, date_keys, date_labels, grid
 
 
+def _pick_box_tariff_value(box_tariff: list[dict[str, Any]] | None, *, small: bool) -> float | None:
+    """Возвращает тариф за литр для короба <1500 л (small) или >1500 л (large)."""
+    tiers: list[dict[str, Any]] = [t for t in (box_tariff or []) if isinstance(t, dict)]
+    if not tiers:
+        return None
+    if small:
+        for tier in tiers:
+            try:
+                to_val = tier.get("to")
+                if to_val is not None and int(to_val) <= 1500:
+                    return float(tier.get("value"))
+            except Exception:
+                continue
+        try:
+            tiers_sorted = sorted(tiers, key=lambda t: int(t.get("from") or 0))
+            if tiers_sorted:
+                first = tiers_sorted[0]
+                to_val = first.get("to")
+                if to_val is None or int(to_val) <= 1500:
+                    return float(first.get("value"))
+        except Exception:
+            pass
+        return None
+    for tier in tiers:
+        try:
+            from_val = int(tier.get("from") or 0)
+            if from_val >= 1500:
+                return float(tier.get("value"))
+        except Exception:
+            continue
+    try:
+        tiers_sorted = sorted(tiers, key=lambda t: int(t.get("from") or 0))
+        if len(tiers_sorted) >= 2:
+            return float(tiers_sorted[1].get("value"))
+        if len(tiers_sorted) == 1:
+            to_val = tiers_sorted[0].get("to")
+            if to_val is not None and int(to_val) > 1500:
+                return float(tiers_sorted[0].get("value"))
+    except Exception:
+        pass
+    return None
+
+
+def normalize_transit_tariff_items(items: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
+    """Нормализует ответ WB /api/v1/transit-tariffs для UI."""
+    normalized: List[Dict[str, Any]] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        transit = str(it.get("transitWarehouseName") or "").strip()
+        destination = str(it.get("destinationWarehouseName") or "").strip()
+        if not transit or not destination:
+            continue
+        box_tariff = it.get("boxTariff") if isinstance(it.get("boxTariff"), list) else []
+        pallet_raw = it.get("palletTariff")
+        pallet_val = None
+        pallet_available = False
+        try:
+            if pallet_raw is not None:
+                pallet_val = int(pallet_raw)
+                pallet_available = True
+        except Exception:
+            pallet_available = False
+        normalized.append({
+            "transit_warehouse": transit,
+            "destination_warehouse": destination,
+            "active_from": str(it.get("activeFrom") or "").strip(),
+            "pallet_tariff": pallet_val,
+            "pallet_available": pallet_available,
+            "box_available": bool(box_tariff),
+            "box_tariff_small": _pick_box_tariff_value(box_tariff, small=True),
+            "box_tariff_large": _pick_box_tariff_value(box_tariff, small=False),
+        })
+    normalized.sort(key=lambda row: (row["transit_warehouse"].lower(), row["destination_warehouse"].lower()))
+    return normalized
+
+
+def build_transit_table_rows(items: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
+    """Группирует строки по транзитному складу для rowspan в таблице."""
+    normalized = normalize_transit_tariff_items(items)
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in normalized:
+        groups.setdefault(row["transit_warehouse"], []).append(row)
+    table_rows: List[Dict[str, Any]] = []
+    for transit_name in sorted(groups.keys(), key=str.lower):
+        group_rows = groups[transit_name]
+        for idx, row in enumerate(group_rows):
+            table_rows.append({
+                **row,
+                "show_transit": idx == 0,
+                "transit_rowspan": len(group_rows) if idx == 0 else 0,
+            })
+    return table_rows
+
+
+def extract_transit_filter_options(items: List[Dict[str, Any]] | None) -> tuple[List[str], List[str]]:
+    normalized = normalize_transit_tariff_items(items)
+    transit_names = sorted({row["transit_warehouse"] for row in normalized})
+    destination_names = sorted({row["destination_warehouse"] for row in normalized})
+    return transit_names, destination_names
+
+
 def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Нормализует ответ API карточек товаров"""
     items: List[Dict[str, Any]] = []

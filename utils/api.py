@@ -11,6 +11,7 @@ from utils.constants import (
     WB_ORDERS_FETCH_MAX_PAGES, WB_ORDERS_FETCH_MAX_PAGES_INTRADAY,
     WB_ORDERS_PAGE_SLEEP_S, WB_ORDERS_PAGE_SLEEP_INTRADAY_S,
     FBW_SUPPLIES_LIST_URL, FBW_SUPPLY_DETAILS_URL, FBW_SUPPLY_GOODS_URL, FBW_SUPPLY_PACKAGE_URL,
+    TRANSIT_TARIFFS_URL,
     FBS_NEW_URL, FBS_ORDERS_URL, FBS_ORDERS_STATUS_URL,
     DBS_NEW_URL, DBS_STATUS_URL, DBS_ORDERS_URL,
     SELLER_INFO_URL, ACCEPT_COEFS_URL,
@@ -872,6 +873,34 @@ def fetch_acceptance_warehouse_metadata(token: str) -> dict[str, dict[str, Any]]
         _finalize_meta_entry(entry)
 
     return store
+
+
+def fetch_transit_tariffs(token: str) -> list[dict[str, Any]]:
+    """Получает транзитные направления и тарифы (supplies-api)."""
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        supplies_api_throttle()
+        resp = get_with_retry(TRANSIT_TARIFFS_URL, headers, params={})
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("data", "result", "items", "response"):
+                payload = data.get(key)
+                if isinstance(payload, list):
+                    return payload
+        return []
+    except Exception:
+        try:
+            supplies_api_throttle()
+            headers2 = {"Authorization": f"{token}"}
+            resp = get_with_retry(TRANSIT_TARIFFS_URL, headers2, params={})
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
 
 
 def fetch_fbs_stocks_by_warehouse(token: str, warehouse_id: int, skus: list[str]) -> list[dict[str, Any]]:

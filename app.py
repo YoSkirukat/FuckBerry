@@ -317,6 +317,7 @@ from blueprints.dbs import dbs_bp
 from blueprints.fbs_stock import fbs_stock_bp
 from blueprints.fbw import fbw_bp
 from blueprints.fbw_planning import fbw_planning_bp
+from blueprints.transit_routes import transit_routes_bp
 from blueprints.products import products_bp
 from blueprints.stocks import stocks_bp
 from blueprints.reports import reports_bp
@@ -335,6 +336,7 @@ app.register_blueprint(dbs_bp)
 app.register_blueprint(fbs_stock_bp)
 app.register_blueprint(fbw_bp)
 app.register_blueprint(fbw_planning_bp)
+app.register_blueprint(transit_routes_bp)
 app.register_blueprint(products_bp)
 app.register_blueprint(stocks_bp)
 app.register_blueprint(reports_bp)
@@ -625,6 +627,86 @@ def _fbw_status_from_id(status_id: Any) -> str | None:
         return None
 
 
+def _resolve_fbw_supply_status(
+    details: dict[str, Any],
+    list_item: dict[str, Any] | None = None,
+    *,
+    allow_cached_fallback: bool = False,
+    cached_item: dict[str, Any] | None = None,
+) -> str:
+    """Определяет текстовый статус FBW-поставки по ответу API (details + list item)."""
+    it = list_item or {}
+    fact_date = details.get("factDate") or it.get("factDate")
+    supply_date = details.get("supplyDate") or it.get("supplyDate")
+    status_id = details.get("statusID") or it.get("statusID")
+    status_name = _fbw_status_from_id(status_id)
+    if not status_name:
+        status_name = (
+            details.get("statusName")
+            or details.get("status")
+            or details.get("statusText")
+            or it.get("statusName")
+            or it.get("status")
+            or it.get("statusText")
+            or ""
+        )
+    if not status_name:
+        if fact_date:
+            status_name = "Принято"
+        elif supply_date:
+            try:
+                planned_dt = _parse_iso_datetime(str(supply_date))
+                if planned_dt:
+                    planned_dt_msk = to_moscow(planned_dt)
+                    if planned_dt_msk:
+                        today = datetime.now(MOSCOW_TZ).date()
+                        if planned_dt_msk.date() < today:
+                            status_name = "Отгрузка разрешена"
+                        else:
+                            status_name = "Запланировано"
+            except Exception:
+                status_name = "Запланировано"
+        else:
+            status_name = "Не запланировано"
+    if not status_name and allow_cached_fallback and cached_item:
+        cached_status_val = str(cached_item.get("status", "")).strip()
+        if cached_status_val:
+            status_name = cached_status_val
+    return str(status_name or "").strip()
+
+
+def _is_fbw_supply_accepted(
+    status_name: str,
+    *,
+    status_id: Any = None,
+    fact_date: Any = None,
+) -> bool:
+    """True, если поставка уже принята на складе WB."""
+    if fact_date:
+        return True
+    try:
+        if status_id is not None and int(status_id) == 5:
+            return True
+    except (ValueError, TypeError):
+        pass
+    return "Принято" in (status_name or "")
+
+
+def _patch_fbw_supply_cache_item(supply_id_str: str, updates: dict[str, Any]) -> None:
+    """Обновляет одну поставку в лёгком кэше /fbw после свежей проверки статуса."""
+    try:
+        cached = load_fbw_supplies_cache() or {}
+        items = list(cached.get("items") or [])
+        for i, item in enumerate(items):
+            if str(item.get("supply_id") or "") == supply_id_str:
+                items[i] = {**item, **updates}
+                cached["items"] = items
+                save_fbw_supplies_cache(cached)
+                return
+    except Exception:
+        pass
+
+
 def fetch_fbw_supplies_list(token: str, days_back: int = 90) -> list[dict[str, Any]]:
     if not token:
         return []
@@ -742,49 +824,12 @@ def fetch_fbw_last_supplies(token: str, limit: int = 15) -> list[dict[str, Any]]
         create_date = details.get("createDate") or it.get("createDate")
         supply_date = details.get("supplyDate") or it.get("supplyDate")
         fact_date = details.get("factDate") or it.get("factDate")
-        # Приоритетно используем statusID из API (самый надёжный источник)
-        status_id = details.get("statusID") or it.get("statusID")
-        status_name = _fbw_status_from_id(status_id)
-        
-        # Если statusID не дал результата, пробуем текстовые поля
-        if not status_name:
-            status_name = (
-                details.get("statusName") 
-                or details.get("status") 
-                or details.get("statusText")
-                or it.get("statusName") 
-                or it.get("status")
-                or it.get("statusText")
-                or ""
-            )
-        # Если статус всё ещё пустой, пытаемся определить его по другим полям
-        if not status_name:
-            # Проверяем, есть ли factDate - если есть, значит поставка принята
-            if fact_date:
-                status_name = "Принято"
-            # Иначе проверяем supplyDate - если есть, значит запланировано
-            elif supply_date:
-                # Проверяем, прошла ли плановая дата
-                try:
-                    planned_dt = _parse_iso_datetime(str(supply_date))
-                    if planned_dt:
-                        planned_dt_msk = to_moscow(planned_dt) if planned_dt else None
-                        if planned_dt_msk:
-                            today = datetime.now(MOSCOW_TZ).date()
-                            planned_date = planned_dt_msk.date()
-                            if planned_date < today:
-                                status_name = "Отгрузка разрешена"
-                            else:
-                                status_name = "Запланировано"
-                except Exception:
-                    status_name = "Запланировано"
-            else:
-                status_name = "Не запланировано"
-        # Если статус пустой, но есть кэшированный статус, можно использовать его как fallback
-        if not status_name and cached_item:
-            cached_status_val = str(cached_item.get("status", "")).strip()
-            if cached_status_val:
-                status_name = cached_status_val
+        status_name = _resolve_fbw_supply_status(
+            details,
+            it,
+            allow_cached_fallback=True,
+            cached_item=cached_item,
+        )
         # Скрываем черновики ("Не запланировано") из результата
         if "Не запланировано" in str(status_name or ""):
             continue
@@ -863,49 +908,12 @@ def fetch_fbw_supplies_range(token: str, offset: int, limit: int) -> list[dict[s
         create_date = details.get("createDate") or it.get("createDate")
         supply_date = details.get("supplyDate") or it.get("supplyDate")
         fact_date = details.get("factDate") or it.get("factDate")
-        # Приоритетно используем statusID из API (самый надёжный источник)
-        status_id = details.get("statusID") or it.get("statusID")
-        status_name = _fbw_status_from_id(status_id)
-        
-        # Если statusID не дал результата, пробуем текстовые поля
-        if not status_name:
-            status_name = (
-                details.get("statusName") 
-                or details.get("status") 
-                or details.get("statusText")
-                or it.get("statusName") 
-                or it.get("status")
-                or it.get("statusText")
-                or ""
-            )
-        # Если статус всё ещё пустой, пытаемся определить его по другим полям
-        if not status_name:
-            # Проверяем, есть ли factDate - если есть, значит поставка принята
-            if fact_date:
-                status_name = "Принято"
-            # Иначе проверяем supplyDate - если есть, значит запланировано
-            elif supply_date:
-                # Проверяем, прошла ли плановая дата
-                try:
-                    planned_dt = _parse_iso_datetime(str(supply_date))
-                    if planned_dt:
-                        planned_dt_msk = to_moscow(planned_dt) if planned_dt else None
-                        if planned_dt_msk:
-                            today = datetime.now(MOSCOW_TZ).date()
-                            planned_date = planned_dt_msk.date()
-                            if planned_date < today:
-                                status_name = "Отгрузка разрешена"
-                            else:
-                                status_name = "Запланировано"
-                except Exception:
-                    status_name = "Запланировано"
-            else:
-                status_name = "Не запланировано"
-        # Если статус пустой, но есть кэшированный статус, можно использовать его как fallback
-        if not status_name and cached_item:
-            cached_status_val = str(cached_item.get("status", "")).strip()
-            if cached_status_val:
-                status_name = cached_status_val
+        status_name = _resolve_fbw_supply_status(
+            details,
+            it,
+            allow_cached_fallback=True,
+            cached_item=cached_item,
+        )
         warehouse_name = details.get("warehouseName") or it.get("warehouseName") or ""
         # Обработка типа поставки: если boxTypeName отсутствует, используем boxTypeID и преобразуем в читаемое название
         box_type = details.get("boxTypeName") or it.get("boxTypeName")
@@ -5926,6 +5934,59 @@ def api_fbw_warehouses():
         return jsonify({"error": "api_error", "message": f"Ошибка API: {http_err.response.status_code}"}), 502
     except Exception as exc:
         return jsonify({"error": "server_error", "message": f"Ошибка: {str(exc)}"}), 500
+def _load_stocks_for_planning(token: str, user_id: int, max_cache_age_sec: int = 600) -> tuple[list, str]:
+    """
+    Загружает остатки для планирования поставки.
+    При наличии кэша не блокирует HTTP-запрос: устаревший кэш обновляется в фоне.
+    """
+    from datetime import datetime
+
+    cached = load_stocks_cache()
+    cached_items: list = []
+    updated_at: str | None = None
+
+    if cached and cached.get("_user_id") == user_id:
+        cached_items = cached.get("items", []) or []
+        updated_at = cached.get("updated_at")
+
+    should_refresh = True
+    if updated_at:
+        try:
+            cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
+            should_refresh = (datetime.now() - cache_time).total_seconds() >= max_cache_age_sec
+        except Exception as e:
+            print(f"Ошибка парсинга времени кэша: {e}")
+
+    if cached_items and not should_refresh:
+        print(f"=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Используем кэшированные остатки ({len(cached_items)} товаров) ===")
+        return cached_items, updated_at or datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+    if cached_items and should_refresh:
+        print(
+            f"=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Кэш устарел ({updated_at}), "
+            f"используем его и обновляем в фоне ({len(cached_items)} товаров) ==="
+        )
+        _start_stocks_update_bg(user_id, token)
+        return cached_items, updated_at or datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+    print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Кэш пуст, загружаем остатки синхронно ===")
+    try:
+        raw_stocks = fetch_stocks_resilient(token, lock_timeout=90.0)
+        stocks = normalize_stocks(raw_stocks)
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        save_stocks_cache({"items": stocks, "_user_id": user_id, "updated_at": now_str})
+        print(f"Остатки загружены для планирования: {len(stocks)} товаров в {now_str}")
+        return stocks, now_str
+    except TimeoutError:
+        print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Таймаут ожидания API остатков ===")
+        raise
+    except requests.HTTPError as e:
+        if e.response and e.response.status_code == 429 and cached_items:
+            print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Ошибка 429, используем кэш ===")
+            return cached_items, updated_at or datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        raise
+
+
 @app.route("/api/fbw/planning/stocks", methods=["GET"])
 @login_required
 def api_fbw_planning_stocks():
@@ -5940,47 +6001,18 @@ def api_fbw_planning_stocks():
     
     try:
         from datetime import datetime
-        # Проверяем кэш остатков перед принудительным обновлением
-        cached = load_stocks_cache()
-        should_refresh = True
-        
-        if cached and cached.get("_user_id") == current_user.id:
-            # Проверяем время последнего обновления
-            updated_at = cached.get("updated_at")
-            if updated_at:
-                try:
-                    # Парсим время обновления из кэша
-                    cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
-                    # Если обновляли менее 10 минут назад, используем кэш
-                    if (datetime.now() - cache_time).total_seconds() < 600:  # 10 минут
-                        should_refresh = False
-                        print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: используем кэшированные остатки ===")
-                        print(f"Кэш обновлен: {updated_at}")
-                except Exception as e:
-                    print(f"Ошибка парсинга времени кэша: {e}")
-        
-        if should_refresh:
-            print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: принудительное обновление остатков ===")
-            print(f"Пользователь: {current_user.id}, склад: {warehouse_id}")
-            try:
-                raw_stocks = fetch_stocks_resilient(token)
-                stocks = normalize_stocks(raw_stocks)
-                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                save_stocks_cache({"items": stocks, "_user_id": current_user.id, "updated_at": now_str})
-                print(f"Остатки обновлены: {len(stocks)} товаров в {now_str}")
-            except requests.HTTPError as e:
-                if e.response and e.response.status_code == 429:
-                    print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: ошибка 429, используем кэш ===")
-                    if cached and cached.get("_user_id") == current_user.id:
-                        stocks = cached.get("items", [])
-                        print(f"Используем кэшированные остатки: {len(stocks)} товаров")
-                    else:
-                        return jsonify({"error": "rate_limit", "message": "Превышен лимит запросов к API. Попробуйте позже."}), 429
-                else:
-                    raise
-        else:
-            stocks = cached.get("items", []) if cached else []
-            print(f"Используем кэшированные остатки: {len(stocks)} товаров")
+        # Загружаем остатки без блокировки HTTP-запроса при устаревшем кэше
+        try:
+            stocks, _stocks_updated_at = _load_stocks_for_planning(token, current_user.id)
+        except TimeoutError:
+            return jsonify({
+                "error": "stocks_busy",
+                "message": "Обновление остатков уже выполняется. Попробуйте через минуту.",
+            }), 503
+        except requests.HTTPError as e:
+            if e.response and e.response.status_code == 429:
+                return jsonify({"error": "rate_limit", "message": "Превышен лимит запросов к API. Попробуйте позже."}), 429
+            raise
             
         # Проверяем, что остатки есть
         if not stocks:
@@ -6051,7 +6083,8 @@ def api_fbw_planning_stocks():
                             warehouse_stocks[barcode] = int(stock.get("qty", 0) or 0)
         
         # Берем время обновления из кэша, если есть
-        now_str = cached.get("updated_at") if cached else datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        cached = load_stocks_cache()
+        now_str = _stocks_updated_at or (cached.get("updated_at") if cached else datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
         
         if warehouse_id == "all":
             print(f"Загружены остатки по всем складам: {len(warehouse_stocks)}")
@@ -6487,44 +6520,19 @@ def api_fbw_planning_data():
             print(f"Ошибка загрузки товаров: {e}")
             products = []
         
-        # 2. Получаем остатки (один запрос для всех данных)
+        # 2. Получаем остатки (не блокируем запрос при устаревшем кэше)
         print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Загружаем остатки ===")
-        cached = load_stocks_cache()
-        should_refresh = True
-        
-        if cached and cached.get("_user_id") == current_user.id:
-            updated_at = cached.get("updated_at")
-            if updated_at:
-                try:
-                    cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
-                    if (datetime.now() - cache_time).total_seconds() < 600:  # 10 минут
-                        should_refresh = False
-                        print(f"=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Используем кэшированные остатки ===")
-                except Exception as e:
-                    print(f"Ошибка парсинга времени кэша: {e}")
-        
-        if should_refresh:
-            print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Принудительное обновление остатков ===")
-            print(f"Пользователь: {current_user.id}, Склад: {warehouse_id}")
-            try:
-                raw_stocks = fetch_stocks_resilient(token)
-                stocks = normalize_stocks(raw_stocks)
-                now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                save_stocks_cache({"items": stocks, "_user_id": current_user.id, "updated_at": now_str})
-                print(f"Остатки обновлены для планирования поставки: {len(stocks)} товаров в {now_str}")
-            except requests.HTTPError as e:
-                if e.response and e.response.status_code == 429:
-                    print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Ошибка 429, используем кэш ===")
-                    if cached and cached.get("_user_id") == current_user.id:
-                        stocks = cached.get("items", [])
-                        print(f"Используем кэшированные остатки: {len(stocks)} товаров")
-                    else:
-                        return jsonify({"error": "rate_limit", "message": "Превышен лимит запросов к API. Попробуйте позже."}), 429
-                else:
-                    raise
-        else:
-            stocks = cached.get("items", []) if cached else []
-            print(f"Используем кэшированные остатки: {len(stocks)} товаров")
+        try:
+            stocks, stocks_updated_at = _load_stocks_for_planning(token, current_user.id)
+        except TimeoutError:
+            return jsonify({
+                "error": "stocks_busy",
+                "message": "Обновление остатков уже выполняется. Попробуйте через минуту.",
+            }), 503
+        except requests.HTTPError as e:
+            if e.response and e.response.status_code == 429:
+                return jsonify({"error": "rate_limit", "message": "Превышен лимит запросов к API. Попробуйте позже."}), 429
+            raise
         
         if not stocks:
             return jsonify({"error": "no_stocks", "message": "Нет данных об остатках. Попробуйте позже."}), 500
@@ -6830,8 +6838,8 @@ def api_fbw_planning_data():
                     "day": max_day,
                 }
         
-        # Получаем время обновления
-        now_str = cached.get("updated_at") if cached else datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        # Получаем время обновления остатков
+        now_str = stocks_updated_at
         
         # Формируем список товаров с баркодами (как в оригинальном endpoint)
         products_with_barcodes = []
@@ -7411,9 +7419,12 @@ def api_fbw_planning_supplies():
                     if not _warehouse_names_match(cached_warehouse, warehouse_name):
                         continue  # Пропускаем поставки на другие склады
                 
-                # Если статус "Принято" в кэше - пропускаем (но в основной проверке всё равно проверим через API)
-                # Это ускоряет предварительную фильтрацию
-                if cached_status and "Принято" in cached_status:
+                # Если статус "Принято" в кэше - пропускаем предварительно (при force_refresh всё равно проверим через API)
+                if (
+                    not force_refresh
+                    and cached_status
+                    and "Принято" in cached_status
+                ):
                     print(f"Поставка {supply_id_str}: в кэше статус 'Принято', пропускаем на этапе предварительной фильтрации")
                     continue
                 
@@ -7474,106 +7485,81 @@ def api_fbw_planning_supplies():
                 box_type_id = None
                 warehouse_from_details = None
                 
-                # Используем кэш для ускорения, но проверяем критичные данные через API
-                # Если в кэше есть статус и он не "Принято", используем его для ускорения
+                # Статус при планировании всегда проверяем через API — кэш может быть устаревшим.
                 details = None
-                use_cache_for_status = False
-                
-                if cached_item:
-                    cached_status = cached_item.get("status", "").strip()
-                    cached_warehouse = cached_item.get("warehouse", "").strip()
-                    
-                    # Если в кэше статус точно не "Принято" и склад совпадает, используем кэш
-                    # Это значительно ускорит обработку
-                    if cached_status and "Принято" not in cached_status and cached_warehouse:
-                        if not warehouse_name or _warehouse_names_match(cached_warehouse, warehouse_name):
-                            use_cache_for_status = True
-                            details_status = cached_status
-                            warehouse_from_details = cached_warehouse
-                            box_type_name = cached_item.get("type", "").strip()
-                            # Определяем boxTypeID из типа
-                            if box_type_name == "Допринято" or box_type_name == "Без коробов":
-                                box_type_id = 1
-                            elif "короб" in box_type_name.lower():
-                                box_type_id = 2
-                            else:
-                                box_type_id = None
-                            print(f"Поставка {supply_id}: используем данные из кэша (статус: {details_status})")
-                
-                # Если не используем кэш, загружаем детали с API
-                if not use_cache_for_status:
-                    try:
-                        _supplies_api_throttle()
-                        details = fetch_fbw_supply_details(token, supply_id)
-                        if not details:
-                            print(f"Поставка {supply_id}: не удалось загрузить детали с API, пропускаем")
-                            continue
-                        
-                        # Получаем склад из деталей и проверяем его
-                        warehouse_from_details = details.get("warehouseName", "").strip()
-                        if not warehouse_from_details:
-                            print(f"Поставка {supply_id}: нет названия склада в деталях, пропускаем")
-                            continue
-                        
-                        # Проверяем совпадение склада ПЕРЕД проверкой статуса и типа (с учетом переименований)
-                        if warehouse_name:
-                            if not _warehouse_names_match(warehouse_from_details, warehouse_name):
-                                print(f"Поставка {supply_id} на другой склад '{warehouse_from_details}' != '{warehouse_name}', пропускаем")
-                                continue
-                        
-                        # Получаем статус из деталей API (самый актуальный)
-                        details_status = details.get("statusName", "").strip()
-                        if not details_status:
-                            # Если статус пустой, пытаемся определить его по датам
-                            supply_date = details.get("supplyDate")
-                            fact_date = details.get("factDate")
-                            if fact_date:
-                                # Если есть фактическая дата - поставка принята
-                                details_status = "Принято"
-                                print(f"Поставка {supply_id}: определён статус 'Принято' по factDate={fact_date}")
-                            elif supply_date:
-                                try:
-                                    planned_dt = _parse_iso_datetime(str(supply_date))
-                                    if planned_dt:
-                                        planned_dt_msk = to_moscow(planned_dt) if planned_dt else None
-                                        if planned_dt_msk:
-                                            today = datetime.now(MOSCOW_TZ).date()
-                                            planned_date = planned_dt_msk.date()
-                                            if planned_date < today:
-                                                details_status = "Отгрузка разрешена"
-                                            else:
-                                                details_status = "Запланировано"
-                                except Exception:
-                                    details_status = "Запланировано"
-                            else:
-                                details_status = "Не запланировано"
-                        
-                        # Получаем тип из деталей
-                        box_type_name = details.get("boxTypeName", "").strip()
-                        box_type_id = details.get("boxTypeID")
-                    except requests.Timeout:
-                        print(f"Поставка {supply_id}: таймаут при загрузке деталей, используем кэш если доступен")
-                        if cached_item:
-                            details_status = cached_item.get("status", "").strip() or "Неизвестно"
-                            warehouse_from_details = cached_item.get("warehouse", "").strip()
-                            box_type_name = cached_item.get("type", "").strip()
-                            if box_type_name == "Допринято" or box_type_name == "Без коробов":
-                                box_type_id = 1
-                            elif "короб" in box_type_name.lower():
-                                box_type_id = 2
-                            else:
-                                box_type_id = None
-                        else:
-                            print(f"Поставка {supply_id}: нет кэша, пропускаем из-за таймаута")
-                            continue
-                    except Exception as e:
-                        print(f"Поставка {supply_id}: ошибка загрузки деталей: {e}, пропускаем")
+                details_status = ""
+                warehouse_from_details = ""
+                box_type_name = ""
+                box_type_id = None
+                fact_date = None
+
+                try:
+                    _supplies_api_throttle()
+                    details = fetch_fbw_supply_details(token, supply_id)
+                    if not details:
+                        print(f"Поставка {supply_id}: не удалось загрузить детали с API, пропускаем")
                         continue
-                
-                # КРИТИЧНО: Проверяем статус "Принято" СРАЗУ
-                # Это самая важная проверка - принятые поставки не должны учитываться
-                if "Принято" in details_status:
-                    print(f"Поставка {supply_id}: статус '{details_status}' - ПРИНЯТА, пропускаем (не учитываем в планировании)")
+
+                    warehouse_from_details = (details.get("warehouseName") or supply.get("warehouseName") or "").strip()
+                    if not warehouse_from_details:
+                        print(f"Поставка {supply_id}: нет названия склада в деталях, пропускаем")
+                        continue
+
+                    if warehouse_name and not _warehouse_names_match(warehouse_from_details, warehouse_name):
+                        print(
+                            f"Поставка {supply_id} на другой склад "
+                            f"'{warehouse_from_details}' != '{warehouse_name}', пропускаем"
+                        )
+                        continue
+
+                    fact_date = details.get("factDate") or supply.get("factDate")
+                    status_id = details.get("statusID") or supply.get("statusID")
+                    details_status = _resolve_fbw_supply_status(details, supply)
+                    box_type_name = (details.get("boxTypeName") or "").strip()
+                    box_type_id = details.get("boxTypeID")
+                    if not box_type_name and box_type_id is not None:
+                        box_type_map = {1: "Без коробов", 2: "Короба"}
+                        try:
+                            box_type_name = box_type_map.get(int(box_type_id), str(box_type_id))
+                        except (ValueError, TypeError):
+                            box_type_name = str(box_type_id)
+
+                    cached_status = (cached_item or {}).get("status", "").strip()
+                    if cached_status and cached_status != details_status:
+                        print(
+                            f"Поставка {supply_id}: статус обновлён "
+                            f"'{cached_status}' -> '{details_status}' (планирование)"
+                        )
+
+                    _patch_fbw_supply_cache_item(
+                        supply_id_str,
+                        {
+                            "status": details_status,
+                            "warehouse": warehouse_from_details,
+                            "type": box_type_name or (cached_item or {}).get("type", ""),
+                            "planned_date": _fmt_dt_moscow(details.get("supplyDate"), with_time=False)
+                            if details.get("supplyDate")
+                            else (cached_item or {}).get("planned_date", ""),
+                            "fact_date": _fmt_dt_moscow(fact_date, with_time=True) if fact_date else "",
+                            "total_goods": int(details.get("quantity", 0) or 0)
+                            if details.get("quantity") is not None
+                            else (cached_item or {}).get("total_goods"),
+                        },
+                    )
+                    print(f"Поставка {supply_id}: актуальный статус с API — '{details_status}'")
+                except requests.Timeout:
+                    print(f"Поставка {supply_id}: таймаут при загрузке деталей, пропускаем (без устаревшего кэша)")
+                    continue
+                except Exception as e:
+                    print(f"Поставка {supply_id}: ошибка загрузки деталей: {e}, пропускаем")
+                    continue
+
+                # КРИТИЧНО: принятые поставки не должны учитываться в планировании
+                if _is_fbw_supply_accepted(details_status, status_id=status_id, fact_date=fact_date):
+                    print(
+                        f"Поставка {supply_id}: статус '{details_status}' - ПРИНЯТА, "
+                        f"пропускаем (не учитываем в планировании)"
+                    )
                     continue
                 
                 # Используем данные из кэша только для дополнительной информации (даты, количество)
@@ -13296,20 +13282,28 @@ def fetch_stocks_paginated(token: str, start_iso: str = "1970-01-01T00:00:00") -
 _stocks_api_lock = threading.Lock()
 _last_stocks_request_time = 0
 
-def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
+def fetch_stocks_resilient(token: str, lock_timeout: float | None = 120.0) -> List[Dict[str, Any]]:
     global _last_stocks_request_time
-    
-    # Используем блокировку для предотвращения одновременных запросов
-    with _stocks_api_lock:
+
+    if lock_timeout is not None:
+        acquired = _stocks_api_lock.acquire(timeout=lock_timeout)
+        if not acquired:
+            raise TimeoutError(
+                "Таймаут ожидания доступа к API остатков: другой запрос уже выполняется"
+            )
+    else:
+        _stocks_api_lock.acquire()
+
+    try:
         # Проверяем, не делали ли мы запрос слишком недавно (минимум 1 секунда между запросами)
         current_time = time.time()
         if current_time - _last_stocks_request_time < 1.0:
             sleep_time = 1.0 - (current_time - _last_stocks_request_time)
             print(f"=== RATE LIMITING: Ждем {sleep_time:.2f} сек перед запросом к API остатков ===")
             time.sleep(sleep_time)
-        
+
         _last_stocks_request_time = time.time()
-        
+
         try:
             data = fetch_stocks_all(token)
             if isinstance(data, list) and data:
@@ -13325,6 +13319,8 @@ def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
             return fetch_stocks_paginated(token)
         # Fallback to paginated flow
         return fetch_stocks_paginated(token)
+    finally:
+        _stocks_api_lock.release()
 
 
 def fetch_product_price_history(token: str, nm_id: int) -> List[Dict[str, Any]]:

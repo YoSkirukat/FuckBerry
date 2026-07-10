@@ -60,6 +60,7 @@ ACCEPT_COEFS_URL = "https://common-api.wildberries.ru/api/tariffs/v1/acceptance/
 
 # FBW supplies API
 FBW_SUPPLIES_LIST_URL = "https://supplies-api.wildberries.ru/api/v1/supplies"
+TRANSIT_TARIFFS_URL = "https://supplies-api.wildberries.ru/api/v1/transit-tariffs"
 FBW_SUPPLY_DETAILS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}"
 FBW_SUPPLY_GOODS_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/goods"
 FBW_SUPPLY_PACKAGE_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{id}/package"

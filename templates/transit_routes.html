@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  {% block title %}<title>Транзитные направления — WB Dashboard</title>{% endblock %}
+  {% include '_header.html' %}
+  {% block extra_styles %}
+  <style>
+    h1 { font-size: 1.7rem; }
+    .table-sm td, .table-sm th { font-size: 0.85rem; vertical-align: middle; }
+    th.sticky-col, td.sticky-col { position: sticky; left: 0; background: #fff; z-index: 2; }
+    td.sticky-col { z-index: 1; }
+    #transitTable {
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    #transitTable thead th {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background-color: #f8f9fa;
+      box-shadow: inset 0 -1px 0 #dee2e6;
+    }
+    #transitTable thead th.sticky-col {
+      top: 0;
+      left: 0;
+      z-index: 4;
+      background-color: #f8f9fa;
+    }
+    .transit-info {
+      background: #f8f9fa;
+      border: 1px solid #e9ecef;
+      border-radius: .375rem;
+      padding: .5rem .75rem;
+      font-size: .85rem;
+      color: #495057;
+      margin-bottom: .75rem;
+    }
+    .transit-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .75rem 1rem;
+      align-items: flex-end;
+      margin-bottom: .75rem;
+    }
+    .transit-filter-item { flex: 1 1 240px; min-width: 0; max-width: 100%; }
+    .transit-filter-item .form-label {
+      font-size: .8rem;
+      color: #6c757d;
+      margin-bottom: .2rem;
+    }
+    .tariff-muted { color: #9aa0a6; font-size: .82rem; }
+    .tariff-value { font-weight: 500; }
+    .filter-input-group { position: relative; }
+    .filter-input-group .form-select {
+      padding-right: 3.5rem;
+      background-position: right .65rem center;
+    }
+    .filter-clear-btn {
+      position: absolute; right: 2rem; top: 50%; transform: translateY(-50%);
+      border: 0; background: transparent; color: #6c757d; font-size: 1rem; line-height: 1;
+      width: 1.4rem; height: 1.4rem; padding: 0; border-radius: .2rem; z-index: 2;
+    }
+    .filter-clear-btn:hover { color: #212529; background: rgba(0,0,0,.06); }
+    .filter-clear-btn.is-hidden { display: none; }
+    .transit-table-card,
+    .transit-table-card .card-body {
+      overflow: visible;
+    }
+  </style>
+  {% endblock %}
+</head>
+<body>
+  {% include '_navbar.html' %}
+
+  <div class="container mt-3 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h1 class="mb-0">Транзитные направления</h1>
+      <div class="d-flex align-items-center gap-3">
+        <div class="text-muted">Обновлено: <span id="lastUpdated">{{ generated_at }}</span></div>
+        <button id="refreshBtn" class="btn btn-outline-primary btn-sm" type="button">Обновить данные</button>
+      </div>
+    </div>
+
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <div class="transit-info">
+      Поставки объёмом более 1&nbsp;000 литров отгружаются на паллетах независимо от типа упаковки.
+      Менее 1&nbsp;000 литров можно привозить в коробах.
+    </div>
+
+    <div class="transit-filters">
+      <div class="transit-filter-item">
+        <label for="transitFilter" class="form-label">Транзитный склад</label>
+        <div class="filter-input-group">
+          <select id="transitFilter" class="form-select form-select-sm">
+            <option value="">Все транзитные склады</option>
+            {% for w in transit_warehouses %}
+              <option value="{{ w }}">{{ w }}</option>
+            {% endfor %}
+          </select>
+          <button id="transitClearBtn" type="button" class="filter-clear-btn is-hidden" title="Сбросить" aria-label="Сбросить">&times;</button>
+        </div>
+      </div>
+      <div class="transit-filter-item">
+        <label for="destinationFilter" class="form-label">Склад назначения</label>
+        <div class="filter-input-group">
+          <select id="destinationFilter" class="form-select form-select-sm">
+            <option value="">Все склады назначения</option>
+            {% for w in destination_warehouses %}
+              <option value="{{ w }}">{{ w }}</option>
+            {% endfor %}
+          </select>
+          <button id="destinationClearBtn" type="button" class="filter-clear-btn is-hidden" title="Сбросить" aria-label="Сбросить">&times;</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card transit-table-card">
+      <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0" id="transitTable">
+            <thead class="table-light">
+              <tr>
+                <th class="sticky-col">Транзитный склад</th>
+                <th>Склад назначения</th>
+                <th class="text-end">Тариф за паллету</th>
+                <th class="text-end">Тариф за короб &lt; 1&nbsp;500&nbsp;л</th>
+                <th class="text-end">Тариф за короб &gt; 1&nbsp;500&nbsp;л</th>
+              </tr>
+            </thead>
+            <tbody id="transitBody">
+              {% for row in rows %}
+                <tr>
+                  {% if row.show_transit %}
+                    <td class="sticky-col fw-semibold" rowspan="{{ row.transit_rowspan }}">{{ row.transit_warehouse }}</td>
+                  {% endif %}
+                  <td>{{ row.destination_warehouse }}</td>
+                  <td class="text-end">
+                    {% if row.pallet_available %}
+                      <span class="tariff-value">{{ "{:,}".format(row.pallet_tariff).replace(",", " ") }} ₽</span>
+                    {% else %}
+                      <span class="tariff-muted">транзит для паллет недоступен</span>
+                    {% endif %}
+                  </td>
+                  <td class="text-end">
+                    {% if row.box_available and row.box_tariff_small is not none %}
+                      <span class="tariff-value">{{ "%.1f"|format(row.box_tariff_small) }} ₽ за л</span>
+                    {% elif not row.box_available %}
+                      <span class="tariff-muted">транзит для коробов недоступен</span>
+                    {% else %}
+                      <span class="text-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td class="text-end">
+                    {% if row.box_available and row.box_tariff_large is not none %}
+                      <span class="tariff-value">{{ "%.1f"|format(row.box_tariff_large) }} ₽ за л</span>
+                    {% elif not row.box_available %}
+                      <span class="tariff-muted">транзит для коробов недоступен</span>
+                    {% else %}
+                      <span class="text-muted">—</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+              {% if not rows %}
+                <tr><td colspan="5" class="text-muted p-3">Нет данных о транзитных направлениях</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+      </div>
+    </div>
+  </div>
+
+  <script id="transitRawItemsJson" type="application/json">{{ (raw_items or []) | tojson | safe }}</script>
+  <script>
+    let transitRawItems = JSON.parse(document.getElementById('transitRawItemsJson').textContent || '[]');
+
+    const TRANSIT_FILTER_KEY = 'transit_routes_transit_filter';
+    const DEST_FILTER_KEY = 'transit_routes_dest_filter';
+
+    function formatRub(value) {
+      if (value === null || value === undefined) return '';
+      return `${Number(value).toLocaleString('ru-RU')} ₽`;
+    }
+
+    function formatPerLiter(value) {
+      if (value === null || value === undefined) return '';
+      const num = Number(value);
+      const text = Number.isInteger(num) ? String(num) : num.toFixed(1);
+      return `${text} ₽ за л`;
+    }
+
+    function buildGroupedRows(items) {
+      const transitFilter = (document.getElementById('transitFilter')?.value || '').trim();
+      const destFilter = (document.getElementById('destinationFilter')?.value || '').trim();
+      const filtered = (items || []).filter(row => {
+        if (transitFilter && row.transit_warehouse !== transitFilter) return false;
+        if (destFilter && row.destination_warehouse !== destFilter) return false;
+        return true;
+      });
+      const groups = new Map();
+      filtered.forEach(row => {
+        const key = row.transit_warehouse;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      });
+      const tableRows = [];
+      Array.from(groups.keys()).sort((a, b) => a.localeCompare(b, 'ru')).forEach(transitName => {
+        const groupRows = groups.get(transitName) || [];
+        groupRows.forEach((row, idx) => {
+          tableRows.push({
+            ...row,
+            show_transit: idx === 0,
+            transit_rowspan: idx === 0 ? groupRows.length : 0,
+          });
+        });
+      });
+      return tableRows;
+    }
+
+    function renderTransitTable() {
+      const tbody = document.getElementById('transitBody');
+      if (!tbody) return;
+      const rows = buildGroupedRows(transitRawItems);
+      tbody.innerHTML = '';
+      if (!rows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.className = 'text-muted p-3';
+        td.textContent = 'Нет данных для выбранных фильтров';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      rows.forEach(row => {
+        const tr = document.createElement('tr');
+        if (row.show_transit) {
+          const tdTransit = document.createElement('td');
+          tdTransit.className = 'sticky-col fw-semibold';
+          tdTransit.rowSpan = row.transit_rowspan;
+          tdTransit.textContent = row.transit_warehouse;
+          tr.appendChild(tdTransit);
+        }
+        const tdDest = document.createElement('td');
+        tdDest.textContent = row.destination_warehouse;
+        tr.appendChild(tdDest);
+
+        const tdPallet = document.createElement('td');
+        tdPallet.className = 'text-end';
+        if (row.pallet_available) {
+          tdPallet.innerHTML = `<span class="tariff-value">${formatRub(row.pallet_tariff)}</span>`;
+        } else {
+          tdPallet.innerHTML = '<span class="tariff-muted">транзит для паллет недоступен</span>';
+        }
+        tr.appendChild(tdPallet);
+
+        const tdBoxSmall = document.createElement('td');
+        tdBoxSmall.className = 'text-end';
+        if (row.box_available && row.box_tariff_small !== null && row.box_tariff_small !== undefined) {
+          tdBoxSmall.innerHTML = `<span class="tariff-value">${formatPerLiter(row.box_tariff_small)}</span>`;
+        } else if (!row.box_available) {
+          tdBoxSmall.innerHTML = '<span class="tariff-muted">транзит для коробов недоступен</span>';
+        } else {
+          tdBoxSmall.innerHTML = '<span class="text-muted">—</span>';
+        }
+        tr.appendChild(tdBoxSmall);
+
+        const tdBoxLarge = document.createElement('td');
+        tdBoxLarge.className = 'text-end';
+        if (row.box_available && row.box_tariff_large !== null && row.box_tariff_large !== undefined) {
+          tdBoxLarge.innerHTML = `<span class="tariff-value">${formatPerLiter(row.box_tariff_large)}</span>`;
+        } else if (!row.box_available) {
+          tdBoxLarge.innerHTML = '<span class="tariff-muted">транзит для коробов недоступен</span>';
+        } else {
+          tdBoxLarge.innerHTML = '<span class="text-muted">—</span>';
+        }
+        tr.appendChild(tdBoxLarge);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function rebuildSelectOptions(selectId, values, placeholder, storageKey) {
+      const select = document.getElementById(selectId);
+      if (!select) return;
+      const saved = localStorage.getItem(storageKey) || '';
+      select.innerHTML = '';
+      const allOpt = document.createElement('option');
+      allOpt.value = '';
+      allOpt.textContent = placeholder;
+      select.appendChild(allOpt);
+      (values || []).forEach(value => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value;
+        select.appendChild(opt);
+      });
+      select.value = saved && Array.from(select.options).some(o => o.value === saved) ? saved : '';
+      updateClearButtons();
+    }
+
+    function updateClearButtons() {
+      const pairs = [
+        ['transitFilter', 'transitClearBtn'],
+        ['destinationFilter', 'destinationClearBtn'],
+      ];
+      pairs.forEach(([selectId, btnId]) => {
+        const select = document.getElementById(selectId);
+        const btn = document.getElementById(btnId);
+        if (!select || !btn) return;
+        btn.classList.toggle('is-hidden', !select.value);
+      });
+    }
+
+    function bindFilter(selectId, clearBtnId, storageKey) {
+      const select = document.getElementById(selectId);
+      const clearBtn = document.getElementById(clearBtnId);
+      if (select) {
+        select.addEventListener('change', () => {
+          localStorage.setItem(storageKey, select.value || '');
+          updateClearButtons();
+          renderTransitTable();
+        });
+      }
+      if (clearBtn && select) {
+        clearBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          select.value = '';
+          localStorage.setItem(storageKey, '');
+          updateClearButtons();
+          renderTransitTable();
+        });
+      }
+    }
+
+    document.getElementById('refreshBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('refreshBtn');
+      const last = document.getElementById('lastUpdated');
+      btn.disabled = true;
+      btn.textContent = 'Обновляем...';
+      try {
+        const res = await fetch('/api/transit-routes');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ошибка обновления');
+        transitRawItems = Array.isArray(data.raw_items) ? data.raw_items : [];
+        if (last) last.textContent = data.lastUpdated;
+        rebuildSelectOptions('transitFilter', data.transit_warehouses || [], 'Все транзитные склады', TRANSIT_FILTER_KEY);
+        rebuildSelectOptions('destinationFilter', data.destination_warehouses || [], 'Все склады назначения', DEST_FILTER_KEY);
+        bindFilter('transitFilter', 'transitClearBtn', TRANSIT_FILTER_KEY);
+        bindFilter('destinationFilter', 'destinationClearBtn', DEST_FILTER_KEY);
+        updateClearButtons();
+        renderTransitTable();
+      } catch (e) {
+        console.error(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Обновить данные';
+      }
+    });
+
+    rebuildSelectOptions('transitFilter', {{ (transit_warehouses or []) | tojson | safe }}, 'Все транзитные склады', TRANSIT_FILTER_KEY);
+    rebuildSelectOptions('destinationFilter', {{ (destination_warehouses or []) | tojson | safe }}, 'Все склады назначения', DEST_FILTER_KEY);
+    bindFilter('transitFilter', 'transitClearBtn', TRANSIT_FILTER_KEY);
+    bindFilter('destinationFilter', 'destinationClearBtn', DEST_FILTER_KEY);
+    updateClearButtons();
+    renderTransitTable();
+  </script>
+  {% include '_footer.html' %}
+</body>
+</html>
