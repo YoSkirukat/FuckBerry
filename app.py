@@ -4578,9 +4578,14 @@ def auto_refresh_stocks_for_all_users():
                     if should_refresh:
                         print(f"Auto-refreshing stocks for user {user.id}")
                         
-                        # Добавляем задержку между запросами для избежания 429 ошибок
+                        # Analytics stocks API: 1 req / 20 sec на аккаунт; между пользователями тоже пауза
                         if i > 0:
-                            time.sleep(2)  # 2 секунды между запросами
+                            try:
+                                from utils.constants import STOCKS_API_MIN_INTERVAL_S
+                                pause_s = float(STOCKS_API_MIN_INTERVAL_S or 20.0)
+                            except Exception:
+                                pause_s = 20.0
+                            time.sleep(pause_s)
                         
                         raw = fetch_stocks_resilient(user.wb_token)
                         items = normalize_stocks(raw)
@@ -13427,12 +13432,13 @@ def stocks_page():
     total_qty_all = sum(int(it.get("qty", 0) or 0) for it in items)
     total_in_transit_all = sum(int(it.get("in_transit", 0) or 0) for it in items)
     # by product
+    from utils.helpers import stock_row_product_key
     prod_map: Dict[tuple, Dict[str, Any]] = {}
     for it in items:
-        key = (it.get("vendor_code") or "", it.get("barcode") or "")
+        key = stock_row_product_key(it)
         rec = prod_map.get(key)
         if not rec:
-            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "total_in_transit": 0, "warehouses": []}
+            rec = {"vendor_code": it.get("vendor_code") or "", "barcode": it.get("barcode") or "", "nm_id": it.get("nm_id"), "total_qty": 0, "total_in_transit": 0, "warehouses": []}
             prod_map[key] = rec
         rec["total_qty"] += int(it.get("qty", 0) or 0)
         rec["total_in_transit"] += int(it.get("in_transit", 0) or 0)
@@ -13572,12 +13578,13 @@ def api_stocks_data():
     except Exception:
         total_in_transit_all = 0
     # by product (same shape as on page)
+    from utils.helpers import stock_row_product_key
     prod_map: Dict[tuple, Dict[str, Any]] = {}
     for it in items:
-        key = (it.get("vendor_code") or "", it.get("barcode") or "")
+        key = stock_row_product_key(it)
         rec = prod_map.get(key)
         if not rec:
-            rec = {"vendor_code": key[0], "barcode": key[1], "nm_id": it.get("nm_id"), "total_qty": 0, "total_in_transit": 0, "warehouses": []}
+            rec = {"vendor_code": it.get("vendor_code") or "", "barcode": it.get("barcode") or "", "nm_id": it.get("nm_id"), "total_qty": 0, "total_in_transit": 0, "warehouses": []}
             prod_map[key] = rec
         qty_i = int(it.get("qty", 0) or 0)
         rec["total_qty"] += qty_i
