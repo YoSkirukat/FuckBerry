@@ -16,7 +16,7 @@ from utils.constants import (
     DBS_NEW_URL, DBS_STATUS_URL, DBS_ORDERS_URL,
     SELLER_INFO_URL, ACCEPT_COEFS_URL,
     FBS_WAREHOUSES_URL, WB_OFFICES_URL, FBS_STOCKS_BY_WAREHOUSE_URL, SUPPLIES_WAREHOUSES_URL,
-    STOCKS_API_URL, WB_CARDS_LIST_URL,
+    STOCKS_API_URL, STOCKS_API_PAGE_LIMIT, STOCKS_API_MIN_INTERVAL_S, WB_CARDS_LIST_URL,
     SUPPLIES_API_MIN_INTERVAL_S, DISCOUNTS_PRICES_API_URL,
     COMMISSION_API_URL, DIMENSIONS_API_URL, WAREHOUSES_API_URL
 )
@@ -950,15 +950,103 @@ def fetch_fbs_stocks_by_warehouse(token: str, warehouse_id: int, skus: list[str]
         return []
 
 
-def fetch_stocks(token: str, date_from: str) -> List[Dict[str, Any]]:
-    """Получает остатки на складах"""
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {"dateFrom": date_from}
-    try:
-        resp = get_with_retry(STOCKS_API_URL, headers, params=params)
-        return resp.json() or []
-    except Exception:
+def fetch_stocks(token: str, date_from: str | None = None) -> List[Dict[str, Any]]:
+    """Получает остатки на складах WB (совместимая обёртка)."""
+    return fetch_wb_warehouse_stocks(token)
+
+
+def _extract_wb_stocks_items(payload: Any) -> list[dict[str, Any]]:
+    """Достаёт список строк остатков из ответа Analytics API."""
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
         return []
+    data = payload.get("data")
+    if isinstance(data, dict):
+        items = data.get("items")
+        if isinstance(items, list):
+            return [x for x in items if isinstance(x, dict)]
+    for key in ("items", "stocks", "result"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [x for x in value if isinstance(x, dict)]
+        if isinstance(value, dict) and isinstance(value.get("items"), list):
+            return [x for x in value["items"] if isinstance(x, dict)]
+    return []
+
+
+def fetch_wb_warehouse_stocks(token: str) -> List[Dict[str, Any]]:
+    """Текущие остатки на складах WB через Analytics API.
+
+    POST /api/analytics/v1/stocks-report/wb-warehouses
+    Замена устаревшего GET /api/v1/supplier/stocks.
+    Лимит: 1 запрос / 20 сек, до 250000 строк в ответе, offset-пагинация.
+    """
+    if not token:
+        return []
+
+    headers_variants = [
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        {"Authorization": f"{token}", "Content-Type": "application/json"},
+    ]
+    collected: List[Dict[str, Any]] = []
+    offset = 0
+    limit = int(STOCKS_API_PAGE_LIMIT or 250000)
+    page_num = 0
+    auth_idx = 0
+
+    while True:
+        page_num += 1
+        if page_num > 50:
+            logger.warning("WB stocks pagination safety stop after %s pages", page_num - 1)
+            break
+
+        body = {"limit": limit, "offset": offset}
+        last_err: Exception | None = None
+        resp = None
+
+        for idx in range(auth_idx, len(headers_variants)):
+            headers = headers_variants[idx]
+            try:
+                if page_num > 1:
+                    time.sleep(float(STOCKS_API_MIN_INTERVAL_S or 20.0))
+                logger.info(
+                    "Fetching WB warehouse stocks page=%s offset=%s limit=%s auth=%s",
+                    page_num,
+                    offset,
+                    limit,
+                    "Bearer" if idx == 0 else "raw",
+                )
+                resp = post_with_retry(STOCKS_API_URL, headers, body, max_retries=2)
+                auth_idx = idx
+                break
+            except requests.HTTPError as err:
+                last_err = err
+                status = err.response.status_code if err.response is not None else None
+                if status in (401, 403) and idx + 1 < len(headers_variants):
+                    continue
+                raise
+            except Exception as err:
+                last_err = err
+                raise
+
+        if resp is None:
+            if last_err:
+                raise last_err
+            break
+
+        payload = resp.json()
+        items = _extract_wb_stocks_items(payload)
+        logger.info("WB warehouse stocks page=%s got %s rows", page_num, len(items))
+        if not items:
+            break
+
+        collected.extend(items)
+        if len(items) < limit:
+            break
+        offset += limit
+
+    return collected
 
 
 def fetch_cards_list(

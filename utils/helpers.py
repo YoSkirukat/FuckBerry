@@ -841,9 +841,11 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Нормализует данные остатков на складах"""
+    """Нормализует данные остатков на складах WB (старый Statistics и новый Analytics API)."""
     items: List[Dict[str, Any]] = []
     for r in rows or []:
+        if not isinstance(r, dict):
+            continue
         qty_val = r.get("quantity") or r.get("qty") or 0
         try:
             qty_int = int(qty_val)
@@ -869,13 +871,84 @@ def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             except Exception:
                 in_way_from_client = 0
         in_transit_total = max(0, in_way_to_client + in_way_from_client)
+        nm_raw = r.get("nmId") or r.get("nmID") or r.get("nm") or None
+        try:
+            nm_id = int(nm_raw) if nm_raw is not None else None
+        except Exception:
+            nm_id = nm_raw
+        chrt_raw = r.get("chrtId") or r.get("chrtID") or r.get("chrt_id")
+        try:
+            chrt_id = int(chrt_raw) if chrt_raw is not None else None
+        except Exception:
+            chrt_id = chrt_raw
         items.append({
-            "vendor_code": r.get("supplierArticle") or r.get("vendorCode") or r.get("article"),
+            "vendor_code": r.get("supplierArticle") or r.get("vendorCode") or r.get("article") or r.get("vendor_code"),
             "barcode": r.get("barcode") or r.get("skus") or r.get("sku"),
-            "nm_id": r.get("nmId") or r.get("nmID") or r.get("nm") or None,
+            "nm_id": nm_id,
+            "chrt_id": chrt_id,
             "qty": qty_int,
             "in_transit": in_transit_total,
             "warehouse": r.get("warehouseName") or r.get("warehouse") or r.get("warehouse_name"),
+            "warehouse_id": r.get("warehouseId") or r.get("warehouseID"),
+            "region": r.get("regionName") or r.get("region"),
         })
     return items
+
+
+def stock_row_product_key(it: Dict[str, Any]) -> tuple:
+    """Ключ агрегации товара для страницы /stocks."""
+    vc = str(it.get("vendor_code") or "").strip()
+    bc = str(it.get("barcode") or "").strip()
+    if vc or bc:
+        return (vc, bc)
+    nm = it.get("nm_id")
+    chrt = it.get("chrt_id")
+    return (f"nm:{nm if nm is not None else ''}", str(chrt if chrt is not None else ""))
+
+
+def enrich_stocks_from_products(
+    items: List[Dict[str, Any]] | None,
+    products: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Подставляет vendor_code/barcode из кэша товаров (новый API остатков их не отдаёт)."""
+    rows = list(items or [])
+    if not rows:
+        return rows
+    if products is None:
+        try:
+            from utils.cache import load_products_cache
+            products = (load_products_cache() or {}).get("items") or []
+        except Exception:
+            products = []
+    by_nm: Dict[int, Dict[str, Any]] = {}
+    for p in products or []:
+        if not isinstance(p, dict):
+            continue
+        nmv = p.get("nm_id") or p.get("nmId") or p.get("nmID")
+        if nmv is None:
+            continue
+        try:
+            by_nm[int(nmv)] = p
+        except Exception:
+            continue
+    for it in rows:
+        nm = it.get("nm_id")
+        if nm is None:
+            continue
+        try:
+            meta = by_nm.get(int(nm))
+        except Exception:
+            meta = None
+        if not meta:
+            continue
+        if not str(it.get("vendor_code") or "").strip():
+            it["vendor_code"] = (
+                meta.get("vendor_code")
+                or meta.get("supplierArticle")
+                or meta.get("vendorCode")
+                or meta.get("article")
+            )
+        if not str(it.get("barcode") or "").strip():
+            it["barcode"] = meta.get("barcode") or meta.get("sku")
+    return rows
 

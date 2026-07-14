@@ -540,7 +540,7 @@ FBW_SUPPLY_PACKAGE_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{i
 # Wildberries Content API: cards list
 WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 WB_CARDS_UPDATE_URL = "https://content-api.wildberries.ru/content/v2/cards/update"
-STOCKS_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
+STOCKS_API_URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v1/stocks-report/wb-warehouses"
 FIN_REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
 
 # Wildberries Content API: cards list
@@ -13223,59 +13223,14 @@ def products_page():
 # -------------------------
 
 def fetch_stocks_all(token: str) -> List[Dict[str, Any]]:
-    """/supplier/stocks отдаёт текущие остатки одним снимком без пагинации. Берём полные данные за один запрос."""
-    headers1 = {"Authorization": f"Bearer {token}"}
-    # WB иногда отдаёт 502/504 — добавим несколько повторов и альтернативный заголовок
-    try:
-        # один запрос без агрессивных ретраев, чтобы не словить 429 по всплеску
-        resp = get_with_retry(STOCKS_API_URL, headers1, params={}, max_retries=1, timeout_s=30)
-        return resp.json()
-    except requests.HTTPError as err:
-        # если авторизация — попробуем без Bearer
-        if err.response is not None and err.response.status_code in (401, 403):
-            headers2 = {"Authorization": f"{token}"}
-            resp2 = get_with_retry(STOCKS_API_URL, headers2, params={}, max_retries=1, timeout_s=30)
-            return resp2.json()
-        # 429 отдадим наверх без повторов — пусть фронт покажет таймер
-        raise
+    """Текущие остатки на складах WB через Analytics API."""
+    from utils.api import fetch_wb_warehouse_stocks
+    return fetch_wb_warehouse_stocks(token)
 
 
 def fetch_stocks_paginated(token: str, start_iso: str = "1970-01-01T00:00:00") -> List[Dict[str, Any]]:
-    headers = {"Authorization": f"Bearer {token}"}
-    cursor = start_iso
-    collected: List[Dict[str, Any]] = []
-    safety = 0
-    while True:
-        safety += 1
-        if safety > 5000:
-            break
-        params = {"dateFrom": cursor, "flag": 0}
-        try:
-            resp = get_with_retry(STOCKS_API_URL, headers, params, max_retries=3, timeout_s=30)
-        except requests.HTTPError as err:
-            if err.response is not None and err.response.status_code in (401, 403):
-                alt_headers = {"Authorization": f"{token}"}
-                resp = get_with_retry(STOCKS_API_URL, alt_headers, params, max_retries=3, timeout_s=30)
-            else:
-                raise
-        page = resp.json()
-        if not isinstance(page, list) or not page:
-            break
-        try:
-            page.sort(key=lambda x: parse_wb_datetime(str(x.get("lastChangeDate"))) or datetime.min)
-        except Exception:
-            pass
-        collected.extend(page)
-        last_lcd = None
-        try:
-            last_lcd = page[-1].get("lastChangeDate")
-        except Exception:
-            last_lcd = None
-        if not last_lcd:
-            break
-        cursor = str(last_lcd)
-        time.sleep(0.1)
-    return collected
+    """Совместимость: пагинация теперь внутри Analytics API."""
+    return fetch_stocks_all(token)
 
 
 # Глобальная блокировка для предотвращения одновременных запросов к API остатков
@@ -13295,30 +13250,16 @@ def fetch_stocks_resilient(token: str, lock_timeout: float | None = 120.0) -> Li
         _stocks_api_lock.acquire()
 
     try:
-        # Проверяем, не делали ли мы запрос слишком недавно (минимум 1 секунда между запросами)
+        # Analytics API: минимум 20 секунд между запросами
         current_time = time.time()
-        if current_time - _last_stocks_request_time < 1.0:
-            sleep_time = 1.0 - (current_time - _last_stocks_request_time)
+        min_interval = 20.0
+        if current_time - _last_stocks_request_time < min_interval:
+            sleep_time = min_interval - (current_time - _last_stocks_request_time)
             print(f"=== RATE LIMITING: Ждем {sleep_time:.2f} сек перед запросом к API остатков ===")
             time.sleep(sleep_time)
 
         _last_stocks_request_time = time.time()
-
-        try:
-            data = fetch_stocks_all(token)
-            if isinstance(data, list) and data:
-                return data
-        except requests.HTTPError as e:
-            # если 429 — не уходим в пагинацию, возвращаем 429
-            try:
-                if e.response is not None and e.response.status_code == 429:
-                    raise
-            except Exception:
-                pass
-            # иначе попробуем постранично (редкие случаи нестабильности снапшота)
-            return fetch_stocks_paginated(token)
-        # Fallback to paginated flow
-        return fetch_stocks_paginated(token)
+        return fetch_stocks_all(token)
     finally:
         _stocks_api_lock.release()
 
@@ -13351,46 +13292,11 @@ def fetch_product_price_history(token: str, nm_id: int) -> List[Dict[str, Any]]:
         print(f"Исключение при получении истории цены для товара {nm_id}: {e}")
         return []
 def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    for r in rows or []:
-        # On-hand stock per WB statistics API is in field 'quantity'.
-        # In-transit can be represented by 'inWayToClient' and possibly 'inWayFromClient'.
-        qty_val = r.get("quantity") or r.get("qty") or 0
-        try:
-            qty_int = int(qty_val)
-        except Exception:
-            try:
-                qty_int = int(float(qty_val))
-            except Exception:
-                qty_int = 0
-        # Collect in-transit (both directions if provided by API)
-        in_way_to_client = r.get("inWayToClient") or 0
-        in_way_from_client = r.get("inWayFromClient") or 0
-        try:
-            in_way_to_client = int(in_way_to_client)
-        except Exception:
-            try:
-                in_way_to_client = int(float(in_way_to_client))
-            except Exception:
-                in_way_to_client = 0
-        try:
-            in_way_from_client = int(in_way_from_client)
-        except Exception:
-            try:
-                in_way_from_client = int(float(in_way_from_client))
-            except Exception:
-                in_way_from_client = 0
-        in_transit_total = max(0, in_way_to_client + in_way_from_client)
-        items.append({
-            "vendor_code": r.get("supplierArticle") or r.get("vendorCode") or r.get("article"),
-            "barcode": r.get("barcode") or r.get("skus") or r.get("sku"),
-            "nm_id": r.get("nmId") or r.get("nmID") or r.get("nm") or None,
-            # Keep 'qty' as on-hand to not break existing aggregations that expect it
-            "qty": qty_int,
-            "in_transit": in_transit_total,
-            "warehouse": r.get("warehouseName") or r.get("warehouse") or r.get("warehouse_name"),
-        })
-    return items
+    from utils.helpers import normalize_stocks as _normalize_stocks, enrich_stocks_from_products
+    items = _normalize_stocks(rows)
+    return enrich_stocks_from_products(items)
+
+
 def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False) -> bool:
     """
     Обновляет остатки если нужно (если кэш устарел или принудительно)

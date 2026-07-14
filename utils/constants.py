@@ -69,8 +69,11 @@ FBW_SUPPLY_PACKAGE_URL = "https://supplies-api.wildberries.ru/api/v1/supplies/{i
 WB_CARDS_LIST_URL = "https://content-api.wildberries.ru/content/v2/get/cards/list"
 WB_CARDS_UPDATE_URL = "https://content-api.wildberries.ru/content/v2/cards/update"
 
-# Stocks API
-STOCKS_API_URL = "https://statistics-api.wildberries.ru/api/v1/supplier/stocks"
+# Stocks API — остатки на складах WB (Analytics)
+# Старый GET statistics-api /api/v1/supplier/stocks отключён (release notes #494).
+STOCKS_API_URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v1/stocks-report/wb-warehouses"
+STOCKS_API_PAGE_LIMIT = 250000
+STOCKS_API_MIN_INTERVAL_S = 20.0  # лимит WB: 1 запрос / 20 сек, 3 / мин
 
 # Finance report API
 FIN_REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"
