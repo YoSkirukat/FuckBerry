@@ -3,6 +3,7 @@
 
 import io
 import logging
+import threading
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -14,9 +15,12 @@ from openpyxl import Workbook
 from utils.api import fetch_wb_warehouse_stocks
 from utils.cache import (
     load_products_cache,
+    load_products_cache_for_user,
     load_stocks_cache,
     save_stocks_cache,
+    save_stocks_cache_for_user,
 )
+from utils.constants import STOCKS_AUTO_REFRESH_INTERVAL_S, STOCKS_CACHE_STALE_S
 from utils.helpers import enrich_stocks_from_products, normalize_stocks, stock_row_product_key
 from utils.wb_token import effective_wb_api_token
 
@@ -24,19 +28,69 @@ logger = logging.getLogger(__name__)
 
 stocks_bp = Blueprint("stocks", __name__)
 
+_stocks_bg_lock = threading.Lock()
+_stocks_bg_users: set[int] = set()
+
 
 def fetch_stocks_resilient(token: str) -> List[Dict[str, Any]]:
     """Получает остатки на складах WB через Analytics API (с пагинацией)."""
     return fetch_wb_warehouse_stocks(token)
 
 
-def _normalize_and_enrich_stocks(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_and_enrich_stocks(
+    raw: List[Dict[str, Any]],
+    user_id: int | None = None,
+) -> List[Dict[str, Any]]:
     items = normalize_stocks(raw)
     try:
-        products = (load_products_cache() or {}).get("items") or []
+        if user_id is not None:
+            products = (load_products_cache_for_user(user_id) or {}).get("items") or []
+        else:
+            products = (load_products_cache() or {}).get("items") or []
     except Exception:
         products = []
     return enrich_stocks_from_products(items, products)
+
+
+def _stocks_cache_is_stale(cached: Dict[str, Any] | None) -> bool:
+    if not cached or not cached.get("updated_at"):
+        return True
+    try:
+        cache_time = datetime.strptime(str(cached.get("updated_at")), "%d.%m.%Y %H:%M:%S")
+        return (datetime.now() - cache_time).total_seconds() >= float(STOCKS_CACHE_STALE_S)
+    except Exception:
+        return True
+
+
+def _maybe_start_stocks_bg_refresh(user_id: int, token: str, cached: Dict[str, Any] | None) -> None:
+    """Фоновое обновление остатков, если кэш устарел (не блокирует страницу)."""
+    if not user_id or not token:
+        return
+    if not _stocks_cache_is_stale(cached):
+        return
+    with _stocks_bg_lock:
+        if user_id in _stocks_bg_users:
+            return
+        _stocks_bg_users.add(user_id)
+
+    def _worker() -> None:
+        try:
+            logger.info("Background stocks refresh started for user %s", user_id)
+            raw = fetch_stocks_resilient(token)
+            items = _normalize_and_enrich_stocks(raw, user_id=user_id)
+            now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            save_stocks_cache_for_user(
+                user_id,
+                {"items": items, "updated_at": now_str, "_user_id": user_id},
+            )
+            logger.info("Background stocks refresh done for user %s: %s items", user_id, len(items))
+        except Exception as exc:
+            logger.warning("Background stocks refresh failed for user %s: %s", user_id, exc)
+        finally:
+            with _stocks_bg_lock:
+                _stocks_bg_users.discard(user_id)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 @stocks_bp.route("/stocks", methods=["GET"])
@@ -54,9 +108,11 @@ def stocks_page():
             cached = load_stocks_cache()
             if cached and cached.get("_user_id") == current_user.id:
                 items = cached.get("items", [])
+                # Показ из кэша; устаревший кэш обновляем в фоне
+                _maybe_start_stocks_bg_refresh(current_user.id, token, cached)
             else:
                 raw = fetch_stocks_resilient(token)
-                items = _normalize_and_enrich_stocks(raw)
+                items = _normalize_and_enrich_stocks(raw, user_id=current_user.id)
                 save_stocks_cache(
                     {
                         "items": items,
@@ -212,6 +268,7 @@ def stocks_page():
         updated_at=updated_at,
         products_agg=products_agg,
         warehouses_agg=warehouses_agg,
+        stocks_auto_refresh_ms=int(float(STOCKS_AUTO_REFRESH_INTERVAL_S or 1800) * 1000),
     )
 
 
@@ -232,7 +289,7 @@ def api_stocks_refresh():
             return jsonify({"error": "invalid_data", "detail": "API returned non-list data"}), 502
 
         logger.info("Got %s items from API, normalizing...", len(raw))
-        items = _normalize_and_enrich_stocks(raw)
+        items = _normalize_and_enrich_stocks(raw, user_id=current_user.id)
         logger.info("Normalized to %s items", len(items))
 
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -447,7 +504,7 @@ def stocks_export():
             items = cached.get("items", [])
         else:
             raw = fetch_stocks_resilient(token)
-            items = _normalize_and_enrich_stocks(raw)
+            items = _normalize_and_enrich_stocks(raw, user_id=current_user.id)
             save_stocks_cache({
                 "items": items,
                 "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),

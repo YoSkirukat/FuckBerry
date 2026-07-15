@@ -74,6 +74,9 @@ WB_CARDS_UPDATE_URL = "https://content-api.wildberries.ru/content/v2/cards/updat
 STOCKS_API_URL = "https://seller-analytics-api.wildberries.ru/api/analytics/v1/stocks-report/wb-warehouses"
 STOCKS_API_PAGE_LIMIT = 250000
 STOCKS_API_MIN_INTERVAL_S = 20.0  # лимит WB: 1 запрос / 20 сек, 3 / мин
+# Фоновый авто-рефреш и «устаревание» кэша остатков (сек)
+STOCKS_AUTO_REFRESH_INTERVAL_S = 30 * 60  # раз в 30 минут
+STOCKS_CACHE_STALE_S = 25 * 60  # если старше — можно обновлять
 
 # Finance report API
 FIN_REPORT_URL = "https://statistics-api.wildberries.ru/api/v5/supplier/reportDetailByPeriod"

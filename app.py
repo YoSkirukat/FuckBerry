@@ -3221,28 +3221,20 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     except Exception:
         nm_to_photo = {}
 
-    # Load stocks data for current user
-    stocks_data = {}
+    # Load stocks data for current user (barcode + nm_id fallback)
+    from utils.helpers import build_stocks_qty_indexes, lookup_stock_qty
+    stocks_by_barcode: Dict[str, int] = {}
+    stocks_by_nm: Dict[int, int] = {}
+    stocks_by_vendor: Dict[str, int] = {}
     try:
         stocks_cached = load_stocks_cache()
         if stocks_cached and stocks_cached.get("_user_id"):
-            for stock_item in stocks_cached.get("items", []):
-                barcode = stock_item.get("barcode")
-                stock_warehouse = stock_item.get("warehouse", "")
-                qty = int(stock_item.get("qty", 0) or 0)
-                
-                if barcode:
-                    if warehouse:
-                        # Если выбран конкретный склад, суммируем только по этому складу
-                        if (stock_warehouse == warehouse or 
-                            (warehouse in stock_warehouse) or 
-                            (stock_warehouse in warehouse)):
-                            stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
-                    else:
-                        # Если не выбран склад, суммируем по всем складам
-                        stocks_data[barcode] = stocks_data.get(barcode, 0) + qty
+            stocks_by_barcode, stocks_by_nm, stocks_by_vendor = build_stocks_qty_indexes(
+                stocks_cached.get("items", []),
+                warehouse,
+            )
     except Exception:
-        stocks_data = {}
+        stocks_by_barcode, stocks_by_nm, stocks_by_vendor = {}, {}, {}
 
     items = [{
         "product": p,
@@ -3252,7 +3244,14 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
         "supplier_article": supplier_article_by_product.get(p),
         "sum": round(revenue_by_product.get(p, 0.0), 2),
         "photo": nm_to_photo.get(nm_by_product.get(p)),
-        "stock_qty": stocks_data.get(barcode_by_product.get(p), 0)
+        "stock_qty": lookup_stock_qty(
+            stocks_by_barcode,
+            stocks_by_nm,
+            barcode=barcode_by_product.get(p),
+            nm_id=nm_by_product.get(p),
+            by_vendor=stocks_by_vendor,
+            vendor_code=supplier_article_by_product.get(p) or p,
+        ),
     } for p, c in counts.items()]
     items.sort(key=lambda x: x["qty"], reverse=True)
     return items[:limit]
@@ -4494,8 +4493,13 @@ def start_notification_monitoring():
                     cleanup_old_notifications()
                 
                 # Auto-refresh stocks every 30 minutes
+                try:
+                    from utils.constants import STOCKS_AUTO_REFRESH_INTERVAL_S
+                    stocks_interval = float(STOCKS_AUTO_REFRESH_INTERVAL_S or 1800)
+                except Exception:
+                    stocks_interval = 1800.0
                 if current_time.minute % 30 == 0:
-                    if _last_stocks_refresh_at is None or (current_time - _last_stocks_refresh_at).total_seconds() >= 1800:
+                    if _last_stocks_refresh_at is None or (current_time - _last_stocks_refresh_at).total_seconds() >= stocks_interval:
                         print(f"Triggering auto stocks refresh at {current_time.strftime('%H:%M:%S')}")
                         try:
                             auto_refresh_stocks_for_all_users()
@@ -4540,8 +4544,14 @@ def auto_refresh_stocks_for_all_users():
     try:
         # Создаем контекст приложения для работы с базой данных
         with app.app_context():
-            # User уже определен в этом файле
-            
+            try:
+                from utils.constants import STOCKS_API_MIN_INTERVAL_S, STOCKS_CACHE_STALE_S
+                from utils.cache import load_products_cache_for_user
+                from utils.helpers import normalize_stocks as _ns, enrich_stocks_from_products
+            except Exception:
+                STOCKS_API_MIN_INTERVAL_S = 20.0
+                STOCKS_CACHE_STALE_S = 1500
+
             # Получаем всех пользователей с токенами
             try:
                 users_with_tokens = User.query.filter(User.wb_token.isnot(None), User.wb_token != '').all()
@@ -4557,7 +4567,8 @@ def auto_refresh_stocks_for_all_users():
             
             for i, user in enumerate(users_with_tokens):
                 try:
-                    if not user_may_call_wb_api(user):
+                    token = effective_wb_api_token(user)
+                    if not token:
                         continue
                     # Проверяем, нужно ли обновлять кэш (если он устарел)
                     cached = load_stocks_cache_for_user(user.id)
@@ -4568,8 +4579,7 @@ def auto_refresh_stocks_for_all_users():
                         if updated_at:
                             try:
                                 cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
-                                # Если остатки обновлялись менее 25 минут назад, пропускаем
-                                if (datetime.now() - cache_time).total_seconds() < 1500:  # 25 минут
+                                if (datetime.now() - cache_time).total_seconds() < float(STOCKS_CACHE_STALE_S):
                                     should_refresh = False
                                     print(f"Skipping auto-refresh for user {user.id} - cache is fresh")
                             except Exception:
@@ -4581,14 +4591,17 @@ def auto_refresh_stocks_for_all_users():
                         # Analytics stocks API: 1 req / 20 sec на аккаунт; между пользователями тоже пауза
                         if i > 0:
                             try:
-                                from utils.constants import STOCKS_API_MIN_INTERVAL_S
                                 pause_s = float(STOCKS_API_MIN_INTERVAL_S or 20.0)
                             except Exception:
                                 pause_s = 20.0
                             time.sleep(pause_s)
                         
-                        raw = fetch_stocks_resilient(user.wb_token)
-                        items = normalize_stocks(raw)
+                        raw = fetch_stocks_resilient(token)
+                        try:
+                            products = (load_products_cache_for_user(user.id) or {}).get("items") or []
+                            items = enrich_stocks_from_products(_ns(raw), products)
+                        except Exception:
+                            items = normalize_stocks(raw)
                         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                         save_stocks_cache_for_user(user.id, {"items": items, "updated_at": now_str})
                         print(f"Auto-refresh completed for user {user.id}: {len(items)} items at {now_str}")
@@ -13308,6 +13321,10 @@ def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False
     Возвращает True если остатки были обновлены, False если использовался кэш
     """
     try:
+        from utils.constants import STOCKS_CACHE_STALE_S
+        from utils.cache import load_products_cache_for_user
+        from utils.helpers import normalize_stocks as _ns, enrich_stocks_from_products
+
         cached = load_stocks_cache_for_user(user_id)
         should_refresh = force_update
         
@@ -13319,8 +13336,8 @@ def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False
                     from datetime import datetime
                     # Парсим время обновления из кэша
                     cache_time = datetime.strptime(updated_at, "%d.%m.%Y %H:%M:%S")
-                    # Если остатки обновлялись менее 10 минут назад, используем кэш
-                    if (datetime.now() - cache_time).total_seconds() < 600:  # 10 минут
+                    # Если остатки ещё свежие — используем кэш
+                    if (datetime.now() - cache_time).total_seconds() < float(STOCKS_CACHE_STALE_S):
                         should_refresh = False
                         print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Используем кэшированные остатки ===")
                         print(f"Кэш обновлен: {updated_at}")
@@ -13330,15 +13347,19 @@ def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False
                 except Exception as e:
                     print(f"Ошибка парсинга времени кэша: {e}")
                     should_refresh = True
+            else:
+                should_refresh = True
         else:
-            should_refresh = True
+            if not force_update:
+                should_refresh = True
             print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Нет кэша или принудительное обновление ===")
         
         if should_refresh:
             print(f"Обновляем остатки для пользователя {user_id}")
             try:
                 raw_stocks = fetch_stocks_resilient(token)
-                stocks = normalize_stocks(raw_stocks)
+                products = (load_products_cache_for_user(user_id) or {}).get("items") or []
+                stocks = enrich_stocks_from_products(_ns(raw_stocks), products)
                 from datetime import datetime
                 now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 save_stocks_cache_for_user(user_id, {"items": stocks, "updated_at": now_str})

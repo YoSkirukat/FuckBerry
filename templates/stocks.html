@@ -38,7 +38,10 @@
         <button id="refreshStocks" class="btn btn-primary btn-sm">Обновить остатки</button>
       </div>
     </div>
-    <div class="text-muted mb-2">Обновлено: <span id="stocksUpdatedAt">{{ updated_at or '' }}</span></div>
+    <div class="text-muted mb-2">
+      Обновлено: <span id="stocksUpdatedAt">{{ updated_at or '' }}</span>
+      <span class="ms-2">· автообновление каждые {{ ((stocks_auto_refresh_ms or 1800000) / 60000)|int }} мин</span>
+    </div>
     <div id="stocksMsg" class="small"></div>
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
@@ -219,95 +222,149 @@
   <script>
     (function(){
       const btn = document.getElementById('refreshStocks');
-      if (btn) {
-        btn.addEventListener('click', async function(){
-          btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Обновление...';
-          try {
-            const res = await fetch('/api/stocks/refresh', { method: 'POST' });
-            const data = await res.json().catch(()=>({}));
-            if (!res.ok) {
+      const AUTO_REFRESH_MS = {{ stocks_auto_refresh_ms|default(1800000) }};
+      const POLL_MS = 120000; // подхватить фоновое обновление без полного reload
+      let lastUpdatedAt = (document.getElementById('stocksUpdatedAt')?.textContent || '').trim();
+      let refreshInFlight = false;
+
+      async function renderStocksData(djson) {
+        if (!djson) return;
+        const total = document.querySelector('h1');
+        if (total && djson.total_qty_all != null) {
+          const inTransit = (djson.total_in_transit_all || 0).toLocaleString('ru-RU');
+          total.innerHTML = `Остатки на складах (${(djson.total_qty_all||0).toLocaleString('ru-RU')} шт., в пути: ${inTransit})`;
+        }
+        const tbodyProd = document.querySelector('#byProductsTable tbody');
+        if (tbodyProd && Array.isArray(djson.products)) {
+          tbodyProd.innerHTML='';
+          let idx=1;
+          for (const p of djson.products) {
+            const tr = document.createElement('tr'); tr.className='prod-row';
+            const photoCell = p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>нет фото</span>`;
+            const titleCell = `
+              <div>
+                ${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${p.vendor_code||''}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${p.vendor_code||''}`}
+              </div>
+              ${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}
+              <div class='mt-1'><button class='btn btn-link btn-sm p-0' type='button' data-bs-toggle='collapse' data-bs-target='#prod-${idx}'>Показать остатки товара по складам</button></div>
+            `;
+            tr.innerHTML = `<td class='text-center'>${idx}</td><td class='text-center'>${photoCell}</td><td>${titleCell}</td><td class='text-end'>${(p.total_qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
+            const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `prod-${idx}`;
+            trd.innerHTML = `<td></td><td colspan='5'><div class='wh-compact'><div class='table-responsive'><table class='table table-sm'><thead><tr><th>Склад</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(p.warehouses||[]).map(w=>`<tr><td>${w.warehouse}</td><td class='text-end'>${(w.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(w.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></div></td>`;
+            tbodyProd.appendChild(tr); tbodyProd.appendChild(trd); idx++;
+          }
+        }
+        const tbodyWh = document.querySelector('#byWarehousesTable tbody');
+        if (tbodyWh && Array.isArray(djson.warehouses)) {
+          tbodyWh.innerHTML='';
+          let idx=1;
+          for (const w of djson.warehouses) {
+            const tr = document.createElement('tr'); tr.className='wh-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#wh-${idx}`); tr.style.cursor='pointer';
+            tr.innerHTML = `<td class="text-center">${idx}</td><td>${w.warehouse||''}</td><td class="text-end">${(w.total_qty||0).toLocaleString('ru-RU')}</td><td class="text-end">${(w.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
+            const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `wh-${idx}`;
+            trd.innerHTML = `<td></td><td colspan="3"><div class="wh-compact-full"><div class="table-responsive"><table class="table table-sm"><thead><tr><th style='width:60px;'></th><th>Товар</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(w.products||[]).map(p=>`<tr><td class='text-center'>${p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>—</span>`}</td><td><div>${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${p.vendor_code||''}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${p.vendor_code||''}`}</div>${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></div></td>`;
+            tbodyWh.appendChild(tr); tbodyWh.appendChild(trd); idx++;
+          }
+        }
+        if (djson.updated_at) {
+          lastUpdatedAt = djson.updated_at;
+          const updEl = document.getElementById('stocksUpdatedAt');
+          if (updEl) updEl.textContent = djson.updated_at;
+        }
+      }
+
+      async function reloadStocksTables() {
+        const dres = await fetch('/api/stocks/data');
+        const djson = await dres.json();
+        if (dres.ok && djson) await renderStocksData(djson);
+      }
+
+      async function forceRefreshStocks(opts) {
+        const silent = !!(opts && opts.silent);
+        if (refreshInFlight) return;
+        refreshInFlight = true;
+        const prev = btn ? btn.textContent : '';
+        if (btn && !silent) {
+          btn.disabled = true;
+          btn.textContent = 'Обновление...';
+        }
+        try {
+          const res = await fetch('/api/stocks/refresh', { method: 'POST' });
+          const data = await res.json().catch(()=>({}));
+          if (!res.ok) {
+            if (!silent) {
               const msgEl = document.getElementById('stocksMsg');
-              // Показать статус и возможный Retry-After
               const status = data.status || res.status;
               let retry = parseInt(data.retry_after || '0', 10);
-              if (!retry || isNaN(retry)) retry = (status === 429 ? 60 : 0); // дефолт для 429
-              if (msgEl) msgEl.className = 'small text-danger';
-              if (msgEl) msgEl.textContent = `Ошибка обновления (status ${status})`;
-              // Короткую подпись оставим на кнопке
-              btn.textContent = retry > 0 ? `Подождите ${retry} c...` : 'Ошибка';
-              if (retry > 0) {
-                const timer = setInterval(()=>{
-                  retry -= 1;
-                  if (retry <= 0) { clearInterval(timer); btn.textContent = prev; btn.disabled = false; if (msgEl) msgEl.textContent = ''; }
-                  else { btn.textContent = `Подождите ${retry} c...`; }
-                }, 1000);
-              } else {
-                setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; if (msgEl) msgEl.textContent=''; }, 3000);
+              if (!retry || isNaN(retry)) retry = (status === 429 ? 60 : 0);
+              if (msgEl) { msgEl.className = 'small text-danger'; msgEl.textContent = `Ошибка обновления (status ${status})`; }
+              if (btn) {
+                btn.textContent = retry > 0 ? `Подождите ${retry} c...` : 'Ошибка';
+                if (retry > 0) {
+                  const timer = setInterval(()=>{
+                    retry -= 1;
+                    if (retry <= 0) {
+                      clearInterval(timer);
+                      btn.textContent = prev;
+                      btn.disabled = false;
+                      if (msgEl) msgEl.textContent = '';
+                    } else {
+                      btn.textContent = `Подождите ${retry} c...`;
+                    }
+                  }, 1000);
+                } else {
+                  setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; if (msgEl) msgEl.textContent=''; }, 3000);
+                }
               }
-              const updEl = document.getElementById('stocksUpdatedAt');
-              if (updEl && data.updated_at) updEl.textContent = data.updated_at;
-              return;
             }
-            const updEl = document.getElementById('stocksUpdatedAt');
-            if (updEl && data.updated_at) updEl.textContent = data.updated_at;
-            // Подтянем свежие агрегаты и перерисуем таблицы без перезагрузки
-            try {
-              const dres = await fetch('/api/stocks/data');
-              const djson = await dres.json();
-              if (dres.ok && djson) {
-                const total = document.querySelector('h1');
-                if (total && djson.total_qty_all != null) {
-                  const inTransit = (djson.total_in_transit_all || 0).toLocaleString('ru-RU');
-                  total.innerHTML = `Остатки на складах (${(djson.total_qty_all||0).toLocaleString('ru-RU')} шт., в пути: ${inTransit})`;
-                }
-                // Перерисовка вкладки По товарам
-                const tbodyProd = document.querySelector('#byProductsTable tbody');
-                if (tbodyProd && Array.isArray(djson.products)) {
-                  tbodyProd.innerHTML='';
-                  let idx=1;
-                  for (const p of djson.products) {
-                    const tr = document.createElement('tr'); tr.className='prod-row';
-                    const photoCell = p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>нет фото</span>`;
-                    const titleCell = `
-                      <div>
-                        ${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${p.vendor_code||''}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${p.vendor_code||''}`}
-                      </div>
-                      ${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}
-                      <div class='mt-1'><button class='btn btn-link btn-sm p-0' type='button' data-bs-toggle='collapse' data-bs-target='#prod-${idx}'>Показать остатки товара по складам</button></div>
-                    `;
-                    tr.innerHTML = `<td class='text-center'>${idx}</td><td class='text-center'>${photoCell}</td><td>${titleCell}</td><td class='text-end'>${(p.total_qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
-                    const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `prod-${idx}`;
-                    trd.innerHTML = `<td></td><td colspan='5'><div class='wh-compact'><div class='table-responsive'><table class='table table-sm'><thead><tr><th>Склад</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(p.warehouses||[]).map(w=>`<tr><td>${w.warehouse}</td><td class='text-end'>${(w.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(w.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></div></td>`;
-                    tbodyProd.appendChild(tr); tbodyProd.appendChild(trd); idx++;
-                  }
-                }
-                // Перерисовка вкладки По складам
-                const tbodyWh = document.querySelector('#byWarehousesTable tbody');
-                if (tbodyWh && Array.isArray(djson.warehouses)) {
-                  tbodyWh.innerHTML='';
-                  let idx=1;
-                  for (const w of djson.warehouses) {
-                    const tr = document.createElement('tr'); tr.className='wh-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#wh-${idx}`); tr.style.cursor='pointer';
-                    tr.innerHTML = `<td class=\"text-center\">${idx}</td><td>${w.warehouse||''}</td><td class=\"text-end\">${(w.total_qty||0).toLocaleString('ru-RU')}</td><td class=\"text-end\">${(w.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
-                    const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `wh-${idx}`;
-                    trd.innerHTML = `<td></td><td colspan=\"3\"><div class=\"wh-compact-full\"><div class=\"table-responsive\"><table class=\"table table-sm\"><thead><tr><th style='width:60px;'></th><th>Товар</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(w.products||[]).map(p=>`<tr><td class='text-center'>${p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>—</span>`}</td><td><div>${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${p.vendor_code||''}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${p.vendor_code||''}`}</div>${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></div></td>`;
-                    tbodyWh.appendChild(tr); tbodyWh.appendChild(trd); idx++;
-                  }
-                }
-              }
-            } catch(e) { console.error(e); }
+            return;
+          }
+          if (data.updated_at) lastUpdatedAt = data.updated_at;
+          const updEl = document.getElementById('stocksUpdatedAt');
+          if (updEl && data.updated_at) updEl.textContent = data.updated_at;
+          try { await reloadStocksTables(); } catch(e) { console.error(e); }
+          if (btn && !silent) {
             btn.textContent = 'Готово';
             setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; }, 1000);
-          } catch (e) {
-            console.error(e);
+          }
+        } catch (e) {
+          console.error(e);
+          if (btn && !silent) {
             btn.textContent = 'Ошибка';
             setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; }, 1500);
           }
-        });
+        } finally {
+          refreshInFlight = false;
+          if (btn && silent) { btn.disabled = false; }
+        }
       }
-      
-      
-      
+
+      if (btn) btn.addEventListener('click', function(){ forceRefreshStocks({ silent: false }); });
+
+      // Периодический polling: подхватить серверное/фоновое обновление кэша
+      setInterval(async () => {
+        try {
+          const res = await fetch('/api/stocks/update-time');
+          const data = await res.json().catch(()=>({}));
+          const next = (data.updated_at || '').trim();
+          if (next && next !== lastUpdatedAt) {
+            lastUpdatedAt = next;
+            await reloadStocksTables();
+            const msgEl = document.getElementById('stocksMsg');
+            if (msgEl) {
+              msgEl.className = 'small text-success';
+              msgEl.textContent = 'Остатки обновлены автоматически';
+              setTimeout(()=>{ if (msgEl.textContent === 'Остатки обновлены автоматически') msgEl.textContent = ''; }, 4000);
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }, POLL_MS);
+
+      // Принудительное обновление с WB по расписанию (пока страница открыта)
+      if (AUTO_REFRESH_MS > 0) {
+        setInterval(() => { forceRefreshStocks({ silent: true }); }, AUTO_REFRESH_MS);
+      }
+
       const search = document.getElementById('stocksSearch');
       const tbody = document.querySelector('#byProductsTable tbody');
       if (search && tbody) {

@@ -35,6 +35,18 @@ def _products_cache_path_for_user() -> str:
     return os.path.join(CACHE_DIR, "products_anon.json")
 
 
+def load_products_cache_for_user(user_id: int) -> Dict[str, Any] | None:
+    """Загружает кэш товаров для конкретного пользователя (фоновые задачи без request)."""
+    path = os.path.join(CACHE_DIR, f"products_user_{user_id}.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def load_products_cache() -> Dict[str, Any] | None:
     """Загружает кэш товаров"""
     path = _products_cache_path_for_user()

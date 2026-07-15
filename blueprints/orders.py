@@ -407,6 +407,9 @@ def api_orders_refresh():
                     cp = aggregate_cancelled_products(cached_orders)
                 elif cp is None:
                     cp = []
+                top_filtered = cached.get("top_products_orders_filtered")
+                if not top_filtered and cached_orders:
+                    top_filtered = aggregate_top_products_orders(cached_orders, None, limit=50)
                 return jsonify({
                     "total_orders": cached.get("total_orders", 0),
                     "total_active_orders": cached.get("total_active_orders", 0),
@@ -421,7 +424,7 @@ def api_orders_refresh():
                     "warehouse_summary_dual": cached.get("warehouse_summary_dual", []),
                     "top_products": cached.get("top_products", []),
                     "warehouses": cached.get("warehouses", []),
-                    "top_products_orders_filtered": cached.get("top_products_orders_filtered", []),
+                    "top_products_orders_filtered": top_filtered or [],
                     "cancelled_products": cp,
                     "updated_at": cached.get("updated_at", ""),
                     "date_from_fmt": format_dmy(date_from),

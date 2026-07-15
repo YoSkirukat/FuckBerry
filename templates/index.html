@@ -1382,7 +1382,8 @@
         // TOP short (right column)
         const topShortBody = document.getElementById('ordersTopShortBody');
         if (topShortBody && Array.isArray(data.top_products_orders_filtered || data.top_products)) {
-          const source = Array.isArray(data.top_products_orders_filtered) ? data.top_products_orders_filtered : data.top_products;
+          const filtered = Array.isArray(data.top_products_orders_filtered) ? data.top_products_orders_filtered : [];
+          const source = filtered.length ? filtered : (Array.isArray(data.top_products) ? data.top_products : []);
           topShortBody.innerHTML = '';
           if (source.length) {
             for (const item of source) {

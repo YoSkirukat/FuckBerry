@@ -840,6 +840,20 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return items
 
 
+def _first_barcode(value: Any) -> str | None:
+    """Нормализует баркод из строки/списка skus к одной строке."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            s = str(item or "").strip()
+            if s:
+                return s
+        return None
+    s = str(value).strip()
+    return s or None
+
+
 def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Нормализует данные остатков на складах WB (старый Statistics и новый Analytics API)."""
     items: List[Dict[str, Any]] = []
@@ -883,7 +897,7 @@ def normalize_stocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             chrt_id = chrt_raw
         items.append({
             "vendor_code": r.get("supplierArticle") or r.get("vendorCode") or r.get("article") or r.get("vendor_code"),
-            "barcode": r.get("barcode") or r.get("skus") or r.get("sku"),
+            "barcode": _first_barcode(r.get("barcode") or r.get("skus") or r.get("sku")),
             "nm_id": nm_id,
             "chrt_id": chrt_id,
             "qty": qty_int,
@@ -949,6 +963,83 @@ def enrich_stocks_from_products(
                 or meta.get("article")
             )
         if not str(it.get("barcode") or "").strip():
-            it["barcode"] = meta.get("barcode") or meta.get("sku")
+            it["barcode"] = _first_barcode(meta.get("barcode") or meta.get("sku") or meta.get("skus"))
     return rows
+
+
+def stock_warehouse_matches(stock_warehouse: str | None, warehouse: str | None) -> bool:
+    """Проверяет соответствие склада остатка выбранному фильтру склада."""
+    if not warehouse:
+        return True
+    wh = str(stock_warehouse or "").strip()
+    target = str(warehouse).strip()
+    if not target:
+        return True
+    if not wh:
+        return False
+    return wh == target or target in wh or wh in target
+
+
+def build_stocks_qty_indexes(
+    items: List[Dict[str, Any]] | None,
+    warehouse: str | None = None,
+) -> tuple[Dict[str, int], Dict[int, int], Dict[str, int]]:
+    """Индексы остатков: barcode → qty, nm_id → qty, vendor_code → qty.
+
+    Новый Analytics API часто не отдаёт barcode до обогащения из кэша товаров,
+    поэтому для ТОП/отчётов нужен fallback по nm_id.
+    """
+    by_barcode: Dict[str, int] = {}
+    by_nm: Dict[int, int] = {}
+    by_vendor: Dict[str, int] = {}
+    for stock_item in items or []:
+        if not isinstance(stock_item, dict):
+            continue
+        if not stock_warehouse_matches(stock_item.get("warehouse"), warehouse):
+            continue
+        try:
+            qty = int(stock_item.get("qty") or 0)
+        except (TypeError, ValueError):
+            try:
+                qty = int(float(stock_item.get("qty") or 0))
+            except (TypeError, ValueError):
+                qty = 0
+        barcode = _first_barcode(stock_item.get("barcode"))
+        if barcode:
+            by_barcode[barcode] = by_barcode.get(barcode, 0) + qty
+        nm_raw = stock_item.get("nm_id")
+        if nm_raw is not None:
+            try:
+                nm_i = int(nm_raw)
+                by_nm[nm_i] = by_nm.get(nm_i, 0) + qty
+            except (TypeError, ValueError):
+                pass
+        vendor = str(stock_item.get("vendor_code") or "").strip()
+        if vendor:
+            by_vendor[vendor] = by_vendor.get(vendor, 0) + qty
+    return by_barcode, by_nm, by_vendor
+
+
+def lookup_stock_qty(
+    by_barcode: Dict[str, int],
+    by_nm: Dict[int, int],
+    barcode: Any = None,
+    nm_id: Any = None,
+    by_vendor: Dict[str, int] | None = None,
+    vendor_code: Any = None,
+) -> int:
+    """Ищет остаток: barcode → nm_id → vendor_code."""
+    bc = _first_barcode(barcode)
+    if bc and bc in by_barcode:
+        return int(by_barcode.get(bc) or 0)
+    if nm_id is not None:
+        try:
+            return int(by_nm.get(int(nm_id), 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    if by_vendor:
+        vc = str(vendor_code or "").strip()
+        if vc and vc in by_vendor:
+            return int(by_vendor.get(vc) or 0)
+    return 0
 
