@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 """Blueprint для отчётов"""
+from datetime import datetime
+
 from flask import Blueprint, render_template, request
 from flask_login import login_required, current_user
-from datetime import datetime
+
 from utils.cache import load_last_results
 from utils.api import fetch_finance_report
 from utils.wb_token import effective_wb_api_token
 
 reports_bp = Blueprint('reports', __name__)
+
 
 
 @reports_bp.route("/report/sales", methods=["GET"]) 
@@ -132,4 +135,17 @@ def report_finance_page():
         date_from_val=req_from,
         date_to_val=req_to,
     )
+
+
+@reports_bp.route("/report/finance-breakdown", methods=["GET"])
+@login_required
+def report_finance_breakdown_page():
+    """Страница расшифровки финансового отчёта (DASHBOARD)."""
+    return render_template(
+        "finance_breakdown.html",
+        error=None if effective_wb_api_token(current_user) else "Укажите API токен в профиле",
+        date_from_val=(request.args.get("date_from") or "").strip(),
+        date_to_val=(request.args.get("date_to") or "").strip(),
+    )
+
 

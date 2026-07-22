@@ -304,12 +304,24 @@ login_manager.refresh_view = "login"  # Страница для обновлен
 login_manager.needs_refresh_message = "Пожалуйста, войдите в систему для доступа к этой странице."
 login_manager.needs_refresh_message_category = "info"
 
+@login_manager.unauthorized_handler
+def _unauthorized_handler():
+    """Для /api/* возвращаем JSON, иначе — редирект на логин (иначе fetch ломается на HTML)."""
+    if request.path.startswith("/api/"):
+        return jsonify({
+            "success": False,
+            "error": "unauthorized",
+            "message": "Сессия истекла. Обновите страницу и войдите снова.",
+        }), 401
+    return redirect(url_for("auth.login"))
+
 # --- Register Blueprints ---
 from blueprints.auth import auth_bp
 from blueprints.changelog import changelog_bp
 from blueprints.profile import profile_bp
 from blueprints.notifications import notifications_bp
 from blueprints.orders import orders_bp
+from blueprints.order_feed import order_feed_bp
 from blueprints.coefficients import coefficients_bp
 from blueprints.fbs import fbs_bp
 from blueprints.fbs_supplies import fbs_supplies_bp
@@ -329,6 +341,7 @@ app.register_blueprint(changelog_bp)
 app.register_blueprint(profile_bp)
 app.register_blueprint(notifications_bp)
 app.register_blueprint(orders_bp)
+app.register_blueprint(order_feed_bp)
 app.register_blueprint(coefficients_bp)
 app.register_blueprint(fbs_bp)
 app.register_blueprint(fbs_supplies_bp)
@@ -9950,6 +9963,186 @@ def api_report_finance_result():
         del FINANCE_RESULTS[user_id]
         return jsonify(result), 200
     return jsonify({"error": "Results not ready"}), 404
+
+
+# --- Расшифровка финансового отчёта (DASHBOARD) ---
+_BREAKDOWN_LOADING: dict[int, bool] = {}
+_BREAKDOWN_RESULTS: dict[int, dict] = {}
+_BREAKDOWN_PROGRESS: dict[int, dict] = {}
+
+
+def _set_breakdown_progress(user_id: int, current: int, total: int, period: str = "") -> None:
+    _BREAKDOWN_PROGRESS[user_id] = {"current": current, "total": total, "period": period}
+
+
+def _clear_breakdown_progress(user_id: int) -> None:
+    _BREAKDOWN_PROGRESS.pop(user_id, None)
+
+
+@app.route("/api/report/finance-breakdown/progress", methods=["GET"])
+@login_required
+def api_finance_breakdown_progress():
+    user_id = current_user.id
+    progress = dict(_BREAKDOWN_PROGRESS.get(user_id) or {"current": 0, "total": 0, "period": ""})
+    progress["ready"] = user_id in _BREAKDOWN_RESULTS and not _BREAKDOWN_LOADING.get(user_id, False)
+    progress["loading"] = bool(_BREAKDOWN_LOADING.get(user_id, False))
+    return jsonify(progress), 200
+
+
+@app.route("/api/report/finance-breakdown/result", methods=["GET"])
+@login_required
+def api_finance_breakdown_result():
+    user_id = current_user.id
+    if user_id not in _BREAKDOWN_RESULTS:
+        return jsonify({"error": "Results not ready"}), 404
+    return jsonify(_BREAKDOWN_RESULTS.pop(user_id)), 200
+
+
+@app.route("/api/report/finance-breakdown/products/export", methods=["POST"])
+@login_required
+def api_finance_breakdown_products_export():
+    """Выгрузка вкладки «Расшифровка по товарам» в Excel."""
+    payload = request.get_json(silent=True) or {}
+    products = payload.get("products") or []
+    if not isinstance(products, list) or not products:
+        return jsonify({"success": False, "message": "Нет данных для выгрузки. Сначала загрузите отчёт."}), 400
+
+    date_from_fmt = str(payload.get("date_from_fmt") or "").strip()
+    date_to_fmt = str(payload.get("date_to_fmt") or "").strip()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "По товарам"
+    ws.append([
+        "Баркод",
+        "Товар",
+        "Кол-во",
+        "Цена",
+        "Сумма",
+        "Цена с услугами",
+        "Сумма с услугами",
+    ])
+
+    for row in products:
+        if not isinstance(row, dict):
+            continue
+        qty = int(row.get("sales_qty") or 0)
+        if qty <= 0:
+            continue
+        amount = float(row.get("for_pay") or 0)
+        amount_svc = row.get("for_pay_with_services")
+        try:
+            amount_svc_f = float(amount_svc) if amount_svc is not None else None
+        except (TypeError, ValueError):
+            amount_svc_f = None
+        price = round(amount / qty, 2)
+        price_svc = row.get("price_with_services")
+        if price_svc is None and amount_svc_f is not None:
+            price_svc = round(amount_svc_f / qty, 2)
+        try:
+            price_svc_f = float(price_svc) if price_svc is not None else None
+        except (TypeError, ValueError):
+            price_svc_f = None
+
+        ws.append([
+            str(row.get("barcode") or ""),
+            str(row.get("name") or ""),
+            qty,
+            price,
+            round(amount, 2),
+            price_svc_f if price_svc_f is not None else "",
+            round(amount_svc_f, 2) if amount_svc_f is not None else "",
+        ])
+
+    if ws.max_row < 2:
+        return jsonify({"success": False, "message": "Нет товаров с количеством для выгрузки."}), 400
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    period = ""
+    if date_from_fmt and date_to_fmt:
+        period = f"_{date_from_fmt.replace('.', '-')}_{date_to_fmt.replace('.', '-')}"
+    filename = f"rasshifrovka_po_tovaram{period}.xlsx"
+    return send_file(
+        bio,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/api/report/finance-breakdown", methods=["GET"])
+@login_required
+def api_finance_breakdown():
+    """Загрузка фин. отчёта WB и расчёт сводки как на листе DASHBOARD."""
+    from utils.finance_dashboard import compute_finance_dashboard
+
+    token = effective_wb_api_token(current_user)
+    req_from = (request.args.get("date_from") or "").strip()
+    req_to = (request.args.get("date_to") or "").strip()
+    if not token:
+        return jsonify({"success": False, "error": "no_token", "message": "Укажите API токен в профиле"}), 401
+    if not req_from or not req_to:
+        return jsonify({"success": False, "error": "missing_dates", "message": "Укажите период"}), 400
+
+    try:
+        date_from_obj = datetime.strptime(req_from, "%Y-%m-%d")
+        date_to_obj = datetime.strptime(req_to, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"success": False, "error": "invalid_dates", "message": "Неверный формат дат"}), 400
+
+    if date_from_obj > date_to_obj:
+        return jsonify({"success": False, "error": "invalid_range", "message": "Дата начала позже даты окончания"}), 400
+
+    user_id = current_user.id
+    days_diff = (date_to_obj - date_from_obj).days
+    use_async = request.args.get("async", "0") == "1" or days_diff > 60
+
+    if use_async:
+        if _BREAKDOWN_LOADING.get(user_id, False):
+            return jsonify({"loading": True, "message": "Загрузка уже выполняется"}), 200
+
+        _BREAKDOWN_RESULTS.pop(user_id, None)
+        _clear_breakdown_progress(user_id)
+        _BREAKDOWN_LOADING[user_id] = True
+
+        def _worker() -> None:
+            try:
+                def progress_callback(current, total, period):
+                    _set_breakdown_progress(user_id, current, total, period)
+
+                raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+                _BREAKDOWN_RESULTS[user_id] = compute_finance_dashboard(
+                    raw, req_from, req_to, user_id=user_id
+                )
+            except Exception as e:
+                logging.exception("Ошибка загрузки расшифровки фин. отчёта")
+                _BREAKDOWN_RESULTS[user_id] = {
+                    "success": False,
+                    "error": "load_failed",
+                    "message": str(e),
+                }
+            finally:
+                _BREAKDOWN_LOADING[user_id] = False
+                _clear_breakdown_progress(user_id)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return jsonify({"loading": True, "message": "Загрузка начата"}), 200
+
+    try:
+        def progress_callback(current, total, period):
+            _set_breakdown_progress(user_id, current, total, period)
+
+        raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+        _clear_breakdown_progress(user_id)
+        return jsonify(compute_finance_dashboard(raw, req_from, req_to, user_id=user_id)), 200
+    except Exception as e:
+        logging.exception("Ошибка синхронной загрузки расшифровки фин. отчёта")
+        _clear_breakdown_progress(user_id)
+        return jsonify({"success": False, "error": "load_failed", "message": str(e)}), 500
+
 
 @app.route("/api/report/finance", methods=["GET"]) 
 @login_required

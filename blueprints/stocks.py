@@ -52,6 +52,15 @@ def _normalize_and_enrich_stocks(
     return enrich_stocks_from_products(items, products)
 
 
+def _enrich_stocks_items_for_user(items: List[Dict[str, Any]], user_id: int) -> List[Dict[str, Any]]:
+    """Повторно подтягивает названия/артикулы из кэша товаров (для уже сохранённых остатков)."""
+    try:
+        products = (load_products_cache_for_user(user_id) or {}).get("items") or []
+    except Exception:
+        products = []
+    return enrich_stocks_from_products(items, products)
+
+
 def _stocks_cache_is_stale(cached: Dict[str, Any] | None) -> bool:
     if not cached or not cached.get("updated_at"):
         return True
@@ -107,7 +116,7 @@ def stocks_page():
         try:
             cached = load_stocks_cache()
             if cached and cached.get("_user_id") == current_user.id:
-                items = cached.get("items", [])
+                items = _enrich_stocks_items_for_user(cached.get("items", []), current_user.id)
                 # Показ из кэша; устаревший кэш обновляем в фоне
                 _maybe_start_stocks_bg_refresh(current_user.id, token, cached)
             else:
@@ -139,6 +148,7 @@ def stocks_page():
                 "vendor_code": it.get("vendor_code") or "",
                 "barcode": it.get("barcode") or "",
                 "nm_id": it.get("nm_id"),
+                "name": it.get("name") or "",
                 "total_qty": 0,
                 "total_in_transit": 0,
                 "warehouses": [],
@@ -148,6 +158,8 @@ def stocks_page():
         rec["total_in_transit"] += int(it.get("in_transit", 0) or 0)
         if not rec.get("vendor_code") and it.get("vendor_code"):
             rec["vendor_code"] = it.get("vendor_code")
+        if not rec.get("name") and it.get("name"):
+            rec["name"] = it.get("name")
         if not rec.get("barcode") and it.get("barcode"):
             rec["barcode"] = it.get("barcode")
         if rec.get("nm_id") is None and it.get("nm_id") is not None:
@@ -199,7 +211,7 @@ def stocks_page():
         pass
 
     products_agg = sorted(
-        prod_map.values(), key=lambda x: (-x["total_qty"], x["vendor_code"] or "")
+        prod_map.values(), key=lambda x: (-x["total_qty"], x["vendor_code"] or x.get("name") or "")
     )
 
     # Агрегация по складам
@@ -224,13 +236,14 @@ def stocks_page():
                 "vendor_code": it.get("vendor_code"),
                 "barcode": it.get("barcode"),
                 "nm_id": it.get("nm_id"),
+                "name": it.get("name") or "",
                 "qty": qty_i,
                 "in_transit": in_transit_i,
             }
         )
 
     for rec in wh_map.values():
-        rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
+        rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or x.get("name") or ""))
 
     try:
         nm_to_photo: Dict[Any, Any] = {}
@@ -364,7 +377,7 @@ def api_stocks_data():
     if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
         return jsonify({"products": [], "warehouses": [], "total_qty_all": 0, "updated_at": None})
 
-    items = cached.get("items", [])
+    items = _enrich_stocks_items_for_user(cached.get("items", []), current_user.id)
     total_qty_all = sum(int((it.get("qty") or 0)) for it in items)
     total_in_transit_all = sum(int((it.get("in_transit") or 0)) for it in items)
 
@@ -379,6 +392,7 @@ def api_stocks_data():
                 "vendor_code": it.get("vendor_code") or "",
                 "barcode": it.get("barcode") or "",
                 "nm_id": it.get("nm_id"),
+                "name": it.get("name") or "",
                 "total_qty": 0,
                 "total_in_transit": 0,
                 "warehouses": [],
@@ -389,6 +403,8 @@ def api_stocks_data():
         rec["total_in_transit"] += int(it.get("in_transit", 0) or 0)
         if not rec.get("vendor_code") and it.get("vendor_code"):
             rec["vendor_code"] = it.get("vendor_code")
+        if not rec.get("name") and it.get("name"):
+            rec["name"] = it.get("name")
         if not rec.get("barcode") and it.get("barcode"):
             rec["barcode"] = it.get("barcode")
         if rec.get("nm_id") is None and it.get("nm_id") is not None:
@@ -435,7 +451,7 @@ def api_stocks_data():
                     rec["photo"] = nm_to_photo.get(nm)
     except Exception:
         pass
-    products_agg.sort(key=lambda x: (-x["total_qty"], x["vendor_code"] or ""))
+    products_agg.sort(key=lambda x: (-x["total_qty"], x["vendor_code"] or x.get("name") or ""))
 
     wh_map: Dict[str, Dict[str, Any]] = {}
     for it in items:
@@ -452,11 +468,12 @@ def api_stocks_data():
             "vendor_code": it.get("vendor_code"),
             "nm_id": it.get("nm_id"),
             "barcode": it.get("barcode"),
+            "name": it.get("name") or "",
             "qty": qty_i,
             "in_transit": in_transit_i,
         })
     for rec in wh_map.values():
-        rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or ""))
+        rec["products"].sort(key=lambda x: (-x["qty"], x["vendor_code"] or x.get("name") or ""))
 
     try:
         nm_to_photo: Dict[Any, Any] = {}

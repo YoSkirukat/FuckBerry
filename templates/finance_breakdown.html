@@ -1,0 +1,1177 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <title>Расшифровка финансового отчета</title>
+  {% include '_header.html' %}
+  <style>
+    .fb-dash .metric-label { color: #6c757d; font-size: 0.85rem; margin-bottom: 0.15rem; }
+    .fb-dash .metric-value { font-size: 1.15rem; font-weight: 600; }
+    .fb-dash .metric-sub { color: #6c757d; font-size: 0.8rem; }
+    .fb-dash .panel {
+      background: #fff;
+      border: 1px solid #e9ecef;
+      border-radius: 0.5rem;
+      padding: 1rem 1.1rem;
+      height: 100%;
+    }
+    .fb-dash .panel-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.85rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid #eef1f4;
+    }
+    .fb-dash .row-metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.35rem 0;
+      border-bottom: 1px dashed #f1f3f5;
+    }
+    .fb-dash .row-metric:last-child { border-bottom: none; }
+    .fb-dash .row-metric.total {
+      margin-top: 0.35rem;
+      padding-top: 0.55rem;
+      border-top: 1px solid #dee2e6;
+      border-bottom: none;
+      font-weight: 600;
+    }
+    .fb-dash .pay-card {
+      background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
+      border-color: #c8e6c9;
+    }
+    .fb-dash .pay-card .metric-value { font-size: 1.5rem; color: #2e7d32; }
+    .fb-dash .deduction-val { color: #c62828; }
+    .fb-dash .comp-val { color: #1565c0; }
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(255,255,255,0.72);
+      z-index: 2000;
+      align-items: center;
+      justify-content: center;
+    }
+    .loading-overlay.show { display: flex; }
+    .loading-box {
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 0.5rem;
+      padding: 1.25rem 1.5rem;
+      min-width: 280px;
+      text-align: center;
+      box-shadow: 0 0.5rem 1rem rgba(0,0,0,0.08);
+    }
+    .calendar-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: white;
+      border: 1px solid #dee2e6;
+      border-radius: 0.375rem;
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+      z-index: 1050;
+      margin-top: 0.25rem;
+      width: 320px;
+      max-width: 90vw;
+    }
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    .calendar-nav {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+    }
+    .calendar-nav:hover { background-color: #e9ecef; }
+    .calendar-grid { padding: 1rem; }
+    .calendar-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+    }
+    .calendar-weekday {
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: #6c757d;
+      padding: 0.5rem 0;
+    }
+    .calendar-weekday.weekend { color: #dc3545; }
+    .calendar-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+    }
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+    }
+    .calendar-day:hover { background-color: #e9ecef; }
+    .calendar-day.other-month { color: #adb5bd; }
+    .calendar-day.today {
+      background-color: #fff3cd;
+      color: #856404;
+      font-weight: 600;
+    }
+    .calendar-day.selected-start,
+    .calendar-day.selected-end {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    .calendar-day.in-range {
+      background-color: #e7f1ff;
+      color: #0d6efd;
+    }
+    .calendar-day.in-range:not(.selected-start):not(.selected-end) { border-radius: 0; }
+    .calendar-day.selected-start.in-range {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .calendar-day.selected-end.in-range {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }
+    .calendar-footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 1rem;
+      border-top: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    .calendar-day.weekend { color: #dc3545; }
+    .calendar-day.other-month.weekend { color: #f5c6cb; }
+    .fb-comp-link {
+      color: #0d6efd;
+      text-decoration: underline dashed;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+      cursor: pointer;
+    }
+    .fb-comp-link:hover {
+      color: #0a58ca;
+      text-decoration-style: solid;
+    }
+    .metric-value .fb-comp-link {
+      font-size: inherit;
+      font-weight: inherit;
+    }
+    .deduction-val .fb-comp-link,
+    .comp-val .fb-comp-link {
+      color: #0d6efd;
+    }
+    #compDetailModal .table { font-size: 0.875rem; }
+    #compDetailModal .modal-dialog { max-width: min(960px, 96vw); }
+    #compDetailModal th,
+    #compDetailModal td.text-end,
+    #compDetailModal tfoot th {
+      white-space: nowrap;
+    }
+    #productsTable th,
+    #productsTable td.text-end,
+    #productsTable tfoot th {
+      white-space: nowrap;
+    }
+    #productsTable td:nth-child(2) { white-space: nowrap; }
+    @media (max-width: 768px) {
+      .calendar-dropdown.mobile-centered {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        width: 90vw !important;
+        max-width: 400px !important;
+        z-index: 1060 !important;
+        margin: 0 !important;
+        box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.3) !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+  <div class="container py-4 fb-dash">
+    <h3 class="mb-3">Расшифровка финансового отчета</h3>
+    {% if error %}
+      <div class="alert alert-warning">{{ error }}</div>
+    {% endif %}
+
+    <form id="breakdownForm" class="row g-3 align-items-end mb-3">
+      <div class="col-sm-5 col-md-4">
+        <label class="form-label" for="fbDateRangeInput">Период отчета</label>
+        <div class="position-relative">
+          <input type="text" class="form-control" id="fbDateRangeInput" placeholder="Выберите период" readonly style="cursor: pointer;" />
+          <input type="hidden" id="dateFrom" name="date_from" value="{{ date_from_val or '' }}" />
+          <input type="hidden" id="dateTo" name="date_to" value="{{ date_to_val or '' }}" />
+          <span class="position-absolute top-50 end-0 translate-middle-y me-3" style="cursor: pointer;" id="fbDateRangeBtn">📅</span>
+          <div id="fbDateRangeCalendar" class="calendar-dropdown" style="display: none;">
+            <div class="calendar-header">
+              <button type="button" class="calendar-nav" id="fbPrevMonth">‹</button>
+              <span id="fbCurrentMonthYear">—</span>
+              <button type="button" class="calendar-nav" id="fbNextMonth">›</button>
+            </div>
+            <div class="calendar-grid" id="fbCalendarGrid"></div>
+            <div class="calendar-footer">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="fbResetDates">Сбросить</button>
+              <button type="button" class="btn btn-sm btn-primary" id="fbApplyDates">Применить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-sm-3 col-md-2">
+        <button type="submit" class="btn btn-primary w-100" id="loadBtn">Загрузить</button>
+      </div>
+    </form>
+
+    <div id="dateWarn" class="alert alert-warning py-1" role="alert" style="display:none;"></div>
+    <div id="alertBox" class="alert alert-danger" style="display:none;"></div>
+    <div id="metaBox" class="text-muted small mb-3" style="display:none;"></div>
+
+    <div id="resultsBlock" style="display:none;">
+      <ul class="nav nav-tabs mb-3" id="fbTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="tab-finance-btn" data-bs-toggle="tab" data-bs-target="#tabFinance" type="button" role="tab" aria-controls="tabFinance" aria-selected="true">Финотчёт</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-products-btn" data-bs-toggle="tab" data-bs-target="#tabProducts" type="button" role="tab" aria-controls="tabProducts" aria-selected="false">Расшифровка по товарам</button>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+        <div class="tab-pane fade show active" id="tabFinance" role="tabpanel" aria-labelledby="tab-finance-btn">
+          <div id="dashboard">
+      <div class="row g-3 mb-3">
+        <div class="col-lg-8">
+          <div class="panel">
+            <div class="panel-title">Продажи</div>
+            <div class="row g-3">
+              <div class="col-md-4">
+                <div class="metric-label">Выручка</div>
+                <div class="metric-value" id="mRevenue">—</div>
+                <div class="metric-sub"><span id="mRevenueQty">0</span> шт.</div>
+              </div>
+              <div class="col-md-4">
+                <div class="metric-label">Выкупы</div>
+                <div class="metric-value" id="mBuyouts">—</div>
+                <div class="metric-sub"><span id="mBuyoutsQty">0</span> шт.</div>
+              </div>
+              <div class="col-md-4">
+                <div class="metric-label">Возвраты</div>
+                <div class="metric-value" id="mReturnsWrap">—</div>
+                <div class="metric-sub"><span id="mReturnsQty">0</span> шт.</div>
+              </div>
+              <div class="col-md-4">
+                <div class="metric-label">Средний чек</div>
+                <div class="metric-value" id="mAvgCheck">—</div>
+              </div>
+              <div class="col-md-4">
+                <div class="metric-label">Выкуп</div>
+                <div class="metric-value" id="mBuyoutRate">—</div>
+                <div class="metric-sub">от кол-ва доставок (<span id="mDeliveries">0</span>)</div>
+              </div>
+              <div class="col-md-4">
+                <div class="metric-label">СПП</div>
+                <div class="metric-value" id="mSpp">—</div>
+              </div>
+              <div class="col-md-6">
+                <div class="metric-label">WB реализовал</div>
+                <div class="metric-value" id="mWbRealized">—</div>
+              </div>
+              <div class="col-md-6">
+                <div class="panel pay-card mt-1">
+                  <div class="metric-label">Оплата на РС</div>
+                  <div class="metric-value" id="mPayment">—</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="panel">
+            <div class="panel-title">Итог удержаний</div>
+            <div class="row-metric"><span>Комиссия</span><span id="sCommission">—</span></div>
+            <div class="row-metric"><span>Логистика</span><span id="sLogistics">—</span></div>
+            <div class="row-metric"><span>Хранение</span><span id="sStorage">—</span></div>
+            <div class="row-metric"><span>Прочие удержания</span><span id="sOther">—</span></div>
+            <div class="row-metric"><span>Платная приёмка</span><span id="sAcceptance">—</span></div>
+            <div class="row-metric"><span>Остальное</span><span id="sRest">—</span></div>
+            <div class="row-metric total"><span>Оплата на РС</span><span id="sPayment">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-lg-6">
+          <div class="panel">
+            <div class="panel-title">
+              Удержания WB
+              <span class="text-muted fw-normal" id="deductionsTotalLabel"></span>
+            </div>
+            <div class="row-metric">
+              <span>Комиссия</span>
+              <span><span class="deduction-val" id="dCommission">—</span>
+                <span class="metric-sub" id="dCommissionPct"></span></span>
+            </div>
+            <div class="row-metric">
+              <span>Эквайринг</span>
+              <span><span class="deduction-val" id="dAcquiring">—</span>
+                <span class="metric-sub" id="dAcquiringPct"></span></span>
+            </div>
+            <div class="row-metric">
+              <span>Логистика</span>
+              <span><span class="deduction-val" id="dLogistics">—</span>
+                <span class="metric-sub" id="dLogisticsPct"></span></span>
+            </div>
+            <div class="row-metric">
+              <span>Хранение</span>
+              <span><span class="deduction-val" id="dStorage">—</span>
+                <span class="metric-sub" id="dStoragePct"></span></span>
+            </div>
+            <div class="row-metric">
+              <span>Прочие удержания</span>
+              <span><span class="deduction-val" id="dOther">—</span>
+                <span class="metric-sub" id="dOtherPct"></span></span>
+            </div>
+            <div class="row-metric">
+              <span>Приёмка</span>
+              <span><span class="deduction-val" id="dAcceptance">—</span>
+                <span class="metric-sub" id="dAcceptancePct"></span></span>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-6">
+          <div class="panel">
+            <div class="panel-title">Компенсации и корректировки</div>
+            <div class="row-metric">
+              <span>Компенсация брака</span>
+              <span class="comp-val" id="cDefectWrap">—</span>
+            </div>
+            <div class="row-metric">
+              <span>Компенсация ущерба</span>
+              <span class="comp-val" id="cDamageWrap">—</span>
+            </div>
+            <div class="row-metric">
+              <span>Платная доставка</span>
+              <span class="comp-val" id="cPaidDeliveryWrap">—</span>
+            </div>
+            <div class="row-metric">
+              <span>Штрафы</span>
+              <span class="deduction-val" id="cPenaltiesWrap">—</span>
+            </div>
+            <div class="row-metric">
+              <span>Доплаты</span>
+              <span id="cAdditionalWrap">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+          </div>
+        </div>
+
+        <div class="tab-pane fade" id="tabProducts" role="tabpanel" aria-labelledby="tab-products-btn">
+          <div class="panel mb-3" id="reconciliationPanel" style="display:none;">
+            <div class="panel-title">Сверка: сумма по товарам и оплата на РС</div>
+            <div class="row g-2 mb-2 small">
+              <div class="col-md-4"><span class="text-muted">Сумма по товарам</span><div class="fw-semibold" id="recProductsTotal">—</div></div>
+              <div class="col-md-4"><span class="text-muted">Оплата на РС</span><div class="fw-semibold" id="recPayment">—</div></div>
+              <div class="col-md-4"><span class="text-muted">Разница</span><div class="fw-semibold" id="recGap">—</div></div>
+            </div>
+            <div class="table-responsive">
+              <table class="table table-sm mb-0" id="reconciliationTable">
+                <thead>
+                  <tr>
+                    <th>Из чего складывается разница</th>
+                    <th class="text-end text-nowrap">Сумма</th>
+                  </tr>
+                </thead>
+                <tbody id="reconciliationBody"></tbody>
+                <tfoot>
+                  <tr>
+                    <th>Итого разница</th>
+                    <th class="text-end text-nowrap" id="recExplained">—</th>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div class="text-muted small mt-2" id="recHint"></div>
+          </div>
+          <div class="panel">
+            <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+              <div class="panel-title mb-0">Товары</div>
+              <button type="button" class="btn btn-success btn-sm" id="exportProductsBtn" disabled>Выгрузить в Excel</button>
+            </div>
+            <div class="table-responsive">
+              <table class="table table-sm table-hover align-middle mb-0" id="productsTable">
+                <thead>
+                  <tr>
+                    <th class="text-nowrap" style="width:4rem;">№ п.п.</th>
+                    <th class="text-nowrap">Баркод</th>
+                    <th>Товар</th>
+                    <th class="text-end text-nowrap">Кол-во</th>
+                    <th class="text-end text-nowrap">Цена</th>
+                    <th class="text-end text-nowrap">Сумма</th>
+                    <th class="text-end text-nowrap">Цена с услугами</th>
+                    <th class="text-end text-nowrap">Сумма с услугами</th>
+                  </tr>
+                </thead>
+                <tbody id="productsBody"></tbody>
+                <tfoot>
+                  <tr>
+                    <th colspan="3" class="text-end">Итого</th>
+                    <th class="text-end text-nowrap" id="productsQtyTotal">0</th>
+                    <th class="text-end text-nowrap" id="productsAvgTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsSumTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsAvgServicesTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsSumServicesTotal">—</th>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div id="productsEmpty" class="text-muted py-3 text-center" style="display:none;">Нет товаров за выбранный период</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="compDetailModal" tabindex="-1" aria-labelledby="compDetailModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="compDetailModalLabel">Расшифровка</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          <div class="text-muted small mb-2" id="compDetailMeta"></div>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>Артикул</th>
+                  <th>nmID</th>
+                  <th>Бренд / предмет</th>
+                  <th>Операция</th>
+                  <th class="text-end">Кол-во</th>
+                  <th class="text-end">Сумма</th>
+                </tr>
+              </thead>
+              <tbody id="compDetailBody"></tbody>
+              <tfoot>
+                <tr>
+                  <th colspan="4" class="text-end">Итого</th>
+                  <th class="text-end" id="compDetailQtyTotal">0</th>
+                  <th class="text-end" id="compDetailSumTotal">—</th>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div id="compDetailEmpty" class="text-muted py-3 text-center" style="display:none;">Нет строк для расшифровки</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loading-box">
+      <div class="spinner-border text-primary mb-2" role="status"></div>
+      <div id="loadingText">Загрузка финансового отчёта…</div>
+      <div class="text-muted small mt-1" id="loadingProgress"></div>
+    </div>
+  </div>
+
+  <script>
+  class BreakdownDateRangeCalendar {
+    constructor() {
+      this.currentDate = new Date();
+      this.selectedStart = null;
+      this.selectedEnd = null;
+      this.calendar = document.getElementById('fbDateRangeCalendar');
+      this.input = document.getElementById('fbDateRangeInput');
+      this.startInput = document.getElementById('dateFrom');
+      this.endInput = document.getElementById('dateTo');
+      this.btn = document.getElementById('fbDateRangeBtn');
+      this.grid = document.getElementById('fbCalendarGrid');
+      this.monthYear = document.getElementById('fbCurrentMonthYear');
+      this.prevBtn = document.getElementById('fbPrevMonth');
+      this.nextBtn = document.getElementById('fbNextMonth');
+      this.resetBtn = document.getElementById('fbResetDates');
+      this.applyBtn = document.getElementById('fbApplyDates');
+      this.months = [
+        'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+        'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+      ];
+      this.weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+      this.init();
+    }
+
+    init() {
+      if (!this.calendar || !this.input || !this.btn) return;
+      this.loadSavedDates();
+      this.btn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCalendar(); });
+      this.input.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCalendar(); });
+      this.prevBtn.addEventListener('click', (e) => { e.stopPropagation(); this.prevMonth(); });
+      this.nextBtn.addEventListener('click', (e) => { e.stopPropagation(); this.nextMonth(); });
+      this.resetBtn.addEventListener('click', (e) => { e.stopPropagation(); this.resetSelection(); });
+      this.applyBtn.addEventListener('click', (e) => { e.stopPropagation(); this.applySelection(); });
+      document.addEventListener('click', (e) => {
+        if (!this.calendar.contains(e.target) && !this.input.contains(e.target) && !this.btn.contains(e.target)) {
+          this.hideCalendar();
+        }
+      });
+      window.addEventListener('resize', () => {
+        if (this.calendar.style.display === 'block') this.adjustPosition();
+      });
+      this.calendar.addEventListener('click', (e) => e.stopPropagation());
+      this.renderCalendar();
+    }
+
+    loadSavedDates() {
+      const startVal = this.startInput.value;
+      const endVal = this.endInput.value;
+      if (startVal) {
+        const [y, m, d] = startVal.split('-').map(Number);
+        this.selectedStart = new Date(y, m - 1, d);
+      }
+      if (endVal) {
+        const [y, m, d] = endVal.split('-').map(Number);
+        this.selectedEnd = new Date(y, m - 1, d);
+      }
+      if (this.selectedStart) this.currentDate = new Date(this.selectedStart);
+      this.updateInputDisplay();
+    }
+
+    toggleCalendar() {
+      if (this.calendar.style.display === 'none' || !this.calendar.style.display) this.showCalendar();
+      else this.hideCalendar();
+    }
+
+    showCalendar() {
+      this.calendar.style.display = 'block';
+      this.renderCalendar();
+      this.adjustPosition();
+    }
+
+    hideCalendar() { this.calendar.style.display = 'none'; }
+
+    adjustPosition() {
+      const rect = this.input.getBoundingClientRect();
+      const calendar = this.calendar;
+      const viewportHeight = window.innerHeight;
+      const viewportWidth = window.innerWidth;
+      const isMobile = viewportWidth <= 768;
+      if (isMobile) {
+        calendar.classList.add('mobile-centered');
+        calendar.style.position = 'fixed';
+        calendar.style.top = '50%';
+        calendar.style.left = '50%';
+        calendar.style.transform = 'translate(-50%, -50%)';
+        calendar.style.width = '90vw';
+        calendar.style.maxWidth = '400px';
+        calendar.style.zIndex = '1060';
+        calendar.style.margin = '0';
+      } else {
+        calendar.classList.remove('mobile-centered');
+        calendar.style.position = 'absolute';
+        calendar.style.transform = 'none';
+        calendar.style.zIndex = '1050';
+        if (rect.bottom + 400 > viewportHeight) {
+          calendar.style.top = 'auto';
+          calendar.style.bottom = '100%';
+          calendar.style.marginTop = '0';
+          calendar.style.marginBottom = '0.25rem';
+        } else {
+          calendar.style.top = '100%';
+          calendar.style.bottom = 'auto';
+          calendar.style.marginTop = '0.25rem';
+          calendar.style.marginBottom = '0';
+        }
+      }
+    }
+
+    prevMonth() {
+      this.currentDate.setMonth(this.currentDate.getMonth() - 1);
+      this.renderCalendar();
+    }
+
+    nextMonth() {
+      this.currentDate.setMonth(this.currentDate.getMonth() + 1);
+      this.renderCalendar();
+    }
+
+    renderCalendar() {
+      const year = this.currentDate.getFullYear();
+      const month = this.currentDate.getMonth();
+      this.monthYear.textContent = `${this.months[month]} ${year}`;
+      const firstDay = new Date(year, month, 1);
+      const startDate = new Date(firstDay);
+      startDate.setDate(startDate.getDate() - (firstDay.getDay() + 6) % 7);
+      let html = '<div class="calendar-weekdays">';
+      this.weekdays.forEach((day, idx) => {
+        html += `<div class="calendar-weekday${idx >= 5 ? ' weekend' : ''}">${day}</div>`;
+      });
+      html += '</div><div class="calendar-days">';
+      const today = new Date();
+      const currentDate = new Date(startDate);
+      for (let i = 0; i < 42; i++) {
+        const isCurrentMonth = currentDate.getMonth() === month;
+        const isToday = currentDate.toDateString() === today.toDateString();
+        const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+        const isSelectedStart = this.selectedStart && currentDate.toDateString() === this.selectedStart.toDateString();
+        const isSelectedEnd = this.selectedEnd && currentDate.toDateString() === this.selectedEnd.toDateString();
+        const isInRange = this.isDateInRange(currentDate);
+        let classes = 'calendar-day';
+        if (!isCurrentMonth) classes += ' other-month';
+        if (isToday) classes += ' today';
+        if (isWeekend) classes += ' weekend';
+        if (isSelectedStart) classes += ' selected-start';
+        if (isSelectedEnd) classes += ' selected-end';
+        if (isInRange) classes += ' in-range';
+        const y = currentDate.getFullYear();
+        const m = String(currentDate.getMonth() + 1).padStart(2, '0');
+        const d = String(currentDate.getDate()).padStart(2, '0');
+        html += `<div class="${classes}" data-date="${y}-${m}-${d}">${currentDate.getDate()}</div>`;
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      html += '</div>';
+      this.grid.innerHTML = html;
+      this.grid.querySelectorAll('.calendar-day').forEach(day => {
+        day.addEventListener('click', (e) => { e.stopPropagation(); this.selectDate(day); });
+      });
+    }
+
+    selectDate(dayElement) {
+      const [y, m, d] = dayElement.dataset.date.split('-').map(Number);
+      const date = new Date(y, m - 1, d);
+      if (!this.selectedStart || (this.selectedStart && this.selectedEnd)) {
+        this.selectedStart = date;
+        this.selectedEnd = null;
+      } else if (this.selectedStart && !this.selectedEnd) {
+        if (date < this.selectedStart) {
+          this.selectedEnd = this.selectedStart;
+          this.selectedStart = date;
+        } else {
+          this.selectedEnd = date;
+        }
+      }
+      this.updateInputDisplay();
+      this.renderCalendar();
+    }
+
+    isDateInRange(date) {
+      if (!this.selectedStart || !this.selectedEnd) return false;
+      return date >= this.selectedStart && date <= this.selectedEnd;
+    }
+
+    updateInputDisplay() {
+      if (this.selectedStart && this.selectedEnd) {
+        this.input.value = `${this.formatDate(this.selectedStart)} - ${this.formatDate(this.selectedEnd)}`;
+      } else if (this.selectedStart) {
+        this.input.value = `${this.formatDate(this.selectedStart)} - ...`;
+      } else {
+        this.input.value = '';
+      }
+    }
+
+    formatDate(date) {
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      return `${day}.${month}.${date.getFullYear()}`;
+    }
+
+    toIso(date) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    resetSelection() {
+      this.selectedStart = null;
+      this.selectedEnd = null;
+      this.startInput.value = '';
+      this.endInput.value = '';
+      this.updateInputDisplay();
+      this.renderCalendar();
+      this.validateDates();
+    }
+
+    applySelection() {
+      if (this.selectedStart) this.startInput.value = this.toIso(this.selectedStart);
+      if (this.selectedEnd) this.endInput.value = this.toIso(this.selectedEnd);
+      else if (this.selectedStart) this.endInput.value = this.toIso(this.selectedStart);
+      this.hideCalendar();
+      this.validateDates();
+    }
+
+    validateDates() {
+      const df = this.startInput.value || '';
+      const dt = this.endInput.value || '';
+      const dateWarn = document.getElementById('dateWarn');
+      const loadBtn = document.getElementById('loadBtn');
+      let ok = true;
+      let msg = '';
+      if (!df || !dt) { ok = false; msg = 'Выберите период отчета.'; }
+      else if (df > dt) { ok = false; msg = 'Дата окончания не может быть раньше даты начала.'; }
+      if (dateWarn) {
+        dateWarn.style.display = ok ? 'none' : 'block';
+        dateWarn.textContent = msg;
+      }
+      if (loadBtn) loadBtn.disabled = !ok;
+      return ok;
+    }
+  }
+
+  (function () {
+    const money = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '—';
+      return n.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽';
+    };
+    const pct = (v) => (v === null || v === undefined || v === '') ? '' : `(${Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%)`;
+    const qty = (v) => Number(v || 0).toLocaleString('ru-RU');
+
+    const form = document.getElementById('breakdownForm');
+    const alertBox = document.getElementById('alertBox');
+    const metaBox = document.getElementById('metaBox');
+    const resultsBlock = document.getElementById('resultsBlock');
+    const overlay = document.getElementById('loadingOverlay');
+    const loadingText = document.getElementById('loadingText');
+    const loadingProgress = document.getElementById('loadingProgress');
+    const dateCalendar = new BreakdownDateRangeCalendar();
+    let lastDashboardData = null;
+    let compDetailModal = null;
+
+    const COMP_TITLES = {
+      defect: 'Компенсация брака',
+      damage: 'Компенсация ущерба',
+      penalties: 'Штрафы',
+      additional_payment: 'Доплаты',
+      additional: 'Доплаты',
+      returns: 'Возвраты',
+      logistics: 'Логистика',
+      storage: 'Хранение',
+      other: 'Прочие удержания',
+      acceptance: 'Платная приёмка',
+      returns_for_pay: 'К перечислению по возвратам',
+      paid_delivery: 'Платная доставка',
+      e3: 'Корректировка эквайринга',
+      products_vs_ksale: 'Сумма по товарам − к перечислению по продажам',
+    };
+
+    function getDetailRows(kind, fromReconciliation) {
+      const data = lastDashboardData || {};
+      if (fromReconciliation) {
+        const fromRec = (data.reconciliation_details || {})[kind];
+        if (fromRec) return fromRec;
+      }
+      const fromComp = (data.compensation_details || {})[kind];
+      if (fromComp) return fromComp;
+      return (data.reconciliation_details || {})[kind] || [];
+    }
+
+    function showAlert(msg) {
+      alertBox.textContent = msg || 'Ошибка';
+      alertBox.style.display = 'block';
+    }
+    function hideAlert() { alertBox.style.display = 'none'; }
+
+    function setLoading(on, text) {
+      overlay.classList.toggle('show', !!on);
+      if (text) loadingText.textContent = text;
+      if (!on) loadingProgress.textContent = '';
+    }
+
+    async function fetchJson(url) {
+      const resp = await fetch(url, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' },
+      });
+      const raw = await resp.text();
+      let data = null;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        const looksHtml = /^\s*</.test(raw || '');
+        if (resp.status === 401 || resp.redirected || looksHtml) {
+          throw new Error('Сессия истекла или сервер вернул HTML вместо JSON. Обновите страницу и войдите снова.');
+        }
+        throw new Error(`Некорректный ответ сервера (HTTP ${resp.status}).`);
+      }
+      if (resp.status === 401) {
+        throw new Error((data && data.message) || 'Требуется авторизация. Обновите страницу.');
+      }
+      if (!resp.ok && data && data.message) throw new Error(data.message);
+      if (!resp.ok) throw new Error(`Ошибка HTTP ${resp.status}`);
+      return data;
+    }
+
+    function setCompLink(wrapId, value, kind) {
+      const wrap = document.getElementById(wrapId);
+      if (!wrap) return;
+      const n = Number(value);
+      const label = money(value);
+      const hasValue = Number.isFinite(n) && Math.abs(n) >= 0.01;
+      if (hasValue) {
+        wrap.innerHTML = `<a href="#" class="fb-comp-link" data-comp-kind="${kind}">${label}</a>`;
+      } else {
+        wrap.textContent = label;
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function openCompDetail(kind, titleOverride, fromReconciliation) {
+      const details = getDetailRows(kind, !!fromReconciliation);
+      const title = titleOverride || COMP_TITLES[kind] || 'Расшифровка';
+      document.getElementById('compDetailModalLabel').textContent = title;
+      const period = lastDashboardData
+        ? `Период: ${lastDashboardData.date_from_fmt || ''} — ${lastDashboardData.date_to_fmt || ''}`
+        : '';
+      document.getElementById('compDetailMeta').textContent =
+        period + (details.length ? `. Позиций: ${details.length}` : '');
+
+      const body = document.getElementById('compDetailBody');
+      const empty = document.getElementById('compDetailEmpty');
+      const table = body.closest('table');
+      body.innerHTML = '';
+
+      if (!details.length) {
+        if (table) table.style.display = 'none';
+        empty.style.display = 'block';
+        document.getElementById('compDetailQtyTotal').textContent = '0';
+        document.getElementById('compDetailSumTotal').textContent = money(0);
+      } else {
+        if (table) table.style.display = '';
+        empty.style.display = 'none';
+        let qtyTotal = 0;
+        let sumTotal = 0;
+        details.forEach((row) => {
+          const amount = Number(row.amount) || 0;
+          const q = Number(row.qty) || 0;
+          qtyTotal += q;
+          sumTotal += amount;
+          const brandSubj = [row.brand_name, row.subject_name].filter(Boolean).join(' / ') || '—';
+          const operParts = [row.oper, row.doc_type, row.bonus_type].filter(Boolean);
+          const oper = operParts.join(' · ') || '—';
+          const size = row.ts_name ? ` <span class="text-muted">(${escapeHtml(row.ts_name)})</span>` : '';
+          const tr = document.createElement('tr');
+          tr.innerHTML =
+            `<td>${escapeHtml(row.sa_name || '—')}${size}</td>` +
+            `<td>${escapeHtml(row.nm_id || '—')}</td>` +
+            `<td>${escapeHtml(brandSubj)}</td>` +
+            `<td>${escapeHtml(oper)}</td>` +
+            `<td class="text-end">${qty(q)}</td>` +
+            `<td class="text-end">${money(amount)}</td>`;
+          body.appendChild(tr);
+        });
+        document.getElementById('compDetailQtyTotal').textContent = qty(qtyTotal);
+        document.getElementById('compDetailSumTotal').textContent = money(sumTotal);
+      }
+
+      if (!compDetailModal) {
+        const el = document.getElementById('compDetailModal');
+        if (window.bootstrap && el) compDetailModal = new bootstrap.Modal(el);
+      }
+      if (compDetailModal) compDetailModal.show();
+    }
+
+    function fillDashboard(data) {
+      lastDashboardData = data;
+      const s = data.sales || {};
+      const d = data.deductions || {};
+      const c = data.compensations || {};
+      const sum = data.summary || {};
+
+      document.getElementById('mRevenue').textContent = money(s.revenue_rub);
+      document.getElementById('mRevenueQty').textContent = qty(s.revenue_qty);
+      document.getElementById('mBuyouts').textContent = money(s.buyouts_rub);
+      document.getElementById('mBuyoutsQty').textContent = qty(s.buyouts_qty);
+      setCompLink('mReturnsWrap', s.returns_rub, 'returns');
+      document.getElementById('mReturnsQty').textContent = qty(s.returns_qty);
+      document.getElementById('mAvgCheck').textContent = s.avg_check == null ? '—' : money(s.avg_check);
+      document.getElementById('mBuyoutRate').textContent = s.buyout_rate_pct == null ? '—' : (Number(s.buyout_rate_pct).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '%');
+      document.getElementById('mDeliveries').textContent = qty(s.delivery_count);
+      document.getElementById('mSpp').textContent = s.spp_pct == null ? '—' : (Number(s.spp_pct).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '%');
+      document.getElementById('mWbRealized').textContent = money(s.wb_realized);
+      document.getElementById('mPayment').textContent = money(s.payment_to_account);
+
+      document.getElementById('sCommission').textContent = money(sum.commission);
+      document.getElementById('sLogistics').textContent = money(sum.logistics);
+      document.getElementById('sStorage').textContent = money(sum.storage);
+      document.getElementById('sOther').textContent = money(sum.other);
+      document.getElementById('sAcceptance').textContent = money(sum.acceptance);
+      document.getElementById('sRest').textContent = money(sum.rest);
+      document.getElementById('sPayment').textContent = money(sum.payment_to_account);
+
+      document.getElementById('deductionsTotalLabel').textContent =
+        d.total != null ? ` (${money(d.total)}${d.total_pct != null ? ', ' + Number(d.total_pct).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '% от выручки' : ''})` : '';
+
+      document.getElementById('dCommission').textContent = money(d.commission);
+      document.getElementById('dCommissionPct').textContent = pct(d.commission_pct);
+      document.getElementById('dAcquiring').textContent = money(d.acquiring);
+      document.getElementById('dAcquiringPct').textContent = pct(d.acquiring_pct);
+      document.getElementById('dLogistics').textContent = money(d.logistics);
+      document.getElementById('dLogisticsPct').textContent = pct(d.logistics_pct);
+      document.getElementById('dStorage').textContent = money(d.storage);
+      document.getElementById('dStoragePct').textContent = pct(d.storage_pct);
+      document.getElementById('dOther').textContent = money(d.other);
+      document.getElementById('dOtherPct').textContent = pct(d.other_pct);
+      document.getElementById('dAcceptance').textContent = money(d.acceptance);
+      document.getElementById('dAcceptancePct').textContent = pct(d.acceptance_pct);
+
+      setCompLink('cDefectWrap', c.defect, 'defect');
+      setCompLink('cDamageWrap', c.damage, 'damage');
+      setCompLink('cPaidDeliveryWrap', c.paid_delivery, 'paid_delivery');
+      setCompLink('cPenaltiesWrap', c.penalties, 'penalties');
+      setCompLink('cAdditionalWrap', c.additional_payment, 'additional_payment');
+
+      fillProductsTable(data.products || []);
+      fillReconciliation(data.reconciliation || null);
+      const exportBtn = document.getElementById('exportProductsBtn');
+      if (exportBtn) exportBtn.disabled = !(data.products && data.products.length);
+
+      metaBox.style.display = 'block';
+      metaBox.textContent = `Период: ${data.date_from_fmt || ''} — ${data.date_to_fmt || ''}. Записей в отчёте: ${Number(data.rows_count || 0).toLocaleString('ru-RU')}.`;
+      resultsBlock.style.display = 'block';
+    }
+
+    async function exportProductsExcel() {
+      const btn = document.getElementById('exportProductsBtn');
+      const products = (lastDashboardData && lastDashboardData.products) || [];
+      if (!products.length) {
+        showAlert('Нет данных для выгрузки. Сначала загрузите отчёт.');
+        return;
+      }
+      const oldText = btn ? btn.textContent : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Выгрузка…';
+      }
+      try {
+        const resp = await fetch('/api/report/finance-breakdown/products/export', {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: {
+            'Accept': 'application/json, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            products,
+            date_from_fmt: (lastDashboardData && lastDashboardData.date_from_fmt) || '',
+            date_to_fmt: (lastDashboardData && lastDashboardData.date_to_fmt) || '',
+          }),
+        });
+        if (!resp.ok) {
+          let msg = `Ошибка выгрузки (HTTP ${resp.status})`;
+          try {
+            const data = await resp.json();
+            if (data && data.message) msg = data.message;
+          } catch (_) {}
+          throw new Error(msg);
+        }
+        const blob = await resp.blob();
+        let filename = 'rasshifrovka_po_tovaram.xlsx';
+        const cd = resp.headers.get('Content-Disposition') || '';
+        const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
+        if (m) filename = decodeURIComponent(m[1] || m[2]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        showAlert(err.message || String(err));
+      } finally {
+        if (btn) {
+          btn.textContent = oldText || 'Выгрузить в Excel';
+          btn.disabled = !((lastDashboardData && lastDashboardData.products) || []).length;
+        }
+      }
+    }
+
+    function fillReconciliation(rec) {
+      const panel = document.getElementById('reconciliationPanel');
+      const body = document.getElementById('reconciliationBody');
+      if (!panel || !body) return;
+      body.innerHTML = '';
+      if (!rec) {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'block';
+      document.getElementById('recProductsTotal').textContent = money(rec.products_total);
+      document.getElementById('recPayment').textContent = money(rec.payment_to_account);
+      document.getElementById('recGap').textContent = money(rec.gap);
+      (rec.lines || []).forEach((line) => {
+        const amount = Number(line.amount) || 0;
+        if (Math.abs(amount) < 0.005) return;
+        const kind = escapeHtml(line.key || '');
+        const label = escapeHtml(line.label || '');
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          `<td><a href="#" class="fb-comp-link" data-comp-kind="${kind}" data-comp-title="${label}" data-from-rec="1">${label}</a></td>` +
+          `<td class="text-end text-nowrap"><a href="#" class="fb-comp-link" data-comp-kind="${kind}" data-comp-title="${label}" data-from-rec="1">${money(amount)}</a></td>`;
+        body.appendChild(tr);
+      });
+      document.getElementById('recExplained').textContent = money(rec.gap);
+      const hint = document.getElementById('recHint');
+      if (hint) {
+        hint.textContent =
+          'Нажмите на строку, чтобы открыть расшифровку. «Сумма по товарам» — к перечислению по строкам с баркодом без возвратов. «Оплата на РС» — выручка минус удержания WB.';
+      }
+    }
+
+    function fillProductsTable(products) {
+      const body = document.getElementById('productsBody');
+      const empty = document.getElementById('productsEmpty');
+      const table = document.getElementById('productsTable');
+      body.innerHTML = '';
+      if (!products.length) {
+        table.style.display = 'none';
+        empty.style.display = 'block';
+        document.getElementById('productsQtyTotal').textContent = '0';
+        document.getElementById('productsSumTotal').textContent = money(0);
+        document.getElementById('productsAvgTotal').textContent = '—';
+        document.getElementById('productsSumServicesTotal').textContent = money(0);
+        document.getElementById('productsAvgServicesTotal').textContent = '—';
+        return;
+      }
+      table.style.display = '';
+      empty.style.display = 'none';
+      let sum = 0;
+      let sumServices = 0;
+      let qtyTotal = 0;
+      products.forEach((row, idx) => {
+        const amount = Number(row.for_pay) || 0;
+        const amountSvc = Number(row.for_pay_with_services);
+        const salesQty = Number(row.sales_qty) || 0;
+        const avgPrice = salesQty ? amount / salesQty : null;
+        const priceSvc = (row.price_with_services != null && row.price_with_services !== '')
+          ? Number(row.price_with_services)
+          : (salesQty && Number.isFinite(amountSvc) ? amountSvc / salesQty : null);
+        sum += amount;
+        if (Number.isFinite(amountSvc)) sumServices += amountSvc;
+        qtyTotal += salesQty;
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          `<td class="text-muted">${idx + 1}</td>` +
+          `<td>${escapeHtml(row.barcode || '—')}</td>` +
+          `<td>${escapeHtml(row.name || '—')}</td>` +
+          `<td class="text-end">${qty(salesQty)}</td>` +
+          `<td class="text-end">${avgPrice == null ? '—' : money(avgPrice)}</td>` +
+          `<td class="text-end">${money(amount)}</td>` +
+          `<td class="text-end">${priceSvc == null || !Number.isFinite(priceSvc) ? '—' : money(priceSvc)}</td>` +
+          `<td class="text-end">${Number.isFinite(amountSvc) ? money(amountSvc) : '—'}</td>`;
+        body.appendChild(tr);
+      });
+      document.getElementById('productsQtyTotal').textContent = qty(qtyTotal);
+      document.getElementById('productsAvgTotal').textContent = qtyTotal ? money(sum / qtyTotal) : '—';
+      document.getElementById('productsSumTotal').textContent = money(sum);
+      document.getElementById('productsAvgServicesTotal').textContent = qtyTotal ? money(sumServices / qtyTotal) : '—';
+      document.getElementById('productsSumServicesTotal').textContent = money(sumServices);
+    }
+
+    async function pollUntilReady() {
+      for (let i = 0; i < 600; i++) {
+        const p = await fetchJson(`/api/report/finance-breakdown/progress?_t=${Date.now()}`);
+        if (p.total) {
+          loadingProgress.textContent = `Интервал ${p.current || 0} из ${p.total}${p.period ? ': ' + p.period : ''}`;
+        }
+        if (p.ready) return fetchJson(`/api/report/finance-breakdown/result?_t=${Date.now()}`);
+        if (!p.loading && i > 2) break;
+        await new Promise(res => setTimeout(res, 1500));
+      }
+      throw new Error('Превышено время ожидания загрузки');
+    }
+
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      hideAlert();
+      if (!dateCalendar.validateDates()) return;
+      const dateFrom = document.getElementById('dateFrom').value;
+      const dateTo = document.getElementById('dateTo').value;
+
+      lastDashboardData = null;
+
+      const url = new URL('/api/report/finance-breakdown', window.location.origin);
+      url.searchParams.set('date_from', dateFrom);
+      url.searchParams.set('date_to', dateTo);
+      url.searchParams.set('async', '1');
+      url.searchParams.set('_t', String(Date.now()));
+
+      setLoading(true, 'Загрузка финансового отчёта из Wildberries…');
+      try {
+        let result = await fetchJson(url.toString());
+        if (result.loading) result = await pollUntilReady();
+        if (!result.success) throw new Error(result.message || 'Не удалось рассчитать сводку');
+        fillDashboard(result);
+        const u = new URL(window.location.href);
+        u.searchParams.set('date_from', dateFrom);
+        u.searchParams.set('date_to', dateTo);
+        history.replaceState({}, '', u);
+      } catch (err) {
+        lastDashboardData = null;
+        resultsBlock.style.display = 'none';
+        const exportBtn = document.getElementById('exportProductsBtn');
+        if (exportBtn) exportBtn.disabled = true;
+        showAlert(err.message || String(err));
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    dateCalendar.validateDates();
+    const exportProductsBtn = document.getElementById('exportProductsBtn');
+    if (exportProductsBtn) {
+      exportProductsBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        exportProductsExcel();
+      });
+    }
+    document.getElementById('resultsBlock').addEventListener('click', function (e) {
+      const link = e.target.closest('.fb-comp-link');
+      if (!link) return;
+      e.preventDefault();
+      const kind = link.getAttribute('data-comp-kind');
+      const title = link.getAttribute('data-comp-title') || '';
+      const fromRec = link.getAttribute('data-from-rec') === '1';
+      openCompDetail(kind, title || undefined, fromRec);
+    });
+    if (document.getElementById('dateFrom').value && document.getElementById('dateTo').value) {
+      form.requestSubmit();
+    }
+  })();
+  </script>
+  {% include '_footer.html' %}
+</body>
+</html>

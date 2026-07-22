@@ -924,7 +924,7 @@ def enrich_stocks_from_products(
     items: List[Dict[str, Any]] | None,
     products: List[Dict[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Подставляет vendor_code/barcode из кэша товаров (новый API остатков их не отдаёт)."""
+    """Подставляет vendor_code/barcode/name из кэша товаров (новый API остатков их не отдаёт)."""
     rows = list(items or [])
     if not rows:
         return rows
@@ -957,13 +957,20 @@ def enrich_stocks_from_products(
             continue
         if not str(it.get("vendor_code") or "").strip():
             it["vendor_code"] = (
-                meta.get("vendor_code")
+                meta.get("supplier_article")
+                or meta.get("vendor_code")
                 or meta.get("supplierArticle")
                 or meta.get("vendorCode")
                 or meta.get("article")
             )
         if not str(it.get("barcode") or "").strip():
             it["barcode"] = _first_barcode(meta.get("barcode") or meta.get("sku") or meta.get("skus"))
+        if not str(it.get("name") or "").strip():
+            it["name"] = meta.get("name") or meta.get("title") or meta.get("subject")
+        if not it.get("photo"):
+            photo = meta.get("photo") or meta.get("img")
+            if photo:
+                it["photo"] = photo
     return rows
 
 

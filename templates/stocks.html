@@ -84,13 +84,17 @@
                   </td>
                   <td>
                     <div>
+                      {% set title = p.name or p.vendor_code or '' %}
                       {% if p.nm_id %}
-                        <a href="/product/{{ p.nm_id }}" class="text-decoration-none">{{ p.vendor_code or '' }}</a>
+                        <a href="/product/{{ p.nm_id }}" class="text-decoration-none">{{ title }}</a>
                         <span class="ms-1 small"><a href="https://www.wildberries.ru/catalog/{{ p.nm_id }}/detail.aspx" target="_blank" rel="noopener" class="text-muted" title="Открыть на WB"><i class="fas fa-external-link-alt"></i></a></span>
                       {% else %}
-                        {{ p.vendor_code or '' }}
+                        {{ title }}
                       {% endif %}
                     </div>
+                    {% if p.vendor_code and p.name and p.vendor_code != p.name %}
+                      <div class="small text-muted">{{ p.vendor_code }}</div>
+                    {% endif %}
                     {% if p.nm_id or p.barcode %}
                       <div class="small text-muted mt-1">
                         {% if p.nm_id %}Артикул WB: {{ p.nm_id }}{% endif %}
@@ -180,13 +184,17 @@
                               </td>
                               <td>
                                 <div>
+                                  {% set title = p.name or p.vendor_code or '' %}
                                   {% if p.nm_id %}
-                                    <a href="/product/{{ p.nm_id }}" class="text-decoration-none">{{ p.vendor_code or '' }}</a>
+                                    <a href="/product/{{ p.nm_id }}" class="text-decoration-none">{{ title }}</a>
                                     <span class="ms-1 small"><a href="https://www.wildberries.ru/catalog/{{ p.nm_id }}/detail.aspx" target="_blank" rel="noopener" class="text-muted" title="Открыть на WB"><i class="fas fa-external-link-alt"></i></a></span>
                                   {% else %}
-                                    {{ p.vendor_code or '' }}
+                                    {{ title }}
                                   {% endif %}
                                 </div>
+                                {% if p.vendor_code and p.name and p.vendor_code != p.name %}
+                                  <div class="small text-muted">{{ p.vendor_code }}</div>
+                                {% endif %}
                                 {% if p.nm_id or p.barcode %}
                                   <div class="small text-muted mt-1">
                                     {% if p.nm_id %}Артикул WB: {{ p.nm_id }}{% endif %}
@@ -241,10 +249,14 @@
           for (const p of djson.products) {
             const tr = document.createElement('tr'); tr.className='prod-row';
             const photoCell = p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>нет фото</span>`;
+            const title = p.name || p.vendor_code || '';
+            const vendorSub = (p.vendor_code && p.name && p.vendor_code !== p.name)
+              ? `<div class='small text-muted'>${p.vendor_code}</div>` : '';
             const titleCell = `
               <div>
-                ${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${p.vendor_code||''}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${p.vendor_code||''}`}
+                ${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${title}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${title}`}
               </div>
+              ${vendorSub}
               ${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}
               <div class='mt-1'><button class='btn btn-link btn-sm p-0' type='button' data-bs-toggle='collapse' data-bs-target='#prod-${idx}'>Показать остатки товара по складам</button></div>
             `;
@@ -262,7 +274,7 @@
             const tr = document.createElement('tr'); tr.className='wh-row'; tr.setAttribute('data-bs-toggle','collapse'); tr.setAttribute('data-bs-target',`#wh-${idx}`); tr.style.cursor='pointer';
             tr.innerHTML = `<td class="text-center">${idx}</td><td>${w.warehouse||''}</td><td class="text-end">${(w.total_qty||0).toLocaleString('ru-RU')}</td><td class="text-end">${(w.total_in_transit||0).toLocaleString('ru-RU')}</td>`;
             const trd = document.createElement('tr'); trd.className='collapse'; trd.id = `wh-${idx}`;
-            trd.innerHTML = `<td></td><td colspan="3"><div class="wh-compact-full"><div class="table-responsive"><table class="table table-sm"><thead><tr><th style='width:60px;'></th><th>Товар</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(w.products||[]).map(p=>`<tr><td class='text-center'>${p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>—</span>`}</td><td><div>${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${p.vendor_code||''}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${p.vendor_code||''}`}</div>${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.in_transit||0).toLocaleString('ru-RU')}</td></tr>`).join('')}</tbody></table></div></div></td>`;
+            trd.innerHTML = `<td></td><td colspan="3"><div class="wh-compact-full"><div class="table-responsive"><table class="table table-sm"><thead><tr><th style='width:60px;'></th><th>Товар</th><th class='text-end'>Остаток</th><th class='text-end'>В пути</th></tr></thead><tbody>${(w.products||[]).map(p=>{ const t=p.name||p.vendor_code||''; const vs=(p.vendor_code&&p.name&&p.vendor_code!==p.name)?`<div class='small text-muted'>${p.vendor_code}</div>`:''; return `<tr><td class='text-center'>${p.photo ? `<img src='${p.photo}' data-src='${p.photo}' class='product-thumb' alt='photo' style='width:45px;height:65px;object-fit:cover;cursor: zoom-in;' />` : `<span class='text-muted'>—</span>`}</td><td><div>${p.nm_id ? `<a href='/product/${p.nm_id}' class='text-decoration-none'>${t}</a><span class='ms-1 small'><a href='https://www.wildberries.ru/catalog/${p.nm_id}/detail.aspx' target='_blank' rel='noopener' class='text-muted' title='Открыть на WB'><i class='fas fa-external-link-alt'></i></a></span>` : `${t}`}</div>${vs}${(p.nm_id||p.barcode) ? `<div class='small text-muted mt-1'>${p.nm_id ? `Артикул WB: ${p.nm_id}` : ''}${(p.nm_id && p.barcode) ? ' | ' : ''}${p.barcode ? `Баркод: ${p.barcode}` : ''}</div>` : ''}</td><td class='text-end'>${(p.qty||0).toLocaleString('ru-RU')}</td><td class='text-end'>${(p.in_transit||0).toLocaleString('ru-RU')}</td></tr>`; }).join('')}</tbody></table></div></div></td>`;
             tbodyWh.appendChild(tr); tbodyWh.appendChild(trd); idx++;
           }
         }

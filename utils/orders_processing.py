@@ -27,6 +27,7 @@ def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[
         
         rows.append({
             "Дата": date_str,
+            "ДатаВремя": sale.get("date"),  # полная дата/время заказа (для ленты)
             "Дата и время обновления информации в сервисе": sale.get("lastChangeDate"),
             "Склад отгрузки": sale.get("warehouseName"),
             "Тип склада хранения товаров": sale.get("warehouseType"),

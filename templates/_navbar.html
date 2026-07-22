@@ -176,7 +176,10 @@
     <div class="collapse navbar-collapse" id="navbarNav">
       <ul class="navbar-nav">
         <li class="nav-item">
-          <a class="nav-link {% if request.path.startswith('/orders') %}active{% endif %}" href="/orders" {% if request.path.startswith('/orders') %}aria-current="page"{% endif %}>Аналитика заказов</a>
+          <a class="nav-link {% if request.path.startswith('/orders') and not request.path.startswith('/order-feed') %}active{% endif %}" href="/orders" {% if request.path.startswith('/orders') and not request.path.startswith('/order-feed') %}aria-current="page"{% endif %}>Аналитика заказов</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/order-feed') %}active{% endif %}" href="/order-feed" {% if request.path.startswith('/order-feed') %}aria-current="page"{% endif %}>Лента заказов</a>
         </li>
         
         <li class="nav-item dropdown">
@@ -205,7 +208,8 @@
           </a>
           <ul class="dropdown-menu" aria-labelledby="repDropdown">
             <li><a class="dropdown-item {% if request.path.startswith('/report/orders') %}active{% endif %}" href="/report/orders">Отчёт по заказам со складов</a></li>
-            <li><a class="dropdown-item {% if request.path.startswith('/report/finance') %}active{% endif %}" href="/report/finance">Финансовый отчёт</a></li>
+            <li><a class="dropdown-item {% if request.path.startswith('/report/finance') and not request.path.startswith('/report/finance-breakdown') %}active{% endif %}" href="/report/finance">Финансовый отчёт</a></li>
+            <li><a class="dropdown-item {% if request.path.startswith('/report/finance-breakdown') %}active{% endif %}" href="/report/finance-breakdown">Расшифровка финансового отчета</a></li>
             <li><a class="dropdown-item {% if request.path.startswith('/stocks') %}active{% endif %}" href="/stocks">Остатки на складах</a></li>
           </ul>
         </li>

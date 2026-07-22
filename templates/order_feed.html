@@ -1,0 +1,1137 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <title>Лента заказов — FuckBerry</title>
+  {% include '_header.html' %}
+  <style>
+    h1 { font-size: 1.7rem; }
+    .order-feed-table { font-size: 0.9rem; }
+    .order-feed-table th {
+      white-space: nowrap;
+      font-weight: 600;
+      color: #495057;
+      border-bottom-width: 1px;
+    }
+    .order-feed-table td {
+      vertical-align: middle;
+      border-color: #eee;
+    }
+    .order-feed-table tbody tr {
+      cursor: pointer;
+      transition: background-color .12s ease;
+    }
+    .order-feed-table tbody tr:hover {
+      background-color: #f8f9fa;
+    }
+    .order-id-link {
+      color: #0d6efd;
+      text-decoration: none;
+      font-weight: 600;
+      word-break: break-all;
+    }
+    .order-id-link:hover { text-decoration: underline; }
+    .order-meta {
+      font-size: 0.75rem;
+      color: #6c757d;
+      margin-top: 0.15rem;
+    }
+    .scheme-badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #0d6efd;
+      letter-spacing: 0.02em;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .status-ordered {
+      color: #084298;
+      background: #cfe2ff;
+    }
+    .status-sold {
+      color: #0f5132;
+      background: #d1e7dd;
+    }
+    .status-returned {
+      color: #664d03;
+      background: #fff3cd;
+    }
+    .status-cancelled {
+      color: #41464b;
+      background: #e2e3e5;
+    }
+    .product-thumb {
+      width: 40px;
+      height: 54px;
+      object-fit: cover;
+      border-radius: 2px;
+      background: #f1f3f5;
+    }
+    .product-title {
+      font-weight: 600;
+      color: #212529;
+      line-height: 1.25;
+    }
+    .product-sub {
+      font-size: 0.72rem;
+      color: #6c757d;
+      margin-top: 0.15rem;
+    }
+    .money {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .money-strong { font-weight: 700; }
+    .feed-toolbar .form-control,
+    .feed-toolbar .form-select {
+      font-size: 0.875rem;
+    }
+    .timeline {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      position: relative;
+    }
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 7px;
+      top: 4px;
+      bottom: 4px;
+      width: 2px;
+      background: #dee2e6;
+    }
+    .timeline-item {
+      position: relative;
+      padding-left: 1.75rem;
+      padding-bottom: 0.85rem;
+    }
+    .timeline-item:last-child { padding-bottom: 0; }
+    .timeline-dot {
+      position: absolute;
+      left: 2px;
+      top: 4px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #adb5bd;
+      border: 2px solid #fff;
+      box-shadow: 0 0 0 1px #ced4da;
+    }
+    .timeline-item.is-sold .timeline-dot { background: #198754; box-shadow: 0 0 0 1px #198754; }
+    .timeline-item.is-ordered .timeline-dot { background: #0d6efd; box-shadow: 0 0 0 1px #0d6efd; }
+    .timeline-item.is-cancelled .timeline-dot { background: #6c757d; box-shadow: 0 0 0 1px #6c757d; }
+    .timeline-item.is-returned .timeline-dot { background: #ffc107; box-shadow: 0 0 0 1px #ffc107; }
+    .timeline-label { font-weight: 600; font-size: 0.9rem; }
+    .timeline-time { font-size: 0.78rem; color: #6c757d; }
+    #orderDetailModal .modal-dialog { max-width: 960px; }
+    #orderDetailModal .modal-body { max-height: calc(100vh - 140px); overflow-y: auto; }
+    .detail-kv {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 0.25rem 1rem;
+      font-size: 0.875rem;
+    }
+    .detail-kv dt { color: #6c757d; font-weight: 500; }
+    .detail-kv dd { margin: 0; }
+    .section-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin: 1.25rem 0 0.65rem;
+      padding-bottom: 0.35rem;
+      border-bottom: 1px solid #eee;
+    }
+    .hint-muted { font-size: 0.8rem; color: #6c757d; }
+
+    /* Календарь периода (как на /orders) */
+    .calendar-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: white;
+      border: 1px solid #dee2e6;
+      border-radius: 0.375rem;
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+      z-index: 1050;
+      margin-top: 0.25rem;
+      width: 320px;
+      max-width: 90vw;
+    }
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    .calendar-nav {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.25rem 0.5rem;
+      border-radius: 0.25rem;
+      transition: background-color 0.15s ease-in-out;
+    }
+    .calendar-nav:hover { background-color: #e9ecef; }
+    .calendar-grid { padding: 1rem; }
+    .calendar-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+      margin-bottom: 0.5rem;
+    }
+    .calendar-weekday {
+      text-align: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: #6c757d;
+      padding: 0.5rem 0;
+    }
+    .calendar-weekday.weekend { color: #dc3545; }
+    .calendar-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.25rem;
+    }
+    .calendar-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      border-radius: 0.25rem;
+      font-size: 0.875rem;
+      transition: all 0.15s ease-in-out;
+      position: relative;
+    }
+    .calendar-day:hover { background-color: #e9ecef; }
+    .calendar-day.other-month { color: #adb5bd; }
+    .calendar-day.today {
+      background-color: #fff3cd;
+      color: #856404;
+      font-weight: 600;
+    }
+    .calendar-day.selected-start,
+    .calendar-day.selected-end {
+      background-color: #0d6efd;
+      color: white;
+      font-weight: 600;
+    }
+    .calendar-day.in-range {
+      background-color: #e7f1ff;
+      color: #0d6efd;
+    }
+    .calendar-day.in-range:not(.selected-start):not(.selected-end) { border-radius: 0; }
+    .calendar-day.selected-start.in-range {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .calendar-day.selected-end.in-range {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }
+    .calendar-footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 1rem;
+      border-top: 1px solid #dee2e6;
+      background-color: #f8f9fa;
+    }
+    .calendar-day.weekend { color: #dc3545; }
+    .calendar-day.other-month.weekend { color: #f5c6cb; }
+    .loading-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.75);
+      backdrop-filter: blur(2px);
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .loading-overlay.is-visible {
+      display: flex;
+    }
+    .loading-box {
+      text-align: center;
+      padding: 1.5rem 2rem;
+      background: #fff;
+      border-radius: 0.5rem;
+      box-shadow: 0 0.5rem 1.5rem rgba(0,0,0,.12);
+      min-width: 280px;
+    }
+    .loading-spinner {
+      width: 2.2rem;
+      height: 2.2rem;
+      border: 3px solid #dee2e6;
+      border-top-color: #0d6efd;
+      border-radius: 50%;
+      animation: feed-spin 0.8s linear infinite;
+      margin: 0 auto 0.85rem;
+    }
+    @keyframes feed-spin {
+      to { transform: rotate(360deg); }
+    }
+    .loading-text {
+      color: #495057;
+      font-size: 1.05rem;
+      font-weight: 500;
+    }
+    .content-blurred {
+      filter: blur(1.5px);
+      opacity: 0.65;
+      transition: filter 0.2s ease, opacity 0.2s ease;
+      pointer-events: none;
+    }
+    @media (max-width: 768px) {
+      .calendar-dropdown.mobile-centered {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        width: 90vw !important;
+        max-width: 400px !important;
+        z-index: 1060 !important;
+        margin: 0 !important;
+        box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.3) !important;
+      }
+      .calendar-dropdown.mobile-centered .calendar-grid {
+        max-height: 60vh;
+        overflow-y: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+
+  <div id="feedLoadingOverlay" class="loading-overlay" aria-live="polite">
+    <div class="loading-box">
+      <div class="loading-spinner"></div>
+      <div class="loading-text" id="feedLoadingText">Загрузка…</div>
+    </div>
+  </div>
+
+  <div class="container mt-3 mb-4" id="feedPageContent">
+    <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+      <h1 class="mb-0">Лента заказов</h1>
+      <div class="d-flex align-items-center gap-2 small text-muted">
+        <span>Обновлено: <span id="feedUpdatedAt">—</span></span>
+        <button type="button" id="feedExportBtn" class="btn btn-sm btn-outline-success" disabled>Excel</button>
+        <button type="button" id="feedRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить из WB</button>
+      </div>
+    </div>
+
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-body feed-toolbar py-3">
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-md-3">
+            <label class="form-label small mb-1" for="feedDateRangeInput">Период заказов</label>
+            <div class="position-relative">
+              <input type="text" class="form-control form-control-sm" id="feedDateRangeInput" placeholder="Выберите период" readonly style="cursor: pointer;" />
+              <input type="hidden" id="dateFrom" value="{{ date_from }}" />
+              <input type="hidden" id="dateTo" value="{{ date_to }}" />
+              <span class="position-absolute top-50 end-0 translate-middle-y me-2" style="cursor: pointer; font-size: 0.9rem;" id="feedDateRangeBtn">📅</span>
+              <div id="feedDateRangeCalendar" class="calendar-dropdown" style="display: none;">
+                <div class="calendar-header">
+                  <button type="button" class="calendar-nav" id="feedPrevMonth">‹</button>
+                  <span id="feedCurrentMonthYear">Июль 2026</span>
+                  <button type="button" class="calendar-nav" id="feedNextMonth">›</button>
+                </div>
+                <div class="calendar-grid" id="feedCalendarGrid"></div>
+                <div class="calendar-footer">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="feedResetDates">Сбросить</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-md-3">
+            <label class="form-label small mb-1" for="saleDateRangeInput">Период выкупов</label>
+            <div class="position-relative">
+              <input type="text" class="form-control form-control-sm" id="saleDateRangeInput" placeholder="Выберите период" readonly style="cursor: pointer;" />
+              <input type="hidden" id="saleFrom" value="{{ sale_from }}" />
+              <input type="hidden" id="saleTo" value="{{ sale_to }}" />
+              <span class="position-absolute top-50 end-0 translate-middle-y me-2" style="cursor: pointer; font-size: 0.9rem;" id="saleDateRangeBtn">📅</span>
+              <div id="saleDateRangeCalendar" class="calendar-dropdown" style="display: none;">
+                <div class="calendar-header">
+                  <button type="button" class="calendar-nav" id="salePrevMonth">‹</button>
+                  <span id="saleCurrentMonthYear">Июль 2026</span>
+                  <button type="button" class="calendar-nav" id="saleNextMonth">›</button>
+                </div>
+                <div class="calendar-grid" id="saleCalendarGrid"></div>
+                <div class="calendar-footer">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="saleResetDates">Сбросить</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-1" for="statusFilter">Статус</label>
+            <select id="statusFilter" class="form-select form-select-sm">
+              <option value="">Все</option>
+              <option value="ordered">Заказан</option>
+              <option value="sold">Выкуплен</option>
+              <option value="returned">Возврат</option>
+              <option value="cancelled">Отменён</option>
+            </select>
+          </div>
+          <div class="col-6 col-md-2">
+            <label class="form-label small mb-1" for="schemeFilter">Схема</label>
+            <select id="schemeFilter" class="form-select form-select-sm">
+              <option value="">Все</option>
+              <option value="FBW">FBW</option>
+              <option value="FBS">FBS</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-2">
+            <button type="button" id="applyFiltersBtn" class="btn btn-sm btn-primary w-100">Показать</button>
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label small mb-1" for="searchQ">Поиск</label>
+            <input type="search" class="form-control form-control-sm" id="searchQ" placeholder="Номер, артикул, штрихкод…">
+          </div>
+        </div>
+        <div class="hint-muted mt-2" id="feedHint">
+          Укажите период заказов и/или период выкупов. Период выкупов покажет заказы с датой выкупа в выбранном диапазоне.
+        </div>
+      </div>
+    </div>
+
+    <div class="card border-0 shadow-sm">
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0 order-feed-table">
+            <thead class="table-light">
+              <tr>
+                <th style="min-width:140px;">Номер заказа</th>
+                <th style="width:120px;">Дата заказа</th>
+                <th style="width:120px;">Дата выкупа</th>
+                <th style="width:110px;">Статус</th>
+                <th class="text-center" style="width:64px;">Фото</th>
+                <th>Товар</th>
+                <th class="text-end" style="width:110px;">Маржа</th>
+                <th class="text-end" style="width:110px;">Стоимость</th>
+                <th style="min-width:140px;">Уникальный ID (srid)</th>
+              </tr>
+            </thead>
+            <tbody id="feedBody">
+              <tr><td colspan="9" class="text-muted text-center py-4">Выберите период заказов или выкупов и нажмите «Показать»</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center px-3 py-2 border-top">
+          <span class="small text-muted" id="feedCount">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail modal -->
+  <div class="modal fade" id="orderDetailModal" tabindex="-1" aria-labelledby="orderDetailTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header border-0 pb-0">
+          <div>
+            <h5 class="modal-title" id="orderDetailTitle">—</h5>
+            <div class="small text-muted" id="orderDetailSubtitle"></div>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body pt-2" id="orderDetailBody">
+          <div class="text-muted text-center py-4">Загрузка…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="imgPreview" style="display:none; position:fixed; left:50%; top:50%; transform: translate(-50%, -50%); z-index:1060; padding:4px; background:#fff; border:1px solid rgba(0,0,0,.15); box-shadow:0 .5rem 1rem rgba(0,0,0,.15); pointer-events: none;">
+    <img id="imgPreviewImg" src="" alt="preview" style="max-width:420px; max-height:560px; display:block;" />
+  </div>
+
+  {% include '_footer.html' %}
+
+  <script>
+  class FeedDateRangeCalendar {
+    constructor(ids, onChange) {
+      this.currentDate = new Date();
+      this.selectedStart = null;
+      this.selectedEnd = null;
+      this.isSelecting = false;
+      this.onChange = onChange || null;
+      this.calendar = document.getElementById(ids.calendar);
+      this.input = document.getElementById(ids.input);
+      this.startInput = document.getElementById(ids.start);
+      this.endInput = document.getElementById(ids.end);
+      this.btn = document.getElementById(ids.btn);
+      this.grid = document.getElementById(ids.grid);
+      this.monthYear = document.getElementById(ids.monthYear);
+      this.prevBtn = document.getElementById(ids.prev);
+      this.nextBtn = document.getElementById(ids.next);
+      this.resetBtn = document.getElementById(ids.reset);
+      this.months = [
+        'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+        'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+      ];
+      this.weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+      this.init();
+    }
+
+    init() {
+      if (!this.calendar || !this.input || !this.btn) return;
+      this.loadSavedDates();
+      this.btn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCalendar(); });
+      this.input.addEventListener('click', (e) => { e.stopPropagation(); this.toggleCalendar(); });
+      this.prevBtn.addEventListener('click', (e) => { e.stopPropagation(); this.prevMonth(); });
+      this.nextBtn.addEventListener('click', (e) => { e.stopPropagation(); this.nextMonth(); });
+      this.resetBtn.addEventListener('click', (e) => { e.stopPropagation(); this.resetSelection(); });
+      this.calendar.addEventListener('wheel', (e) => {
+        try { e.preventDefault(); } catch (_) {}
+        e.stopPropagation();
+        if ((e.deltaY || 0) > 0) this.nextMonth();
+        else if ((e.deltaY || 0) < 0) this.prevMonth();
+      }, { passive: false });
+      document.addEventListener('click', (e) => {
+        if (!this.calendar.contains(e.target) && !this.input.contains(e.target) && !this.btn.contains(e.target)) {
+          this.hideCalendar();
+        }
+      });
+      window.addEventListener('resize', () => {
+        if (this.calendar.style.display === 'block') this.adjustPosition();
+      });
+      this.calendar.addEventListener('click', (e) => e.stopPropagation());
+      this.renderCalendar();
+    }
+
+    loadSavedDates() {
+      const startVal = this.startInput.value;
+      const endVal = this.endInput.value;
+      if (startVal) {
+        const [year, month, day] = startVal.split('-').map(Number);
+        this.selectedStart = new Date(year, month - 1, day);
+        this.currentDate = new Date(year, month - 1, 1);
+      }
+      if (endVal) {
+        const [year, month, day] = endVal.split('-').map(Number);
+        this.selectedEnd = new Date(year, month - 1, day);
+      }
+      this.updateInputDisplay();
+    }
+
+    toggleCalendar() {
+      if (this.calendar.style.display === 'none' || !this.calendar.style.display) this.showCalendar();
+      else this.hideCalendar();
+    }
+
+    showCalendar() {
+      this.calendar.style.display = 'block';
+      this.renderCalendar();
+      this.adjustPosition();
+    }
+
+    hideCalendar() {
+      this.calendar.style.display = 'none';
+    }
+
+    adjustPosition() {
+      const rect = this.input.getBoundingClientRect();
+      const calendar = this.calendar;
+      const viewportHeight = window.innerHeight;
+      const viewportWidth = window.innerWidth;
+      const calendarHeight = 400;
+      const isMobile = viewportWidth <= 768;
+      if (isMobile) {
+        calendar.classList.add('mobile-centered');
+        calendar.style.position = 'fixed';
+        calendar.style.top = '50%';
+        calendar.style.left = '50%';
+        calendar.style.transform = 'translate(-50%, -50%)';
+        calendar.style.width = '90vw';
+        calendar.style.maxWidth = '400px';
+        calendar.style.zIndex = '1060';
+        calendar.style.margin = '0';
+        calendar.style.boxShadow = '0 0.5rem 2rem rgba(0, 0, 0, 0.3)';
+      } else {
+        calendar.classList.remove('mobile-centered');
+        calendar.style.position = 'absolute';
+        calendar.style.transform = 'none';
+        calendar.style.zIndex = '1050';
+        calendar.style.boxShadow = '0 0.5rem 1rem rgba(0, 0, 0, 0.15)';
+        if (rect.bottom + calendarHeight > viewportHeight) {
+          calendar.style.top = 'auto';
+          calendar.style.bottom = '100%';
+          calendar.style.marginTop = '0';
+          calendar.style.marginBottom = '0.25rem';
+        } else {
+          calendar.style.top = '100%';
+          calendar.style.bottom = 'auto';
+          calendar.style.marginTop = '0.25rem';
+          calendar.style.marginBottom = '0';
+        }
+      }
+    }
+
+    prevMonth() {
+      this.currentDate.setMonth(this.currentDate.getMonth() - 1);
+      this.renderCalendar();
+    }
+
+    nextMonth() {
+      this.currentDate.setMonth(this.currentDate.getMonth() + 1);
+      this.renderCalendar();
+    }
+
+    renderCalendar() {
+      const year = this.currentDate.getFullYear();
+      const month = this.currentDate.getMonth();
+      this.monthYear.textContent = `${this.months[month]} ${year}`;
+      const firstDay = new Date(year, month, 1);
+      const startDate = new Date(firstDay);
+      startDate.setDate(startDate.getDate() - (firstDay.getDay() + 6) % 7);
+
+      let html = '<div class="calendar-weekdays">';
+      this.weekdays.forEach((day, idx) => {
+        html += `<div class="calendar-weekday${idx >= 5 ? ' weekend' : ''}">${day}</div>`;
+      });
+      html += '</div><div class="calendar-days">';
+
+      const today = new Date();
+      const currentDate = new Date(startDate);
+      const currentMonth = month;
+      for (let i = 0; i < 42; i++) {
+        const isCurrentMonth = currentDate.getMonth() === currentMonth;
+        const isToday = currentDate.toDateString() === today.toDateString();
+        const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
+        const isSelectedStart = this.selectedStart && currentDate.toDateString() === this.selectedStart.toDateString();
+        const isSelectedEnd = this.selectedEnd && currentDate.toDateString() === this.selectedEnd.toDateString();
+        const isInRange = this.isDateInRange(currentDate);
+        let classes = 'calendar-day';
+        if (!isCurrentMonth) classes += ' other-month';
+        if (isToday) classes += ' today';
+        if (isWeekend) classes += ' weekend';
+        if (isSelectedStart) classes += ' selected-start';
+        if (isSelectedEnd) classes += ' selected-end';
+        if (isInRange) classes += ' in-range';
+        const y = currentDate.getFullYear();
+        const m = String(currentDate.getMonth() + 1).padStart(2, '0');
+        const d = String(currentDate.getDate()).padStart(2, '0');
+        html += `<div class="${classes}" data-date="${y}-${m}-${d}">${currentDate.getDate()}</div>`;
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+      html += '</div>';
+      this.grid.innerHTML = html;
+      this.grid.querySelectorAll('.calendar-day').forEach(day => {
+        day.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.selectDate(day);
+        });
+      });
+    }
+
+    selectDate(dayElement) {
+      const dateStr = dayElement.dataset.date;
+      const [year, month, day] = dateStr.split('-').map(Number);
+      const date = new Date(year, month - 1, day);
+      if (!this.selectedStart || (this.selectedStart && this.selectedEnd)) {
+        this.selectedStart = date;
+        this.selectedEnd = null;
+        this.isSelecting = true;
+      } else if (this.selectedStart && !this.selectedEnd) {
+        if (date < this.selectedStart) {
+          this.selectedEnd = this.selectedStart;
+          this.selectedStart = date;
+        } else {
+          this.selectedEnd = date;
+        }
+        this.isSelecting = false;
+        this.applySelection();
+      }
+      this.updateInputDisplay();
+      this.renderCalendar();
+    }
+
+    isDateInRange(date) {
+      if (!this.selectedStart || !this.selectedEnd) return false;
+      return date >= this.selectedStart && date <= this.selectedEnd;
+    }
+
+    updateInputDisplay() {
+      if (this.selectedStart && this.selectedEnd) {
+        this.input.value = `${this.formatDate(this.selectedStart)} - ${this.formatDate(this.selectedEnd)}`;
+      } else if (this.selectedStart) {
+        this.input.value = `${this.formatDate(this.selectedStart)} - ...`;
+      } else {
+        this.input.value = '';
+      }
+    }
+
+    formatDate(date) {
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      return `${day}.${month}.${date.getFullYear()}`;
+    }
+
+    toIso(date) {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    resetSelection() {
+      this.selectedStart = null;
+      this.selectedEnd = null;
+      this.isSelecting = false;
+      this.startInput.value = '';
+      this.endInput.value = '';
+      this.updateInputDisplay();
+      this.renderCalendar();
+      if (this.onChange) this.onChange();
+    }
+
+    applySelection() {
+      if (this.selectedStart) this.startInput.value = this.toIso(this.selectedStart);
+      if (this.selectedEnd) this.endInput.value = this.toIso(this.selectedEnd);
+      this.hideCalendar();
+      if (this.onChange) this.onChange();
+    }
+
+    isComplete() {
+      return !!(this.startInput.value && this.endInput.value && this.startInput.value <= this.endInput.value);
+    }
+  }
+
+  (function(){
+    const state = {
+      offset: 0,
+      limit: 200,
+      total: 0,
+      items: [],
+      loading: false,
+    };
+
+    const els = {
+      body: document.getElementById('feedBody'),
+      updatedAt: document.getElementById('feedUpdatedAt'),
+      refreshBtn: document.getElementById('feedRefreshBtn'),
+      exportBtn: document.getElementById('feedExportBtn'),
+      applyBtn: document.getElementById('applyFiltersBtn'),
+      count: document.getElementById('feedCount'),
+      hint: document.getElementById('feedHint'),
+      dateFrom: document.getElementById('dateFrom'),
+      dateTo: document.getElementById('dateTo'),
+      saleFrom: document.getElementById('saleFrom'),
+      saleTo: document.getElementById('saleTo'),
+      status: document.getElementById('statusFilter'),
+      scheme: document.getElementById('schemeFilter'),
+      search: document.getElementById('searchQ'),
+      modalEl: document.getElementById('orderDetailModal'),
+      modalTitle: document.getElementById('orderDetailTitle'),
+      modalSub: document.getElementById('orderDetailSubtitle'),
+      modalBody: document.getElementById('orderDetailBody'),
+      overlay: document.getElementById('feedLoadingOverlay'),
+      loadingText: document.getElementById('feedLoadingText'),
+      pageContent: document.getElementById('feedPageContent'),
+    };
+
+    let modal = null;
+    let orderCalendar = null;
+    let saleCalendar = null;
+
+    function hasOrderPeriod(){
+      return !!(els.dateFrom.value && els.dateTo.value && els.dateFrom.value <= els.dateTo.value);
+    }
+    function hasSalePeriod(){
+      return !!(els.saleFrom.value && els.saleTo.value && els.saleFrom.value <= els.saleTo.value);
+    }
+    function syncApplyBtn(){
+      if (!els.applyBtn || state.loading) return;
+      els.applyBtn.disabled = !(hasOrderPeriod() || hasSalePeriod());
+    }
+
+    function money(v){
+      if (v === null || v === undefined || v === '') return '—';
+      const n = Number(v);
+      if (Number.isNaN(n)) return '—';
+      return n.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' ₽';
+    }
+
+    function esc(s){
+      return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    function queryParams(extra){
+      const p = new URLSearchParams();
+      if (hasOrderPeriod()) {
+        p.set('date_from', els.dateFrom.value);
+        p.set('date_to', els.dateTo.value);
+      }
+      if (hasSalePeriod()) {
+        p.set('sale_from', els.saleFrom.value);
+        p.set('sale_to', els.saleTo.value);
+      }
+      if (els.status.value) p.set('status', els.status.value);
+      if (els.scheme.value) p.set('scheme', els.scheme.value);
+      if (els.search.value.trim()) p.set('q', els.search.value.trim());
+      p.set('limit', String(state.limit));
+      p.set('offset', String(state.offset));
+      if (extra) Object.entries(extra).forEach(([k,v]) => p.set(k, v));
+      return p;
+    }
+
+    function showLoadingOverlay(text){
+      if (els.loadingText) els.loadingText.textContent = text || 'Загрузка…';
+      if (els.overlay) els.overlay.classList.add('is-visible');
+      if (els.pageContent) els.pageContent.classList.add('content-blurred');
+    }
+
+    function hideLoadingOverlay(){
+      if (els.overlay) els.overlay.classList.remove('is-visible');
+      if (els.pageContent) els.pageContent.classList.remove('content-blurred');
+    }
+
+    function setLoading(on, label){
+      state.loading = on;
+      if (els.refreshBtn){
+        els.refreshBtn.disabled = on;
+        els.refreshBtn.textContent = on && label ? label : 'Обновить из WB';
+      }
+      if (els.exportBtn) els.exportBtn.disabled = on || !state.items.length;
+      if (on) {
+        if (els.applyBtn) els.applyBtn.disabled = true;
+      } else {
+        syncApplyBtn();
+      }
+    }
+
+    function renderRows(){
+      els.body.innerHTML = '';
+      if (!state.items.length){
+        els.body.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-4">Нет заказов за выбранный период</td></tr>';
+        els.count.textContent = '0 заказов';
+        if (els.exportBtn) els.exportBtn.disabled = true;
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      state.items.forEach((it) => {
+        const tr = document.createElement('tr');
+        tr.dataset.srid = it.srid || '';
+        tr.dataset.gnumber = it.gnumber || '';
+        tr.dataset.id = it.id || '';
+        const img = it.photo
+          ? `<img src="${esc(it.photo)}" class="product-thumb" alt="" loading="lazy">`
+          : '<span class="text-muted">—</span>';
+        const soldDisplay = it.sold_at_display || (it.sale && it.sale.sold_at) || '—';
+        tr.innerHTML = `
+          <td>
+            <a href="#" class="order-id-link js-open-order">${esc(it.gnumber || it.srid || '—')}</a>
+            <div class="order-meta"><span class="scheme-badge">${esc(it.scheme)}</span></div>
+          </td>
+          <td class="small">${esc(it.datetime_display || '—')}</td>
+          <td class="small">${esc(soldDisplay)}</td>
+          <td><span class="status-badge ${esc(it.status_css)}">${esc(it.status_label)}</span></td>
+          <td class="text-center">${img}</td>
+          <td>
+            <div class="product-title">${esc(it.qty || 1)} шт. · ${esc(it.name)}</div>
+            <div class="product-sub">${esc(it.article || '')}${it.nm_id ? ' · nm ' + esc(it.nm_id) : ''}${it.barcode ? ' · ' + esc(it.barcode) : ''}</div>
+          </td>
+          <td class="text-end money">${it.margin == null ? '—' : money(it.margin)}</td>
+          <td class="text-end money money-strong">${money(it.price_buyer != null ? it.price_buyer : it.price)}</td>
+          <td class="small text-muted" style="word-break:break-all; font-size:0.72rem;">${esc(it.srid || '—')}</td>
+        `;
+        frag.appendChild(tr);
+      });
+      els.body.appendChild(frag);
+      els.count.textContent = `Показано ${state.items.length} записей`;
+      if (els.exportBtn) els.exportBtn.disabled = !state.items.length;
+    }
+
+    function applyHint(data){
+      if (!els.hint) return;
+      const gaps = (data.cache && data.cache.missing_days && data.cache.missing_days.length) || 0;
+      let msg = data.has_sales
+        ? 'Статусы «Выкуплен»/«Возврат» сопоставлены с продажами WB.'
+        : 'Продажи ещё не подгружены — нажмите «Обновить из WB» для статусов выкупа.';
+      if (data.has_finance) msg += ' Эквайринг и «К перечислению» — из финансового отчёта.';
+      else msg += ' Для эквайринга нажмите «Обновить из WB» (фин. отчёт).';
+      if (gaps) msg += ` В кэше нет ${gaps} дн. за период — обновите данные.`;
+      if (data.cache && data.cache.refresh_error) msg += ' Ошибка обновления заказов.';
+      if (data.cache && data.cache.sales_refresh_error) msg += ' Ошибка обновления продаж.';
+      if (data.cache && data.cache.finance_refresh_error) msg += ' Ошибка обновления фин. отчёта.';
+      els.hint.textContent = msg;
+    }
+
+    async function loadFeed({ refresh=false } = {}){
+      if (state.loading) return;
+      if (!hasOrderPeriod() && !hasSalePeriod()) return;
+
+      state.offset = 0;
+      state.items = [];
+      state.total = 0;
+      setLoading(true, refresh ? 'Обновление…' : 'Загрузка…');
+      showLoadingOverlay(refresh ? 'Обновление из WB…' : 'Загрузка…');
+
+      try{
+        let first = true;
+        let guard = 0;
+        while (guard++ < 200) {
+          const extra = (first && refresh) ? { refresh: '1' } : {};
+          const r = await fetch('/api/order-feed?' + queryParams(extra).toString(), { credentials: 'include' });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || 'Ошибка загрузки');
+
+          const batch = data.items || [];
+          state.total = data.total || 0;
+          state.items = state.items.concat(batch);
+          state.offset = state.items.length;
+
+          if (els.updatedAt) els.updatedAt.textContent = data.updated_at || '—';
+          if (first) applyHint(data);
+
+          const loaded = state.items.length;
+          const total = state.total;
+          showLoadingOverlay(
+            total > 0
+              ? `Загружено ${loaded} из ${total} записей`
+              : 'Загрузка…'
+          );
+
+          first = false;
+          if (loaded >= total || batch.length === 0) break;
+        }
+        renderRows();
+      }catch(e){
+        console.error(e);
+        els.body.innerHTML = `<tr><td colspan="9" class="text-danger text-center py-4">${esc(e.message || 'Ошибка')}</td></tr>`;
+        els.count.textContent = '—';
+      }finally{
+        hideLoadingOverlay();
+        setLoading(false);
+      }
+    }
+
+    function renderDetail(it){
+      els.modalTitle.textContent = it.gnumber || it.srid || 'Заказ';
+      els.modalSub.innerHTML = `${esc(it.datetime_display)} · <span class="scheme-badge">${esc(it.scheme)}</span> · <span class="status-badge ${esc(it.status_css)}">${esc(it.status_label)}</span>`;
+
+      const img = it.photo
+        ? `<img src="${esc(it.photo)}" alt="" style="width:64px;height:86px;object-fit:cover;border-radius:4px;">`
+        : '';
+
+      const timeline = (it.timeline || []).map(ev => `
+        <li class="timeline-item is-${esc(ev.status || '')}">
+          <span class="timeline-dot"></span>
+          <div class="timeline-label">${esc(ev.label)}</div>
+          <div class="timeline-time">${esc(ev.at_display)}</div>
+        </li>
+      `).join('') || '<li class="text-muted small">Нет событий</li>';
+
+      els.modalBody.innerHTML = `
+        <div class="d-flex gap-3 align-items-start">
+          ${img}
+          <div class="flex-grow-1">
+            <div class="fw-semibold">${esc(it.name)}</div>
+            <div class="product-sub mt-1">
+              ${esc(it.qty || 1)} шт.
+              ${it.article ? ' · ' + esc(it.article) : ''}
+              ${it.nm_id ? ' · nmID ' + esc(it.nm_id) : ''}
+              ${it.barcode ? ' · ' + esc(it.barcode) : ''}
+            </div>
+          </div>
+        </div>
+
+        <div class="table-responsive mt-3">
+          <table class="table table-sm mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Цена (пок.)</th>
+                <th>Цена продавца</th>
+                <th>Закуп</th>
+                <th>Маржа</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="money money-strong">${money(it.price_buyer)}</td>
+                <td class="money">${money(it.price)}</td>
+                <td class="money">${money(it.purchase_price)}</td>
+                <td class="money">${it.margin == null ? '—' : money(it.margin)}${it.margin_pct != null ? ' <span class="text-muted">(' + Number(it.margin_pct).toFixed(1) + '%)</span>' : ''}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section-title">История статусов</div>
+        <p class="hint-muted mb-2">Собрана из дат заказа, отмены и продаж WB. Полная пошаговая история из API Wildberries для FBW недоступна — накопленные наблюдения сохраняются при обновлении ленты.</p>
+        <ul class="timeline">${timeline}</ul>
+
+        <div class="section-title">Детали заказа</div>
+        <dl class="detail-kv">
+          <dt>Уникальный ID (srid)</dt><dd style="word-break:break-all;">${esc(it.srid || '—')}</dd>
+          <dt>Номер заказа</dt><dd>${esc(it.gnumber || '—')}</dd>
+          <dt>Стикер</dt><dd>${esc(it.sticker || '—')}</dd>
+          <dt>Склад отгрузки</dt><dd>${esc(it.warehouse || '—')}</dd>
+          <dt>Тип склада</dt><dd>${esc(it.warehouse_type || '—')}</dd>
+          <dt>Регион</dt><dd>${esc([it.country, it.oblast, it.region].filter(Boolean).join(', ') || '—')}</dd>
+          <dt>Бренд</dt><dd>${esc(it.brand || '—')}</dd>
+          <dt>Предмет</dt><dd>${esc(it.subject || '—')}</dd>
+          <dt>Размер</dt><dd>${esc(it.size || '—')}</dd>
+          <dt>Поставка</dt><dd>${esc(it.income_id || '—')}</dd>
+          <dt>Обновлено в WB</dt><dd>${esc(it.updated_at_display || '—')}</dd>
+          <dt>Отмена</dt><dd>${it.is_cancelled ? esc(it.cancel_date_display) : '—'}</dd>
+          <dt>Выкуп</dt><dd>${esc((it.sale && it.sale.sold_at) || '—')}</dd>
+          <dt>Возврат</dt><dd>${esc((it.sale && it.sale.returned_at) || '—')}</dd>
+          <dt>Эквайринг</dt><dd>${money(it.sale && it.sale.acquiring)}</dd>
+          <dt>К перечислению</dt><dd class="money-strong">${money(it.sale && it.sale.for_pay)}</dd>
+        </dl>
+      `;
+    }
+
+    async function openOrder(it){
+      if (!modal) modal = bootstrap.Modal.getOrCreateInstance(els.modalEl);
+      renderDetail(it);
+      modal.show();
+      // подтянуть актуальные детали (таймлайн/sale) на всякий случай
+      try{
+        const id = encodeURIComponent(it.srid || it.gnumber || it.id);
+        const p = new URLSearchParams();
+        if (hasOrderPeriod()) {
+          p.set('date_from', els.dateFrom.value);
+          p.set('date_to', els.dateTo.value);
+        }
+        if (hasSalePeriod()) {
+          p.set('sale_from', els.saleFrom.value);
+          p.set('sale_to', els.saleTo.value);
+        }
+        const r = await fetch(`/api/order-feed/${id}?` + p.toString(), { credentials: 'include' });
+        const data = await r.json();
+        if (r.ok && data.item) renderDetail(data.item);
+      }catch(e){ /* keep first render */ }
+    }
+
+    async function exportExcel(){
+      if (!hasOrderPeriod() && !hasSalePeriod()) return;
+      if (!state.items.length) return;
+      const btn = els.exportBtn;
+      const oldText = btn ? btn.textContent : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Экспорт…';
+      }
+      try {
+        const p = queryParams({ limit: '1', offset: '0' });
+        p.delete('limit');
+        p.delete('offset');
+        const r = await fetch('/api/order-feed/export?' + p.toString(), { credentials: 'include' });
+        if (!r.ok) {
+          let msg = 'Ошибка экспорта';
+          try {
+            const data = await r.json();
+            if (data.error) msg = data.error;
+          } catch (_) {}
+          throw new Error(msg);
+        }
+        const blob = await r.blob();
+        let filename = 'Лента_заказов.xlsx';
+        const cd = r.headers.get('Content-Disposition') || '';
+        const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
+        if (m) filename = decodeURIComponent(m[1] || m[2]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        console.error(e);
+        alert(e.message || 'Ошибка экспорта');
+      } finally {
+        if (btn) {
+          btn.textContent = oldText || 'Excel';
+          btn.disabled = !state.items.length;
+        }
+      }
+    }
+
+    els.body.addEventListener('click', (e) => {
+      const tr = e.target.closest('tr');
+      if (!tr || !els.body.contains(tr)) return;
+      if (e.target.closest('a.js-open-order')) e.preventDefault();
+      const id = tr.dataset.srid || tr.dataset.gnumber || tr.dataset.id;
+      const it = state.items.find(x => x.srid === id || x.gnumber === id || x.id === id);
+      if (it) openOrder(it);
+    });
+
+    els.refreshBtn?.addEventListener('click', () => loadFeed({ refresh: true }));
+    els.exportBtn?.addEventListener('click', () => exportExcel());
+    els.applyBtn?.addEventListener('click', () => loadFeed({ refresh: false }));
+    els.search?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') loadFeed({ refresh: false });
+    });
+
+    // image preview
+    (function(){
+      const preview = document.getElementById('imgPreview');
+      const previewImg = document.getElementById('imgPreviewImg');
+      document.addEventListener('mouseover', function(e){
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('product-thumb') && t.getAttribute('src')){
+          previewImg.src = t.getAttribute('src');
+          preview.style.display = 'block';
+        }
+      });
+      document.addEventListener('mouseout', function(e){
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('product-thumb')){
+          preview.style.display = 'none';
+          previewImg.src = '';
+        }
+      });
+    })();
+
+    document.addEventListener('DOMContentLoaded', () => {
+      orderCalendar = new FeedDateRangeCalendar({
+        calendar: 'feedDateRangeCalendar',
+        input: 'feedDateRangeInput',
+        start: 'dateFrom',
+        end: 'dateTo',
+        btn: 'feedDateRangeBtn',
+        grid: 'feedCalendarGrid',
+        monthYear: 'feedCurrentMonthYear',
+        prev: 'feedPrevMonth',
+        next: 'feedNextMonth',
+        reset: 'feedResetDates',
+      }, syncApplyBtn);
+      saleCalendar = new FeedDateRangeCalendar({
+        calendar: 'saleDateRangeCalendar',
+        input: 'saleDateRangeInput',
+        start: 'saleFrom',
+        end: 'saleTo',
+        btn: 'saleDateRangeBtn',
+        grid: 'saleCalendarGrid',
+        monthYear: 'saleCurrentMonthYear',
+        prev: 'salePrevMonth',
+        next: 'saleNextMonth',
+        reset: 'saleResetDates',
+      }, syncApplyBtn);
+      syncApplyBtn();
+    });
+  })();
+  </script>
+</body>
+</html>
