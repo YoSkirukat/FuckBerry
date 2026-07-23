@@ -158,6 +158,8 @@ python app.py
 - `GET /fbw` — поставки FBW
 - `GET /report/finance` — финансовые отчеты
 - `GET /report/sales` — отчеты по продажам
+- `GET /marketing` — маркетинг и продвижение (рекламные кампании WB)
+- `GET /marketing/campaign/<id>` — карточка рекламной кампании
 - `GET /tools/labels` — генерация этикеток
 - `GET /profile` — профиль пользователя
 - `GET /admin/users` — управление пользователями (только админы)
@@ -168,6 +170,8 @@ python app.py
 - `POST /api/fbs-stock/refresh` — обновление остатков FBS
 - `GET /api/fbw/supplies` — список поставок FBW
 - `GET /api/report/finance` — данные финансового отчета
+- `GET /api/marketing/data` — рекламные кампании и статистика за период
+- `GET /api/marketing/campaign/<id>` — детализация кампании (KPI, товары, фразы)
 - `GET /api/top-products-orders` — ТОП товаров по заказам
 
 ### Экспорт данных

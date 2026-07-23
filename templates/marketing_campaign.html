@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  {% block title %}<title>Кампания {{ campaign_id }}</title>{% endblock %}
+  {% include '_header.html' %}
+  <style>
+    h1 { font-size: 1.45rem; margin-bottom: .35rem; }
+    .back-link { text-decoration: none; color: #6c757d; font-size: .9rem; }
+    .back-link:hover { color: #0d6efd; }
+    .status-pill {
+      display: inline-block; padding: .15rem .5rem; border-radius: .25rem;
+      font-size: .75rem; font-weight: 600;
+    }
+    .status-9 { background: #d1e7dd; color: #0f5132; }
+    .status-11 { background: #f8d7da; color: #842029; }
+    .status-4 { background: #cff4fc; color: #055160; }
+    .status-7 { background: #e2e3e5; color: #41464b; }
+    .status-8, .status-m1 { background: #e2e3e5; color: #6c757d; }
+    .meta-line { color: #6c757d; font-size: .875rem; }
+    .budget-card, .stat-card {
+      border: 1px solid #e9ecef; border-radius: .5rem; background: #fff; padding: 1rem 1.1rem;
+    }
+    .budget-label { font-size: .8rem; color: #6c757d; }
+    .budget-value { font-size: 1.35rem; font-weight: 700; }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: .75rem;
+    }
+    .stat-label { font-size: .75rem; color: #6c757d; margin-bottom: .2rem; }
+    .stat-value { font-size: 1.15rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .stat-sub {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      gap: .5rem .75rem;
+      margin-top: .85rem;
+      padding-top: .85rem;
+      border-top: 1px solid #f1f3f5;
+    }
+    .stat-sub .stat-value { font-size: .95rem; }
+    .section-title { font-size: 1.05rem; font-weight: 600; margin-bottom: .75rem; }
+    .prod-card {
+      display: flex; gap: .75rem; align-items: flex-start;
+      border: 1px solid #e9ecef; border-radius: .5rem; padding: .75rem;
+      background: #fff; max-width: 420px;
+    }
+    .prod-thumb { width: 56px; height: 74px; object-fit: cover; border-radius: 4px; background: #eee; flex-shrink: 0; }
+    .badge-ads { background: #e7f1ff; color: #0d6efd; font-size: .7rem; font-weight: 600; padding: .15rem .4rem; border-radius: .25rem; }
+    .table-mkt { font-size: .85rem; }
+    .table-mkt th { white-space: nowrap; font-weight: 600; }
+    .table-wrap { max-height: 55vh; overflow: auto; border: 1px solid #e9ecef; border-radius: .5rem; }
+    .table-wrap thead th {
+      position: sticky; top: 0; z-index: 2; background: #f8f9fa;
+      box-shadow: inset 0 -1px 0 #dee2e6;
+    }
+    .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .phrase-tabs .nav-link { font-size: .875rem; color: #495057; }
+    .phrase-tabs .nav-link.active { font-weight: 600; }
+    .loading-overlay {
+      position: fixed; inset: 0; background: rgba(255,255,255,.75);
+      z-index: 9999; display: none; align-items: center; justify-content: center;
+    }
+    .loading-overlay.show { display: flex; }
+    .loading-box {
+      background: #fff; padding: 1.5rem 2rem; border-radius: .5rem;
+      box-shadow: 0 .5rem 1rem rgba(0,0,0,.12); text-align: center;
+    }
+    .spinner {
+      width: 36px; height: 36px; border: 3px solid #e9ecef; border-top-color: #0d6efd;
+      border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto .75rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    tr.row-click { cursor: pointer; }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+
+  <div id="mktLoading" class="loading-overlay" aria-hidden="true">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div class="text-muted">Загрузка кампании…</div>
+    </div>
+  </div>
+
+  <div class="container mt-3 mb-4">
+    <div class="mb-2">
+      <a class="back-link" id="backLink" href="/marketing">← К списку кампаний</a>
+    </div>
+
+    <div id="mktError" class="alert alert-danger d-none" role="alert"></div>
+
+    <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap mb-3">
+      <div>
+        <h1 id="campTitle">Кампания {{ campaign_id }}</h1>
+        <div class="meta-line d-flex flex-wrap align-items-center gap-2">
+          <span class="status-pill status-9" id="campStatus">—</span>
+          <span id="campMeta"></span>
+        </div>
+      </div>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <div class="input-group input-group-sm" style="width: auto;">
+          <span class="input-group-text">Период</span>
+          <input type="date" class="form-control" id="dateFrom" value="{{ date_from_val }}">
+          <span class="input-group-text">—</span>
+          <input type="date" class="form-control" id="dateTo" value="{{ date_to_val }}">
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="btnLoad">Обновить</button>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-3">
+        <div class="budget-card h-100">
+          <div class="budget-label">Остаток бюджета</div>
+          <div class="budget-value" id="campBudget">—</div>
+          <div class="small text-muted mt-1" id="campPaymentType"></div>
+        </div>
+      </div>
+      <div class="col-md-9">
+        <div class="stat-card">
+          <div class="stat-grid" id="statMain"></div>
+          <div class="stat-sub" id="statSub"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mb-4">
+      <div class="section-title">Товары <span class="text-muted fw-normal" id="prodCount"></span></div>
+      <div class="d-flex flex-wrap gap-2" id="productsList">
+        <div class="text-muted">—</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+        <div class="section-title mb-0">Поисковые фразы</div>
+        <input type="search" class="form-control form-control-sm" id="searchPhrases" placeholder="Поиск по фразе" style="max-width: 280px;">
+      </div>
+      <ul class="nav nav-tabs phrase-tabs mb-2" role="tablist">
+        <li class="nav-item"><button class="nav-link active" type="button" data-filter="all">Все <span class="badge text-bg-light" id="cntAll">0</span></button></li>
+        <li class="nav-item"><button class="nav-link" type="button" data-filter="minus">Минус-фразы <span class="badge text-bg-light" id="cntMinus">0</span></button></li>
+        <li class="nav-item"><button class="nav-link" type="button" data-filter="fixed">Фиксированные <span class="badge text-bg-light" id="cntFixed">0</span></button></li>
+      </ul>
+      <div class="table-wrap">
+        <table class="table table-sm table-hover table-mkt mb-0">
+          <thead>
+            <tr>
+              <th>Поисковая фраза</th>
+              <th class="text-end">Ставка</th>
+              <th class="text-end">Позиция</th>
+              <th class="text-end">Показы</th>
+              <th class="text-end">Клики</th>
+              <th class="text-end">CTR</th>
+              <th class="text-end">CPC</th>
+              <th class="text-end">Заказы</th>
+            </tr>
+          </thead>
+          <tbody id="phrasesBody">
+            <tr><td colspan="8" class="text-muted text-center py-4">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {% include '_footer.html' %}
+  <script src="/static/bootstrap/js/bootstrap.bundle.min.js" defer></script>
+  <script>
+(function () {
+  const CAMPAIGN_ID = {{ campaign_id }};
+  let phrases = [];
+  let phraseFilter = 'all';
+
+  const money = (v) => {
+    if (v == null || !isFinite(Number(v))) return '—';
+    return Number(v).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' ₽';
+  };
+  const num = (v) => {
+    if (v == null || !isFinite(Number(v))) return '—';
+    return Number(v).toLocaleString('ru-RU');
+  };
+  const pct = (v) => {
+    if (v == null || !isFinite(Number(v))) return '—';
+    return Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' %';
+  };
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+
+  function setLoading(on) {
+    document.getElementById('mktLoading').classList.toggle('show', !!on);
+  }
+  function showError(msg) {
+    const el = document.getElementById('mktError');
+    if (!msg) { el.classList.add('d-none'); el.textContent = ''; return; }
+    el.textContent = msg;
+    el.classList.remove('d-none');
+  }
+  function statusCss(status) {
+    return status < 0 ? 'status-m1' : ('status-' + status);
+  }
+
+  function renderHeader(c) {
+    document.getElementById('campTitle').textContent = c.name || ('Кампания ' + CAMPAIGN_ID);
+    document.title = (c.name || 'Кампания') + ' — FuckBerry';
+    const st = document.getElementById('campStatus');
+    st.className = 'status-pill ' + statusCss(c.status);
+    st.textContent = c.status_label || '—';
+    const bits = ['ID ' + c.id];
+    if (c.created_fmt) bits.push('Создана ' + c.created_fmt);
+    if (c.bid_type_label) bits.push(c.bid_type_label);
+    document.getElementById('campMeta').textContent = bits.join(' · ');
+    document.getElementById('campBudget').textContent = money(c.budget);
+    document.getElementById('campPaymentType').textContent =
+      (c.payment_label || '') + (c.placements
+        ? (' · ' + [
+            c.placements.search ? 'Поиск' : null,
+            c.placements.recommendations ? 'Рекомендации' : null
+          ].filter(Boolean).join(', ') || '')
+        : '');
+  }
+
+  function renderSummary(s) {
+    s = s || {};
+    document.getElementById('statMain').innerHTML = [
+      ['Показы', num(s.views)],
+      ['Клики', num(s.clicks)],
+      ['Заказы', num(s.orders)],
+      ['Сумма заказов', money(s.sum_price)],
+    ].map(([l,v]) => `<div><div class="stat-label">${l}</div><div class="stat-value">${v}</div></div>`).join('');
+    document.getElementById('statSub').innerHTML = [
+      ['CTR', pct(s.ctr)],
+      ['CPC', money(s.cpc)],
+      ['CR', pct(s.cr)],
+      ['ДРР', pct(s.cost_share)],
+      ['Затраты', money(s.sum)],
+      ['ROAS', (s.roas != null && isFinite(s.roas)) ? Number(s.roas).toLocaleString('ru-RU', {maximumFractionDigits:2}) : '—'],
+    ].map(([l,v]) => `<div><div class="stat-label">${l}</div><div class="stat-value">${v}</div></div>`).join('');
+  }
+
+  function renderProducts(list) {
+    const box = document.getElementById('productsList');
+    document.getElementById('prodCount').textContent = list && list.length ? `(${list.length})` : '';
+    if (!list || !list.length) {
+      box.innerHTML = '<div class="text-muted">Нет товаров в кампании</div>';
+      return;
+    }
+    box.innerHTML = list.map((p) => {
+      const photo = p.photo
+        ? `<img class="prod-thumb" src="${esc(p.photo)}" alt="">`
+        : `<div class="prod-thumb"></div>`;
+      const link = p.nm_id ? `/product/${p.nm_id}` : '#';
+      return `<div class="prod-card">
+        ${photo}
+        <div>
+          <div><a href="${link}" class="text-decoration-none">${esc(p.name)}</a></div>
+          <div class="small text-muted">Артикул WB: ${p.nm_id}</div>
+          ${p.in_ads ? '<span class="badge-ads">В рекламе</span>' : ''}
+          <div class="small text-muted mt-1">
+            Затраты ${money(p.sum)} · Заказы ${num(p.orders)}
+            ${p.bid_search != null ? ' · Ставка поиска ' + money(p.bid_search) : ''}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function filteredPhrases() {
+    const q = (document.getElementById('searchPhrases').value || '').trim().toLowerCase();
+    return phrases.filter((p) => {
+      if (phraseFilter === 'minus' && !p.is_minus) return false;
+      if (phraseFilter === 'fixed' && !p.has_fixed_bid) return false;
+      if (q && !(p.norm_query || '').toLowerCase().includes(q) && !String(p.nm_id).includes(q)) return false;
+      return true;
+    });
+  }
+
+  function renderPhrases() {
+    const rows = filteredPhrases();
+    document.getElementById('cntAll').textContent = phrases.length;
+    document.getElementById('cntMinus').textContent = phrases.filter(p => p.is_minus).length;
+    document.getElementById('cntFixed').textContent = phrases.filter(p => p.has_fixed_bid).length;
+    const tbody = document.getElementById('phrasesBody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="text-muted text-center py-4">Нет фраз</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((p) => `<tr>
+      <td>
+        <div>${esc(p.norm_query)}</div>
+        <div class="small text-muted">nm ${p.nm_id}${p.is_minus ? ' · минус' : ''}${p.has_fixed_bid ? ' · фикс.' : ''}</div>
+      </td>
+      <td class="text-end num">${p.bid != null ? money(p.bid) : '—'}</td>
+      <td class="text-end num">${p.avg_pos != null ? Number(p.avg_pos).toLocaleString('ru-RU', {maximumFractionDigits:1}) : '—'}</td>
+      <td class="text-end num">${p.views != null ? num(p.views) : '—'}</td>
+      <td class="text-end num">${num(p.clicks)}</td>
+      <td class="text-end num">${pct(p.ctr)}</td>
+      <td class="text-end num">${p.cpc != null ? money(p.cpc) : '—'}</td>
+      <td class="text-end num">${num(p.orders)}</td>
+    </tr>`).join('');
+  }
+
+  async function loadData() {
+    const dateFrom = document.getElementById('dateFrom').value;
+    const dateTo = document.getElementById('dateTo').value;
+    if (!dateFrom || !dateTo) { showError('Укажите период'); return; }
+    showError('');
+    setLoading(true);
+    const qs = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    document.getElementById('backLink').href = '/marketing?' + qs.toString();
+    try {
+      const resp = await fetch(`/api/marketing/campaign/${CAMPAIGN_ID}?` + qs.toString());
+      const data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.message || data.error || ('Ошибка ' + resp.status));
+      renderHeader(data.campaign || {});
+      renderSummary(data.summary || {});
+      renderProducts(data.products || []);
+      phrases = data.phrases || [];
+      renderPhrases();
+      history.replaceState(null, '', `/marketing/campaign/${CAMPAIGN_ID}?` + qs.toString());
+    } catch (e) {
+      showError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  document.getElementById('btnLoad').addEventListener('click', loadData);
+  document.getElementById('searchPhrases').addEventListener('input', renderPhrases);
+  document.querySelectorAll('.phrase-tabs [data-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.phrase-tabs .nav-link').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      phraseFilter = btn.getAttribute('data-filter');
+      renderPhrases();
+    });
+  });
+
+  loadData();
+})();
+  </script>
+</body>
+</html>

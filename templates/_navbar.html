@@ -202,6 +202,9 @@
         <li class="nav-item">
           <a class="nav-link {% if request.path.startswith('/products') %}active{% endif %}" href="/products" {% if request.path.startswith('/products') %}aria-current="page"{% endif %}>Товары</a>
         </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.path.startswith('/marketing') %}active{% endif %}" href="/marketing" {% if request.path.startswith('/marketing') %}aria-current="page"{% endif %}>Маркетинг и продвижение</a>
+        </li>
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle {% if request.path.startswith('/report') %}active{% endif %}" href="#" id="repDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             Отчёты

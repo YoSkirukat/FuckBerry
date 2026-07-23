@@ -335,6 +335,7 @@ from blueprints.stocks import stocks_bp
 from blueprints.reports import reports_bp
 from blueprints.tools import tools_bp
 from blueprints.admin import admin_bp
+from blueprints.marketing import marketing_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(changelog_bp)
@@ -355,6 +356,7 @@ app.register_blueprint(stocks_bp)
 app.register_blueprint(reports_bp)
 app.register_blueprint(tools_bp)
 app.register_blueprint(admin_bp)
+app.register_blueprint(marketing_bp)
 
 # --- DB init helpers (portable across common DBs) ---
 def _ensure_schema_users_validity_columns() -> None:
@@ -9967,8 +9969,10 @@ def api_report_finance_result():
 
 # --- Расшифровка финансового отчёта (DASHBOARD) ---
 _BREAKDOWN_LOADING: dict[int, bool] = {}
+_BREAKDOWN_LOADING_STARTED: dict[int, float] = {}
 _BREAKDOWN_RESULTS: dict[int, dict] = {}
 _BREAKDOWN_PROGRESS: dict[int, dict] = {}
+_BREAKDOWN_STALE_AFTER_S = 12 * 60  # если загрузка «висит» дольше — разрешаем перезапуск
 
 
 def _set_breakdown_progress(user_id: int, current: int, total: int, period: str = "") -> None:
@@ -9977,6 +9981,25 @@ def _set_breakdown_progress(user_id: int, current: int, total: int, period: str 
 
 def _clear_breakdown_progress(user_id: int) -> None:
     _BREAKDOWN_PROGRESS.pop(user_id, None)
+
+
+def _reset_stale_breakdown_load(user_id: int) -> bool:
+    """Сбрасывает зависший флаг загрузки. True, если сброс выполнен."""
+    if not _BREAKDOWN_LOADING.get(user_id, False):
+        return False
+    started = _BREAKDOWN_LOADING_STARTED.get(user_id) or 0.0
+    age = time.time() - started if started else _BREAKDOWN_STALE_AFTER_S + 1
+    if age < _BREAKDOWN_STALE_AFTER_S:
+        return False
+    logging.warning(
+        "Сброс зависшей загрузки finance-breakdown для user_id=%s (возраст %.0f с)",
+        user_id,
+        age,
+    )
+    _BREAKDOWN_LOADING[user_id] = False
+    _BREAKDOWN_LOADING_STARTED.pop(user_id, None)
+    _clear_breakdown_progress(user_id)
+    return True
 
 
 @app.route("/api/report/finance-breakdown/progress", methods=["GET"])
@@ -10009,62 +10032,102 @@ def api_finance_breakdown_products_export():
 
     date_from_fmt = str(payload.get("date_from_fmt") or "").strip()
     date_to_fmt = str(payload.get("date_to_fmt") or "").strip()
+    mode = str(payload.get("mode") or "full").strip().lower()
+    if mode not in ("full", "1c"):
+        mode = "full"
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "По товарам"
-    ws.append([
-        "Баркод",
-        "Товар",
-        "Кол-во",
-        "Цена",
-        "Сумма",
-        "Цена с услугами",
-        "Сумма с услугами",
-    ])
-
-    for row in products:
-        if not isinstance(row, dict):
-            continue
-        qty = int(row.get("sales_qty") or 0)
-        if qty <= 0:
-            continue
-        amount = float(row.get("for_pay") or 0)
-        amount_svc = row.get("for_pay_with_services")
-        try:
-            amount_svc_f = float(amount_svc) if amount_svc is not None else None
-        except (TypeError, ValueError):
-            amount_svc_f = None
-        price = round(amount / qty, 2)
-        price_svc = row.get("price_with_services")
-        if price_svc is None and amount_svc_f is not None:
-            price_svc = round(amount_svc_f / qty, 2)
-        try:
-            price_svc_f = float(price_svc) if price_svc is not None else None
-        except (TypeError, ValueError):
-            price_svc_f = None
-
-        ws.append([
-            str(row.get("barcode") or ""),
-            str(row.get("name") or ""),
-            qty,
-            price,
-            round(amount, 2),
-            price_svc_f if price_svc_f is not None else "",
-            round(amount_svc_f, 2) if amount_svc_f is not None else "",
-        ])
-
-    if ws.max_row < 2:
-        return jsonify({"success": False, "message": "Нет товаров с количеством для выгрузки."}), 400
-
-    bio = io.BytesIO()
-    wb.save(bio)
-    bio.seek(0)
 
     period = ""
     if date_from_fmt and date_to_fmt:
         period = f"_{date_from_fmt.replace('.', '-')}_{date_to_fmt.replace('.', '-')}"
-    filename = f"rasshifrovka_po_tovaram{period}.xlsx"
+
+    if mode == "1c":
+        ws.title = "Для 1С"
+        ws.append(["Баркод", "Товар", "Кол-во", "Цена с услугами", "Сумма с услугами"])
+        for row in products:
+            if not isinstance(row, dict):
+                continue
+            qty = int(row.get("sales_qty") or 0)
+            if qty <= 0:
+                continue
+            amount_svc = row.get("for_pay_with_services")
+            try:
+                amount_svc_f = float(amount_svc) if amount_svc is not None else None
+            except (TypeError, ValueError):
+                amount_svc_f = None
+            price_svc = row.get("price_with_services")
+            if price_svc is None and amount_svc_f is not None:
+                price_svc = round(amount_svc_f / qty, 2)
+            try:
+                price_svc_f = float(price_svc) if price_svc is not None else None
+            except (TypeError, ValueError):
+                price_svc_f = None
+            ws.append([
+                str(row.get("barcode") or ""),
+                str(row.get("name") or ""),
+                qty,
+                price_svc_f if price_svc_f is not None else "",
+                round(amount_svc_f, 2) if amount_svc_f is not None else "",
+            ])
+        if ws.max_row < 2:
+            return jsonify({"success": False, "message": "Нет товаров с продажами для выгрузки в 1С."}), 400
+        filename = f"dlya_1c{period}.xlsx"
+    else:
+        ws.title = "По товарам"
+        ws.append([
+            "Баркод",
+            "Товар",
+            "Кол-во",
+            "Цена",
+            "Сумма",
+            "Логистика",
+            "Хранение",
+            "Платная приёмка",
+            "Продвижение",
+            "Цена с услугами",
+            "Сумма с услугами",
+        ])
+        for row in products:
+            if not isinstance(row, dict):
+                continue
+            qty = int(row.get("sales_qty") or 0)
+            amount = float(row.get("for_pay") or 0)
+            amount_svc = row.get("for_pay_with_services")
+            try:
+                amount_svc_f = float(amount_svc) if amount_svc is not None else None
+            except (TypeError, ValueError):
+                amount_svc_f = None
+            price = round(amount / qty, 2) if qty > 0 else ""
+            price_svc = row.get("price_with_services")
+            if price_svc is None and amount_svc_f is not None and qty > 0:
+                price_svc = round(amount_svc_f / qty, 2)
+            try:
+                price_svc_f = float(price_svc) if price_svc is not None else None
+            except (TypeError, ValueError):
+                price_svc_f = None
+
+            ws.append([
+                str(row.get("barcode") or ""),
+                str(row.get("name") or ""),
+                qty,
+                price,
+                round(amount, 2),
+                round(float(row.get("logistics") or 0), 2),
+                round(float(row.get("storage") or 0), 2),
+                round(float(row.get("acceptance") or 0), 2),
+                round(float(row.get("promotion") or 0), 2),
+                price_svc_f if price_svc_f is not None else "",
+                round(amount_svc_f, 2) if amount_svc_f is not None else "",
+            ])
+        if ws.max_row < 2:
+            return jsonify({"success": False, "message": "Нет товаров для выгрузки."}), 400
+        filename = f"rasshifrovka_po_tovaram{period}.xlsx"
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
     return send_file(
         bio,
         as_attachment=True,
@@ -10078,6 +10141,7 @@ def api_finance_breakdown_products_export():
 def api_finance_breakdown():
     """Загрузка фин. отчёта WB и расчёт сводки как на листе DASHBOARD."""
     from utils.finance_dashboard import compute_finance_dashboard
+    from utils.api import fetch_paid_storage_report
 
     token = effective_wb_api_token(current_user)
     req_from = (request.args.get("date_from") or "").strip()
@@ -10100,23 +10164,82 @@ def api_finance_breakdown():
     days_diff = (date_to_obj - date_from_obj).days
     use_async = request.args.get("async", "0") == "1" or days_diff > 60
 
+    def _load_breakdown(progress_callback=None):
+        from concurrent.futures import ThreadPoolExecutor
+
+        progress_lock = threading.Lock()
+
+        def safe_progress(current, total, period):
+            if progress_callback:
+                with progress_lock:
+                    progress_callback(current, total, period)
+
+        raw = fetch_finance_report(token, req_from, req_to, progress_callback=safe_progress)
+
+        paid_storage: list = []
+        paid_storage_error = None
+        promotion_spend: list = []
+        promotion_error = None
+
+        def _load_storage():
+            return fetch_paid_storage_report(
+                token, req_from, req_to, progress_callback=safe_progress
+            )
+
+        def _load_promo():
+            from utils.advertising import fetch_promotion_spend_by_nm
+            return fetch_promotion_spend_by_nm(
+                token, req_from, req_to, progress_callback=safe_progress, user_id=user_id
+            )
+
+        # Хранение и продвижение — параллельно (раньше шли друг за другом)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_storage = pool.submit(_load_storage)
+            fut_promo = pool.submit(_load_promo)
+            try:
+                paid_storage = fut_storage.result()
+            except Exception as e:
+                logging.exception("Не удалось загрузить отчёт платного хранения")
+                paid_storage_error = str(e)
+            try:
+                promotion_spend = fut_promo.result()
+            except Exception as e:
+                logging.exception("Не удалось загрузить статистику продвижения")
+                promotion_error = str(e)
+
+        if progress_callback:
+            progress_callback(1, 1, "расчёт сводки…")
+
+        result = compute_finance_dashboard(
+            raw,
+            req_from,
+            req_to,
+            user_id=user_id,
+            paid_storage=paid_storage,
+            promotion_spend=promotion_spend,
+        )
+        if paid_storage_error:
+            result["paid_storage_error"] = paid_storage_error
+        if promotion_error:
+            result["promotion_error"] = promotion_error
+        return result
+
     if use_async:
+        _reset_stale_breakdown_load(user_id)
         if _BREAKDOWN_LOADING.get(user_id, False):
             return jsonify({"loading": True, "message": "Загрузка уже выполняется"}), 200
 
         _BREAKDOWN_RESULTS.pop(user_id, None)
         _clear_breakdown_progress(user_id)
         _BREAKDOWN_LOADING[user_id] = True
+        _BREAKDOWN_LOADING_STARTED[user_id] = time.time()
 
         def _worker() -> None:
             try:
                 def progress_callback(current, total, period):
                     _set_breakdown_progress(user_id, current, total, period)
 
-                raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
-                _BREAKDOWN_RESULTS[user_id] = compute_finance_dashboard(
-                    raw, req_from, req_to, user_id=user_id
-                )
+                _BREAKDOWN_RESULTS[user_id] = _load_breakdown(progress_callback=progress_callback)
             except Exception as e:
                 logging.exception("Ошибка загрузки расшифровки фин. отчёта")
                 _BREAKDOWN_RESULTS[user_id] = {
@@ -10126,6 +10249,7 @@ def api_finance_breakdown():
                 }
             finally:
                 _BREAKDOWN_LOADING[user_id] = False
+                _BREAKDOWN_LOADING_STARTED.pop(user_id, None)
                 _clear_breakdown_progress(user_id)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -10135,9 +10259,9 @@ def api_finance_breakdown():
         def progress_callback(current, total, period):
             _set_breakdown_progress(user_id, current, total, period)
 
-        raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+        result = _load_breakdown(progress_callback=progress_callback)
         _clear_breakdown_progress(user_id)
-        return jsonify(compute_finance_dashboard(raw, req_from, req_to, user_id=user_id)), 200
+        return jsonify(result), 200
     except Exception as e:
         logging.exception("Ошибка синхронной загрузки расшифровки фин. отчёта")
         _clear_breakdown_progress(user_id)

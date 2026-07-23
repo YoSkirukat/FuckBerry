@@ -220,15 +220,19 @@ def _enrich_products_from_catalog(
     products: List[Dict[str, Any]],
     catalog: List[Dict[str, Any]] | None,
 ) -> List[Dict[str, Any]]:
-    """Подставляет баркод/название из кэша товаров (/products) по nm_id или артикулу."""
+    """Подставляет баркод/название из кэша товаров (/products) по баркоду, nm_id или артикулу."""
     if not products or not catalog:
         return products
 
+    by_barcode: Dict[str, Dict[str, Any]] = {}
     by_nm: Dict[int, Dict[str, Any]] = {}
     by_sa: Dict[str, Dict[str, Any]] = {}
     for p in catalog:
         if not isinstance(p, dict):
             continue
+        bc = str(p.get("barcode") or "").strip()
+        if bc and bc not in by_barcode:
+            by_barcode[bc] = p
         nmv = p.get("nm_id") or p.get("nmId") or p.get("nmID")
         if nmv is not None:
             try:
@@ -239,84 +243,502 @@ def _enrich_products_from_catalog(
         if sa:
             by_sa[sa] = p
 
+    def _needs_name(item: Dict[str, Any]) -> bool:
+        name = str(item.get("name") or "").strip()
+        if not name or name in ("—", "-"):
+            return True
+        if name.startswith("nmID "):
+            return True
+        # Для строк только из хранения — подтягиваем нормальное имя из каталога
+        if item.get("storage_only"):
+            bc = str(item.get("barcode") or "").strip()
+            sa = str(item.get("sa_name") or "").strip()
+            if name == bc or name == sa:
+                return True
+        return False
+
     for item in products:
-        if str(item.get("barcode") or "").strip():
+        needs_name = _needs_name(item)
+        needs_barcode = not str(item.get("barcode") or "").strip()
+        needs_sa = not str(item.get("sa_name") or "").strip()
+        # storage_only всегда пробуем обогатить имя из каталога
+        force_catalog_name = bool(item.get("storage_only"))
+        if not needs_name and not needs_barcode and not needs_sa and not force_catalog_name:
             continue
+
         meta = None
-        nm = item.get("nm_id")
-        if nm is not None and nm != "":
-            try:
-                meta = by_nm.get(int(nm))
-            except Exception:
-                meta = by_nm.get(nm)  # type: ignore[arg-type]
+        bc = str(item.get("barcode") or "").strip()
+        if bc and bc in by_barcode:
+            meta = by_barcode[bc]
+        if not meta:
+            nm = item.get("nm_id")
+            if nm is not None and nm != "":
+                try:
+                    meta = by_nm.get(int(nm))
+                except Exception:
+                    meta = by_nm.get(nm)  # type: ignore[arg-type]
         if not meta:
             sa = str(item.get("sa_name") or "").strip().lower()
             if sa:
                 meta = by_sa.get(sa)
         if not meta:
             continue
-        bc = str(meta.get("barcode") or "").strip()
-        if bc:
-            item["barcode"] = bc
-        cat_name = str(meta.get("name") or "").strip()
-        if cat_name and (not item.get("name") or item.get("name") in ("", "—")):
-            item["name"] = cat_name
-        if not item.get("sa_name"):
-            sa_cat = str(meta.get("supplier_article") or "").strip()
+
+        if needs_barcode:
+            cat_bc = str(meta.get("barcode") or "").strip()
+            if cat_bc:
+                item["barcode"] = cat_bc
+        if needs_sa:
+            sa_cat = str(meta.get("supplier_article") or meta.get("vendorCode") or "").strip()
             if sa_cat:
                 item["sa_name"] = sa_cat
-                if item.get("name") in ("", "—", None):
-                    item["name"] = _product_title({
-                        "brand_name": "",
-                        "sa_name": sa_cat,
-                        "subject_name": cat_name,
-                    }) if not cat_name else cat_name
+
+        cat_name = str(meta.get("name") or meta.get("title") or "").strip()
+        if cat_name and (needs_name or force_catalog_name):
+            item["name"] = cat_name
+        elif _needs_name(item):
+            sa_cat = str(item.get("sa_name") or meta.get("supplier_article") or "").strip()
+            if sa_cat:
+                item["name"] = _product_title({
+                    "brand_name": "",
+                    "sa_name": sa_cat,
+                    "subject_name": "",
+                })
     return products
+
+
+def _index_products_for_costs(products: List[Dict[str, Any]]) -> tuple[
+    Dict[str, Dict[str, Any]],
+    Dict[int, Dict[str, Any]],
+    Dict[str, Dict[str, Any]],
+]:
+    by_barcode: Dict[str, Dict[str, Any]] = {}
+    by_nm: Dict[int, Dict[str, Any]] = {}
+    by_sa: Dict[str, Dict[str, Any]] = {}
+    for p in products:
+        bc = str(p.get("barcode") or "").strip()
+        if bc and bc not in by_barcode:
+            by_barcode[bc] = p
+        nm = p.get("nm_id")
+        if nm is not None and nm != "":
+            try:
+                nmi = int(nm)
+                if nmi not in by_nm:
+                    by_nm[nmi] = p
+            except Exception:
+                pass
+        sa = str(p.get("sa_name") or "").strip().lower()
+        if sa and sa not in by_sa:
+            by_sa[sa] = p
+    return by_barcode, by_nm, by_sa
+
+
+def _match_product_for_cost(
+    row: Dict[str, Any],
+    by_barcode: Dict[str, Dict[str, Any]],
+    by_nm: Dict[int, Dict[str, Any]],
+    by_sa: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any] | None:
+    bc = str(row.get("barcode") or "").strip()
+    if bc and bc in by_barcode:
+        return by_barcode[bc]
+    nm = row.get("nm_id")
+    if nm is not None and nm != "":
+        try:
+            hit = by_nm.get(int(nm))
+            if hit:
+                return hit
+        except Exception:
+            pass
+    sa = str(row.get("sa_name") or "").strip().lower()
+    if sa and sa in by_sa:
+        return by_sa[sa]
+    return None
+
+
+def _paid_storage_row_as_cost_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Нормализует строку paid_storage к полям, понятным матчеру товаров."""
+    return {
+        "barcode": str(row.get("barcode") or "").strip(),
+        "nm_id": row.get("nmId") if row.get("nmId") is not None else row.get("nm_id"),
+        "sa_name": str(row.get("vendorCode") or row.get("vendor_code") or row.get("sa_name") or "").strip(),
+        "brand_name": str(row.get("brand") or row.get("brand_name") or "").strip(),
+        "subject_name": str(row.get("subject") or row.get("subject_name") or "").strip(),
+        "ts_name": str(row.get("size") or row.get("ts_name") or "").strip(),
+        "quantity": row.get("barcodesCount") if row.get("barcodesCount") is not None else row.get("quantity"),
+        "warehousePrice": row.get("warehousePrice") if row.get("warehousePrice") is not None else row.get("warehouse_price"),
+    }
+
+
+def _build_paid_storage_by_product(paid_storage: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
+    """Агрегация платного хранения по товару (баркод / nmId+артикул)."""
+    if not paid_storage:
+        return []
+    bucket: Dict[str, Dict[str, Any]] = {}
+    for raw in paid_storage:
+        if not isinstance(raw, dict):
+            continue
+        r = _paid_storage_row_as_cost_row(raw)
+        amount = _f(r.get("warehousePrice"))
+        if abs(amount) < 1e-9:
+            continue
+        barcode = str(r.get("barcode") or "").strip()
+        nm = r.get("nm_id")
+        sa = str(r.get("sa_name") or "").strip()
+        if barcode:
+            key = f"bc:{barcode}"
+        elif nm is not None or sa:
+            key = f"nm:{nm if nm is not None else ''}|sa:{sa}"
+        else:
+            key = f"misc:{r.get('brand_name')}|{r.get('subject_name')}"
+        item = bucket.get(key)
+        if item is None:
+            bucket[key] = {
+                "nm_id": nm if nm is not None else "",
+                "sa_name": sa,
+                "barcode": barcode,
+                "brand_name": str(r.get("brand_name") or "").strip(),
+                "subject_name": str(r.get("subject_name") or "").strip(),
+                "ts_name": str(r.get("ts_name") or "").strip(),
+                "oper": "Платное хранение",
+                "doc_type": "",
+                "bonus_type": "",
+                "qty": _i(r.get("quantity")),
+                "amount": round(amount, 2),
+            }
+        else:
+            item["qty"] = _i(item.get("qty")) + _i(r.get("quantity"))
+            item["amount"] = round(_f(item["amount"]) + amount, 2)
+            if not item.get("barcode") and barcode:
+                item["barcode"] = barcode
+            if not item.get("nm_id") and nm is not None:
+                item["nm_id"] = nm
+            if not item.get("sa_name") and sa:
+                item["sa_name"] = sa
+    return _finalize_details(bucket)
+
+
+def _apply_product_expense_columns(
+    products: List[Dict[str, Any]],
+    raw: List[Dict[str, Any]],
+    *,
+    acceptance_total: float,
+    paid_storage: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """
+    Колонки затрат по товарам:
+    — Логистика: сумма delivery_rub по фактическим строкам товара;
+    — Платная приёмка: сумма acceptance по фактическим строкам товара;
+    — Хранение: сумма warehousePrice из отчёта «Платное хранение» по товару.
+      Товары только из хранения (без строк финотчёта) добавляются отдельными строками.
+    """
+    if not products and not paid_storage:
+        return products
+
+    for p in products:
+        p["logistics"] = 0.0
+        p["acceptance"] = 0.0
+        p["storage"] = 0.0
+        p["promotion"] = 0.0
+
+    by_barcode, by_nm, by_sa = _index_products_for_costs(products)
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        prod = _match_product_for_cost(r, by_barcode, by_nm, by_sa)
+        if not prod:
+            continue
+        delivery_rub = _f(r.get("delivery_rub"))
+        acceptance_val = _f(r.get("acceptance"))
+        if abs(delivery_rub) >= 1e-9:
+            prod["logistics"] = round(_f(prod["logistics"]) + delivery_rub, 2)
+        if abs(acceptance_val) >= 1e-9:
+            prod["acceptance"] = round(_f(prod["acceptance"]) + acceptance_val, 2)
+
+    # В сверке приёмка показывается как abs(total)
+    if acceptance_total < 0:
+        for p in products:
+            if abs(_f(p.get("acceptance"))) >= 1e-9:
+                p["acceptance"] = round(-_f(p["acceptance"]), 2)
+
+    unmatched_storage: Dict[str, Dict[str, Any]] = {}
+    if paid_storage:
+        for raw_row in paid_storage:
+            if not isinstance(raw_row, dict):
+                continue
+            r = _paid_storage_row_as_cost_row(raw_row)
+            amount = _f(r.get("warehousePrice"))
+            if abs(amount) < 1e-9:
+                continue
+            prod = _match_product_for_cost(r, by_barcode, by_nm, by_sa)
+            if prod:
+                prod["storage"] = round(_f(prod["storage"]) + amount, 2)
+                continue
+
+            barcode = str(r.get("barcode") or "").strip()
+            nm = r.get("nm_id")
+            sa = str(r.get("sa_name") or "").strip()
+            if barcode:
+                key = f"bc:{barcode}"
+            elif nm is not None or sa:
+                key = f"nm:{nm if nm is not None else ''}|sa:{sa}"
+            else:
+                key = f"misc:{r.get('brand_name')}|{r.get('subject_name')}"
+
+            item = unmatched_storage.get(key)
+            if item is None:
+                name = _product_title(r)
+                if name in ("", "—"):
+                    if sa:
+                        name = sa
+                    elif nm is not None and str(nm) != "":
+                        name = f"nmID {nm}"
+                    elif barcode:
+                        name = barcode
+                unmatched_storage[key] = {
+                    "barcode": barcode,
+                    "name": name,
+                    "nm_id": nm if nm is not None else "",
+                    "sa_name": sa,
+                    "sales_qty": 0,
+                    "for_pay": 0.0,
+                    "logistics": 0.0,
+                    "acceptance": 0.0,
+                    "storage": round(amount, 2),
+                    "promotion": 0.0,
+                    "storage_only": True,
+                    "for_pay_with_services": None,
+                    "price_with_services": None,
+                }
+            else:
+                item["storage"] = round(_f(item["storage"]) + amount, 2)
+                if not item.get("barcode") and barcode:
+                    item["barcode"] = barcode
+                if (not item.get("nm_id") or item.get("nm_id") == "") and nm is not None:
+                    item["nm_id"] = nm
+                if not item.get("sa_name") and sa:
+                    item["sa_name"] = sa
+                if item.get("name") in ("", "—", None):
+                    name = _product_title(r)
+                    if name in ("", "—"):
+                        name = sa or (f"nmID {nm}" if nm is not None and str(nm) != "" else barcode) or "—"
+                    item["name"] = name
+
+    if unmatched_storage:
+        extra = list(unmatched_storage.values())
+        extra.sort(key=lambda x: (-abs(_f(x.get("storage"))), str(x.get("barcode") or ""), str(x.get("sa_name") or "")))
+        products.extend(extra)
+
+    return products
+
+
+def _is_promotion_deduction_row(row: Dict[str, Any]) -> bool:
+    """Строка «прочих удержаний» за WB Продвижение."""
+    text = " ".join(
+        str(row.get(k) or "")
+        for k in ("supplier_oper_name", "bonus_type_name", "doc_type_name", "oper", "bonus_type", "doc_type")
+    ).lower()
+    return "продвижен" in text
+
+
+def _promotion_total_from_details(other_details: List[Dict[str, Any]]) -> float:
+    total = 0.0
+    for item in other_details:
+        if _is_promotion_deduction_row(item):
+            total += _f(item.get("amount"))
+    return round(total, 2)
+
+
+def _apply_promotion_allocation(
+    products: List[Dict[str, Any]],
+    *,
+    promotion_total: float,
+    promotion_spend: List[Dict[str, Any]] | None,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], float]:
+    """
+    Раскидывает сумму удержаний «WB Продвижение» только по рекламировавшимся nmId
+    пропорционально затратам из /adv/v3/fullstats.
+    Возвращает (products, breakdown_rows, advert_api_sum).
+    """
+    for p in products:
+        p["promotion"] = 0.0
+
+    spend_rows = [r for r in (promotion_spend or []) if isinstance(r, dict) and _f(r.get("sum")) > 0]
+    advert_api_sum = round(sum(_f(r.get("sum")) for r in spend_rows), 2)
+    target = round(_f(promotion_total), 2)
+    if not spend_rows or abs(target) < 1e-9:
+        return products, [], advert_api_sum
+
+    by_nm: Dict[int, List[Dict[str, Any]]] = {}
+    for p in products:
+        nm = p.get("nm_id")
+        if nm is None or nm == "":
+            continue
+        try:
+            nmi = int(nm)
+        except Exception:
+            continue
+        by_nm.setdefault(nmi, []).append(p)
+
+    weight_total = round(sum(_f(r.get("sum")) for r in spend_rows), 2)
+    if abs(weight_total) < 1e-9:
+        return products, [], advert_api_sum
+
+    allocated = 0.0
+    last_idx = len(spend_rows) - 1
+    breakdown: List[Dict[str, Any]] = []
+
+    for i, row in enumerate(spend_rows):
+        try:
+            nmi = int(row.get("nm_id"))
+        except Exception:
+            continue
+        weight = _f(row.get("sum"))
+        if i == last_idx:
+            amt = round(target - allocated, 2)
+        else:
+            amt = round(target * weight / weight_total, 2)
+            allocated = round(allocated + amt, 2)
+
+        matched = by_nm.get(nmi) or []
+        if matched:
+            if len(matched) == 1:
+                matched[0]["promotion"] = round(_f(matched[0].get("promotion")) + amt, 2)
+                barcode = str(matched[0].get("barcode") or "").strip()
+                sa_name = str(matched[0].get("sa_name") or "").strip()
+                name = str(matched[0].get("name") or "").strip()
+            else:
+                pay_base = sum(_f(p.get("for_pay")) for p in matched)
+                sub_alloc = 0.0
+                for j, p in enumerate(matched):
+                    if j == len(matched) - 1:
+                        part = round(amt - sub_alloc, 2)
+                    elif abs(pay_base) >= 1e-9:
+                        part = round(amt * _f(p.get("for_pay")) / pay_base, 2)
+                        sub_alloc = round(sub_alloc + part, 2)
+                    else:
+                        part = round(amt / len(matched), 2)
+                        sub_alloc = round(sub_alloc + part, 2)
+                    p["promotion"] = round(_f(p.get("promotion")) + part, 2)
+                barcode = str(matched[0].get("barcode") or "").strip()
+                sa_name = str(matched[0].get("sa_name") or row.get("vendor_code") or "").strip()
+                name = str(matched[0].get("name") or row.get("name") or "").strip()
+        else:
+            barcode = str(row.get("barcode") or "").strip()
+            sa_name = str(row.get("vendor_code") or "").strip()
+            name = str(row.get("name") or "").strip()
+
+        breakdown.append({
+            "nm_id": nmi,
+            "sa_name": sa_name,
+            "barcode": barcode,
+            "brand_name": "",
+            "subject_name": name,
+            "ts_name": "",
+            "oper": "WB Продвижение",
+            "doc_type": "",
+            "bonus_type": "",
+            "qty": 0,
+            "amount": amt,
+            "advert_sum": round(weight, 2),
+        })
+
+    breakdown.sort(key=lambda x: abs(_f(x.get("amount"))), reverse=True)
+    return products, breakdown, advert_api_sum
 
 
 def _apply_services_allocation(
     products: List[Dict[str, Any]],
     payment_to_account: float,
+    products_total: float | None = None,
 ) -> List[Dict[str, Any]]:
     """
-    Раскидывает затраты (разницу до оплаты на РС) пропорционально сумме
-    только по товарам с продажами (кол-во > 0).
-    Итог «Сумма с услугами» по проданным = Оплата на РС.
+    Сумма с услугами (только товары с кол-вом продаж > 0):
+
+      base = Сумма − Логистика − Хранение − Платная приёмка − Продвижение
+
+    Затем на проданные товары пропорционально их Сумме (выкупу) раскидываем
+    только:
+      • разницу в разнесённых = (Сумма по товарам − Оплата на РС) − Σ разнесённых
+        (логистика+хранение+приёмка+продвижение по всем строкам);
+      • затраты тех же 4 колонок у товаров без продаж (qty = 0),
+        т.е. −Σ base по непроданным.
+
+    Итого к вычету из base проданных:
+      to_distribute = −Σ base_непроданных + разница_в_разнесённых
+
+    Σ «Сумма с услугами» по проданным = Оплата на РС.
+    Цена с услугами = Сумма с услугами / Кол-во.
     """
     if not products:
         return products
 
     target = round(_f(payment_to_account), 2)
     sold: List[Dict[str, Any]] = []
+    unsold: List[Dict[str, Any]] = []
     for p in products:
         if _i(p.get("sales_qty")) > 0:
             sold.append(p)
         else:
+            unsold.append(p)
             p["for_pay_with_services"] = None
             p["price_with_services"] = None
 
     if not sold:
         return products
 
-    total = round(sum(_f(p.get("for_pay")) for p in sold), 2)
-    if abs(total) < 1e-9:
-        for p in sold:
-            p["for_pay_with_services"] = 0.0
-            p["price_with_services"] = None
-        return products
+    def _costs(p: Dict[str, Any]) -> float:
+        return (
+            _f(p.get("logistics"))
+            + _f(p.get("storage"))
+            + _f(p.get("acceptance"))
+            + _f(p.get("promotion"))
+        )
 
-    allocated = 0.0
+    def _base(p: Dict[str, Any]) -> float:
+        return round(_f(p.get("for_pay")) - _costs(p), 2)
+
+    bases: List[float] = []
+    weights: List[float] = []
+    for p in sold:
+        pay = _f(p.get("for_pay"))
+        bases.append(_base(p))
+        weights.append(pay if pay > 0 else 0.0)
+
+    # Затраты / base непроданных (обычно for_pay=0 → base = −затраты)
+    unsold_services_sum = round(sum(_base(p) for p in unsold), 2)
+
+    allocated_total = round(sum(_costs(p) for p in products), 2)
+    pt = round(_f(products_total), 2) if products_total is not None else round(
+        sum(_f(p.get("for_pay")) for p in products), 2
+    )
+    # Как в подвале сверки: разница = Итого Сумма (gap) − Итого Разнесено
+    recon_gap = round(pt - target, 2)
+    allocation_residual = round(recon_gap - allocated_total, 2)
+
+    # Сколько вычесть суммарно с проданных (пропорционально Сумме)
+    to_distribute = round((-unsold_services_sum) + allocation_residual, 2)
+    # Эквивалентно: target - sum(bases), при for_pay непроданных ≈ 0
+    gap = round(-to_distribute, 2)
+
+    weight_total = round(sum(weights), 2)
+    allocated_adj = 0.0
     last_idx = len(sold) - 1
     for i, p in enumerate(sold):
-        pay = _f(p.get("for_pay"))
         if i == last_idx:
-            amt = round(target - allocated, 2)
+            adj = round(gap - allocated_adj, 2)
+        elif weight_total > 1e-9:
+            adj = round(gap * (weights[i] / weight_total), 2)
+            allocated_adj = round(allocated_adj + adj, 2)
         else:
-            amt = round(pay / total * target, 2)
-            allocated = round(allocated + amt, 2)
+            n = len(sold)
+            adj = round(gap / n, 2)
+            allocated_adj = round(allocated_adj + adj, 2)
+        amt = round(bases[i] + adj, 2)
         p["for_pay_with_services"] = amt
         qty = _i(p.get("sales_qty"))
         p["price_with_services"] = round(amt / qty, 2) if qty else None
+
     return products
 
 
@@ -352,25 +774,43 @@ def _build_payment_vs_products_reconciliation(
     damage: float,
     paid_delivery: float,
     e3_acquiring_corr: float,
+    promotion_total: float = 0.0,
+    allocated: Dict[str, float] | None = None,
 ) -> Dict[str, Any]:
     """
     Тождество:
     Сумма по товарам − Оплата на РС =
-      Логистика + Хранение + Прочие + Приёмка + Штрафы + Доплаты
+      Логистика + Хранение + Продвижение + Прочие + Приёмка + Штрафы + Доплаты
       + К перечислению по возвратам
       − Компенсация брака − Компенсация ущерба − Платная доставка − Корр. эквайринга
       + (Сумма по товарам − К перечислению по продажам)
     """
     gap = round(products_total - payment_to_account, 2)
     products_minus_ksale = round(products_total - k_sale, 2)
+    alloc = allocated or {}
+    promo = round(_f(promotion_total), 2)
+    other_rest = round(_f(other_deductions) - promo, 2)
 
-    lines = [
-        {"key": "logistics", "label": "Логистика", "amount": round(logistics, 2)},
-        {"key": "storage", "label": "Хранение", "amount": round(storage, 2)},
-        {"key": "other", "label": "Прочие удержания", "amount": round(other_deductions, 2)},
-        {"key": "acceptance", "label": "Платная приёмка", "amount": round(abs(acceptance), 2)},
-        {"key": "penalties", "label": "Штрафы", "amount": round(penalties, 2)},
-        {"key": "additional", "label": "Доплаты", "amount": round(additional_payment, 2)},
+    def _line(key: str, label: str, amount: float, alloc_key: str | None = None) -> Dict[str, Any]:
+        amt = round(_f(amount), 2)
+        row: Dict[str, Any] = {"key": key, "label": label, "amount": amt}
+        if alloc_key and alloc_key in alloc:
+            allocated_amt = round(_f(alloc.get(alloc_key)), 2)
+            row["allocated"] = allocated_amt
+            row["diff"] = round(amt - allocated_amt, 2)
+        return row
+
+    lines: List[Dict[str, Any]] = [
+        _line("logistics", "Логистика", logistics, "logistics"),
+        _line("storage", "Хранение", storage, "storage"),
+    ]
+    if abs(promo) >= 0.01:
+        lines.append(_line("promotion", "Продвижение", promo, "promotion"))
+    lines.extend([
+        _line("other", "Прочие удержания", other_rest),
+        _line("acceptance", "Платная приёмка", abs(acceptance), "acceptance"),
+        _line("penalties", "Штрафы", penalties),
+        _line("additional", "Доплаты", additional_payment),
         {
             "key": "returns_for_pay",
             "label": "К перечислению по возвратам (в оплате на РС вычитается)",
@@ -393,7 +833,7 @@ def _build_payment_vs_products_reconciliation(
             "label": "Сумма по товарам − к перечислению по продажам (компенсации и др. в товарах / продажи без идентификации)",
             "amount": products_minus_ksale,
         },
-    ]
+    ])
     explained = round(sum(_f(x["amount"]) for x in lines), 2)
     return {
         "products_total": round(products_total, 2),
@@ -413,6 +853,8 @@ def compute_finance_dashboard(
     date_to: str,
     products_catalog: List[Dict[str, Any]] | None = None,
     user_id: int | None = None,
+    paid_storage: List[Dict[str, Any]] | None = None,
+    promotion_spend: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     """
     Считает метрики как на DASHBOARD:
@@ -457,7 +899,6 @@ def compute_finance_dashboard(
     additional_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     return_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     logistics_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
-    storage_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     other_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     acceptance_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     returns_for_pay_details: Dict[Tuple[str, ...], Dict[str, Any]] = {}
@@ -487,8 +928,6 @@ def compute_finance_dashboard(
 
         if abs(delivery_rub) >= 1e-9:
             _add_detail(logistics_details, r, delivery_rub)
-        if abs(storage_fee) >= 1e-9:
-            _add_detail(storage_details, r, storage_fee)
         if abs(acceptance_val) >= 1e-9:
             _add_detail(acceptance_details, r, acceptance_val)
         if abs(deduction_val) >= 1e-9:
@@ -600,10 +1039,38 @@ def compute_finance_dashboard(
     # Оплата на РС (M6) ≈ выручка − удержания + корректировка эквайринга
     payment_to_account = revenue_rub - deductions_total + e3_acquiring_corr
 
+    storage_by_product = _build_paid_storage_by_product(paid_storage)
+    paid_storage_total = round(sum(_f(x.get("amount")) for x in storage_by_product), 2)
+
     products = _build_products_breakdown(raw)
     products = _enrich_products_from_catalog(products, products_catalog)
+    products = _apply_product_expense_columns(
+        products,
+        raw,
+        acceptance_total=acceptance,
+        paid_storage=paid_storage,
+    )
+    # Дообогащаем имена/баркоды у строк «только хранение»
+    products = _enrich_products_from_catalog(products, products_catalog)
+    other_details_final = _finalize_details(other_details)
+    promotion_total = _promotion_total_from_details(other_details_final)
+    products, promotion_by_product, advert_api_sum = _apply_promotion_allocation(
+        products,
+        promotion_total=promotion_total,
+        promotion_spend=promotion_spend,
+    )
     products_total = round(sum(_f(p.get("for_pay")) for p in products), 2)
-    products = _apply_services_allocation(products, payment_to_account)
+    products = _apply_services_allocation(
+        products,
+        payment_to_account,
+        products_total=products_total,
+    )
+    allocated_to_products = {
+        "logistics": round(sum(_f(p.get("logistics")) for p in products), 2),
+        "storage": round(sum(_f(p.get("storage")) for p in products), 2),
+        "acceptance": round(sum(_f(p.get("acceptance")) for p in products), 2),
+        "promotion": round(sum(_f(p.get("promotion")) for p in products), 2),
+    }
     reconciliation = _build_payment_vs_products_reconciliation(
         products_total=products_total,
         payment_to_account=payment_to_account,
@@ -619,6 +1086,8 @@ def compute_finance_dashboard(
         damage=damage,
         paid_delivery=paid_delivery,
         e3_acquiring_corr=e3_acquiring_corr,
+        promotion_total=promotion_total,
+        allocated=allocated_to_products,
     )
 
     def pct(part: float, whole: float) -> float | None:
@@ -690,8 +1159,9 @@ def compute_finance_dashboard(
         },
         "reconciliation_details": {
             "logistics": _finalize_details(logistics_details),
-            "storage": _finalize_details(storage_details),
-            "other": _finalize_details(other_details),
+            "storage": storage_by_product,
+            "promotion": promotion_by_product,
+            "other": [x for x in other_details_final if not _is_promotion_deduction_row(x)],
             "acceptance": (
                 _negate_detail_amounts(_finalize_details(acceptance_details))
                 if acceptance < 0
@@ -706,6 +1176,11 @@ def compute_finance_dashboard(
             "e3": _negate_detail_amounts(_finalize_details(e3_details)),
             "products_vs_ksale": _finalize_details(products_vs_ksale_details),
         },
+        "promotion_by_product": promotion_by_product,
+        "promotion_total": round(promotion_total, 2),
+        "promotion_advert_sum": advert_api_sum,
+        "paid_storage_total": paid_storage_total,
+        "paid_storage_rows": len(paid_storage or []),
         "products": products,
         "products_total": products_total,
         "reconciliation": reconciliation,

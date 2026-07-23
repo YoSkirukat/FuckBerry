@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  {% block title %}<title>Маркетинг и продвижение</title>{% endblock %}
+  {% include '_header.html' %}
+  <style>
+    h1 { font-size: 1.7rem; }
+    .kpi-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem 1.5rem;
+      align-items: stretch;
+      padding: .85rem 1rem;
+      background: #f8f9fa;
+      border: 1px solid #e9ecef;
+      border-radius: .5rem;
+    }
+    .kpi-item { min-width: 110px; }
+    .kpi-label { font-size: .75rem; color: #6c757d; margin-bottom: .15rem; }
+    .kpi-value { font-size: 1.05rem; font-weight: 600; color: #212529; }
+    .mkt-tabs .nav-link { color: #495057; }
+    .mkt-tabs .nav-link.active { font-weight: 600; }
+    .status-pill {
+      display: inline-block;
+      padding: .15rem .45rem;
+      border-radius: .25rem;
+      font-size: .75rem;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .status-9 { background: #d1e7dd; color: #0f5132; }
+    .status-11 { background: #f8d7da; color: #842029; }
+    .status-4 { background: #cff4fc; color: #055160; }
+    .status-7 { background: #e2e3e5; color: #41464b; }
+    .status-8, .status-m1 { background: #e2e3e5; color: #6c757d; }
+    .camp-thumb {
+      width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #eee;
+    }
+    .prod-thumb {
+      width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #eee;
+    }
+    .table-mkt { font-size: .875rem; }
+    .table-mkt th { white-space: nowrap; font-weight: 600; }
+    .table-mkt td { vertical-align: middle; }
+    .camp-name { font-weight: 500; }
+    .camp-id { font-size: .75rem; color: #6c757d; }
+    .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    tr.camp-row { cursor: pointer; }
+    tr.camp-row:hover { background-color: #f8f9fa; }
+    .loading-overlay {
+      position: fixed; inset: 0; background: rgba(255,255,255,.75);
+      z-index: 9999; display: none; align-items: center; justify-content: center;
+    }
+    .loading-overlay.show { display: flex; }
+    .loading-box {
+      background: #fff; padding: 1.5rem 2rem; border-radius: .5rem;
+      box-shadow: 0 .5rem 1rem rgba(0,0,0,.12); text-align: center;
+    }
+    .spinner {
+      width: 36px; height: 36px; border: 3px solid #e9ecef; border-top-color: #0d6efd;
+      border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto .75rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .table-wrap { max-height: 68vh; overflow: auto; }
+    .table-wrap thead th {
+      position: sticky; top: 0; z-index: 2; background: #f8f9fa;
+      box-shadow: inset 0 -1px 0 #dee2e6;
+    }
+  </style>
+</head>
+<body>
+  {% include '_navbar.html' %}
+
+  <div id="mktLoading" class="loading-overlay" aria-hidden="true">
+    <div class="loading-box">
+      <div class="spinner"></div>
+      <div class="loading-text text-muted">Загрузка рекламных кампаний…</div>
+    </div>
+  </div>
+
+  <div class="container mt-3 mb-4">
+    <div class="d-flex align-items-center justify-content-between mb-3 gap-2 flex-wrap">
+      <h1 class="mb-0">Маркетинг и продвижение</h1>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <div class="input-group input-group-sm" style="width: auto;">
+          <span class="input-group-text">Период</span>
+          <input type="date" class="form-control" id="dateFrom" value="{{ date_from_val }}">
+          <span class="input-group-text">—</span>
+          <input type="date" class="form-control" id="dateTo" value="{{ date_to_val }}">
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="btnLoad">Обновить</button>
+      </div>
+    </div>
+
+    <div id="mktError" class="alert alert-danger d-none" role="alert"></div>
+
+    <div class="kpi-bar mb-3" id="kpiBar">
+      <div class="kpi-item">
+        <div class="kpi-label">Сумма заказов</div>
+        <div class="kpi-value" id="kpiOrdersSum">—</div>
+      </div>
+      <div class="kpi-item">
+        <div class="kpi-label">Затраты</div>
+        <div class="kpi-value" id="kpiSpend">—</div>
+      </div>
+      <div class="kpi-item">
+        <div class="kpi-label">Доля затрат</div>
+        <div class="kpi-value" id="kpiCostShare">—</div>
+      </div>
+      <div class="kpi-item">
+        <div class="kpi-label">ROAS</div>
+        <div class="kpi-value" id="kpiRoas">—</div>
+      </div>
+      <div class="kpi-item">
+        <div class="kpi-label">CTR</div>
+        <div class="kpi-value" id="kpiCtr">—</div>
+      </div>
+      <div class="kpi-item ms-auto">
+        <div class="kpi-label">Кампаний</div>
+        <div class="kpi-value" id="kpiCamps">—</div>
+      </div>
+    </div>
+
+    <ul class="nav nav-tabs mkt-tabs mb-3" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="tab-campaigns-btn" data-bs-toggle="tab" data-bs-target="#tab-campaigns" type="button" role="tab">Кампании</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-products-btn" data-bs-toggle="tab" data-bs-target="#tab-products" type="button" role="tab">Товары</button>
+      </li>
+    </ul>
+
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="tab-campaigns" role="tabpanel">
+        <div class="mb-2">
+          <input type="search" class="form-control form-control-sm" id="searchCampaigns" placeholder="Поиск по названию или ID кампании">
+        </div>
+        <div class="table-wrap border rounded">
+          <table class="table table-sm table-hover table-mkt mb-0" id="campaignsTable">
+            <thead>
+              <tr>
+                <th style="width:52px;"></th>
+                <th>Кампания</th>
+                <th>Тип</th>
+                <th class="text-end">Остаток бюджета</th>
+                <th class="text-end">Затраты</th>
+                <th class="text-end">Показы</th>
+                <th class="text-end">CTR</th>
+                <th class="text-end">Заказы</th>
+                <th class="text-end">Сумма заказов</th>
+                <th class="text-end">Доля затрат</th>
+                <th class="text-end">ROAS</th>
+              </tr>
+            </thead>
+            <tbody id="campaignsBody">
+              <tr><td colspan="11" class="text-muted text-center py-4">Нажмите «Обновить», чтобы загрузить данные</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tab-products" role="tabpanel">
+        <div class="mb-2">
+          <input type="search" class="form-control form-control-sm" id="searchProducts" placeholder="Поиск по ID или названию товара">
+        </div>
+        <div class="table-wrap border rounded">
+          <table class="table table-sm table-hover table-mkt mb-0" id="productsTable">
+            <thead>
+              <tr>
+                <th style="width:52px;"></th>
+                <th>Товар</th>
+                <th class="text-end">Затраты</th>
+                <th class="text-end">Показы</th>
+                <th class="text-end">CTR</th>
+                <th class="text-end">Заказы</th>
+                <th class="text-end">Сумма заказов</th>
+                <th class="text-end">Доля затрат</th>
+                <th class="text-end">Ср. позиция</th>
+                <th class="text-end">Клики</th>
+              </tr>
+            </thead>
+            <tbody id="productsBody">
+              <tr><td colspan="10" class="text-muted text-center py-4">Нажмите «Обновить», чтобы загрузить данные</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% include '_footer.html' %}
+  <script src="/static/bootstrap/js/bootstrap.bundle.min.js" defer></script>
+  <script>
+(function () {
+  const money = (v) => {
+    const n = Number(v);
+    if (!isFinite(n)) return '—';
+    return n.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' ₽';
+  };
+  const num = (v) => {
+    const n = Number(v);
+    if (!isFinite(n)) return '—';
+    return n.toLocaleString('ru-RU');
+  };
+  const pct = (v) => {
+    const n = Number(v);
+    if (!isFinite(n)) return '—';
+    return n.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + ' %';
+  };
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+
+  let campaigns = [];
+  let products = [];
+
+  function setLoading(on) {
+    document.getElementById('mktLoading').classList.toggle('show', !!on);
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('mktError');
+    if (!msg) {
+      el.classList.add('d-none');
+      el.textContent = '';
+      return;
+    }
+    el.textContent = msg;
+    el.classList.remove('d-none');
+  }
+
+  function renderSummary(s) {
+    s = s || {};
+    document.getElementById('kpiOrdersSum').textContent = money(s.sum_price);
+    document.getElementById('kpiSpend').textContent = money(s.sum);
+    document.getElementById('kpiCostShare').textContent = pct(s.cost_share);
+    document.getElementById('kpiRoas').textContent = (s.roas != null && isFinite(s.roas))
+      ? Number(s.roas).toLocaleString('ru-RU', { maximumFractionDigits: 2 })
+      : '—';
+    document.getElementById('kpiCtr').textContent = pct(s.ctr);
+    document.getElementById('kpiCamps').textContent = num(s.campaigns_count);
+  }
+
+  function statusCss(status) {
+    return status < 0 ? 'status-m1' : ('status-' + status);
+  }
+
+  function renderCampaigns(filter) {
+    const q = (filter || '').trim().toLowerCase();
+    const tbody = document.getElementById('campaignsBody');
+    const rows = campaigns.filter((c) => {
+      if (!q) return true;
+      return String(c.id).includes(q) || (c.name || '').toLowerCase().includes(q);
+    });
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="11" class="text-muted text-center py-4">Нет кампаний</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((c) => {
+      const photo = c.photo
+        ? `<img class="camp-thumb" src="${esc(c.photo)}" alt="">`
+        : `<div class="camp-thumb d-flex align-items-center justify-content-center text-muted small">—</div>`;
+      const sc = statusCss(c.status);
+      const df = document.getElementById('dateFrom').value;
+      const dt = document.getElementById('dateTo').value;
+      const href = `/marketing/campaign/${c.id}?date_from=${encodeURIComponent(df)}&date_to=${encodeURIComponent(dt)}`;
+      return `<tr class="camp-row" data-id="${c.id}">
+        <td>${photo}</td>
+        <td>
+          <div class="camp-name"><a class="text-decoration-none text-dark" href="${href}">${esc(c.name)}</a></div>
+          <div class="mt-1"><span class="status-pill ${sc}">${esc(c.status_label)}</span></div>
+          <div class="camp-id">ID ${c.id}${c.nm_count ? ' · товаров: ' + c.nm_count : ''}</div>
+        </td>
+        <td>
+          <div>${esc(c.payment_label)}</div>
+          <div class="small text-muted">${esc(c.bid_type_label)}</div>
+        </td>
+        <td class="text-end num">${c.budget != null ? money(c.budget) : '—'}</td>
+        <td class="text-end num">${money(c.sum)}</td>
+        <td class="text-end num">${num(c.views)}</td>
+        <td class="text-end num">${pct(c.ctr)}</td>
+        <td class="text-end num">${num(c.orders)}</td>
+        <td class="text-end num">${money(c.sum_price)}</td>
+        <td class="text-end num">${pct(c.cost_share)}</td>
+        <td class="text-end num">${c.roas ? Number(c.roas).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) : '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderProducts(filter) {
+    const q = (filter || '').trim().toLowerCase();
+    const tbody = document.getElementById('productsBody');
+    const rows = products.filter((p) => {
+      if (!q) return true;
+      return String(p.nm_id).includes(q)
+        || (p.name || '').toLowerCase().includes(q)
+        || (p.vendor_code || '').toLowerCase().includes(q);
+    });
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="10" class="text-muted text-center py-4">Нет данных по товарам за период</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((p) => {
+      const photo = p.photo
+        ? `<img class="prod-thumb" src="${esc(p.photo)}" alt="">`
+        : `<div class="prod-thumb d-flex align-items-center justify-content-center text-muted small">—</div>`;
+      const title = esc(p.name || 'Товар');
+      const link = p.nm_id ? `/product/${p.nm_id}` : '#';
+      return `<tr>
+        <td>${photo}</td>
+        <td>
+          <div><a href="${link}" class="text-decoration-none">${title}</a></div>
+          <div class="small text-muted">Артикул WB: ${p.nm_id}${p.vendor_code ? ' · ' + esc(p.vendor_code) : ''}</div>
+          <div class="small text-muted">Кампаний: ${p.campaigns_count || 0}</div>
+        </td>
+        <td class="text-end num">${money(p.sum)}</td>
+        <td class="text-end num">${num(p.views)}</td>
+        <td class="text-end num">${pct(p.ctr)}</td>
+        <td class="text-end num">${num(p.orders)}</td>
+        <td class="text-end num">${money(p.sum_price)}</td>
+        <td class="text-end num">${pct(p.cost_share)}</td>
+        <td class="text-end num">${p.avg_position != null ? Number(p.avg_position).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) : '—'}</td>
+        <td class="text-end num">${num(p.clicks)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function loadData() {
+    const dateFrom = document.getElementById('dateFrom').value;
+    const dateTo = document.getElementById('dateTo').value;
+    if (!dateFrom || !dateTo) {
+      showError('Укажите период');
+      return;
+    }
+    showError('');
+    setLoading(true);
+    try {
+      const url = `/api/marketing/data?date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        throw new Error(data.message || data.error || ('Ошибка ' + resp.status));
+      }
+      campaigns = data.campaigns || [];
+      products = data.products || [];
+      renderSummary(data.summary);
+      renderCampaigns(document.getElementById('searchCampaigns').value);
+      renderProducts(document.getElementById('searchProducts').value);
+
+      const qs = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+      history.replaceState(null, '', '/marketing?' + qs.toString());
+    } catch (e) {
+      showError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openCampaign(id) {
+    const dateFrom = document.getElementById('dateFrom').value;
+    const dateTo = document.getElementById('dateTo').value;
+    const qs = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    window.location.href = `/marketing/campaign/${id}?` + qs.toString();
+  }
+
+  document.getElementById('btnLoad').addEventListener('click', loadData);
+  document.getElementById('searchCampaigns').addEventListener('input', (e) => renderCampaigns(e.target.value));
+  document.getElementById('searchProducts').addEventListener('input', (e) => renderProducts(e.target.value));
+  document.getElementById('campaignsBody').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr.camp-row');
+    if (!tr) return;
+    if (e.target.closest('a')) return;
+    const id = tr.getAttribute('data-id');
+    if (id) openCampaign(id);
+  });
+
+  loadData();
+})();
+  </script>
+</body>
+</html>

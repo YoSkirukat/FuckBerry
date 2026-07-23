@@ -183,12 +183,71 @@
     #compDetailModal tfoot th {
       white-space: nowrap;
     }
-    #productsTable th,
+    #productsTable {
+      font-size: 0.8125rem;
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    #productsTableWrap {
+      max-height: calc(100vh - 7.5rem);
+      overflow: auto;
+      border: 1px solid #dee2e6;
+      border-radius: 0.25rem;
+    }
+    #productsTable thead th {
+      text-align: center !important;
+      vertical-align: middle;
+      background-color: #d7eafc;
+      color: #0b3d91;
+      font-weight: 600;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      box-shadow: inset 0 -1px 0 #b6d4ef;
+      border-left: 1px solid #c5daf0;
+      border-bottom: 1px solid #b6d4ef;
+    }
+    #productsTable thead th:first-child {
+      border-left: none;
+    }
+    #productsTable tbody td,
+    #productsTable tfoot th {
+      border-left: 1px solid #e4e8ec;
+    }
+    #productsTable tbody td:first-child,
+    #productsTable tfoot th:first-child {
+      border-left: none;
+    }
+    #productsTable tbody tr:nth-child(even) {
+      background-color: #f3f5f7;
+    }
+    #productsTable tbody tr:nth-child(odd) {
+      background-color: #ffffff;
+    }
+    #productsTable tbody tr:hover td {
+      background-color: #e8f1fb;
+    }
     #productsTable td.text-end,
     #productsTable tfoot th {
       white-space: nowrap;
     }
+    #productsTable td:nth-child(1),
+    #productsTable td:nth-child(2),
+    #productsTable td:nth-child(4),
+    #productsTable tfoot th:nth-child(2) {
+      text-align: center;
+    }
     #productsTable td:nth-child(2) { white-space: nowrap; }
+    #productsTable tfoot tr th {
+      background-color: #eef5fb;
+      color: #0b3d91;
+      font-size: 0.8125rem;
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+      box-shadow: inset 0 1px 0 #b6d4ef;
+    }
     @media (max-width: 768px) {
       .calendar-dropdown.mobile-centered {
         position: fixed !important;
@@ -256,8 +315,8 @@
       <div class="tab-content">
         <div class="tab-pane fade show active" id="tabFinance" role="tabpanel" aria-labelledby="tab-finance-btn">
           <div id="dashboard">
-      <div class="row g-3 mb-3">
-        <div class="col-lg-8">
+      <div class="row g-3">
+        <div class="col-lg-4">
           <div class="panel">
             <div class="panel-title">Продажи</div>
             <div class="row g-3">
@@ -304,21 +363,6 @@
         </div>
         <div class="col-lg-4">
           <div class="panel">
-            <div class="panel-title">Итог удержаний</div>
-            <div class="row-metric"><span>Комиссия</span><span id="sCommission">—</span></div>
-            <div class="row-metric"><span>Логистика</span><span id="sLogistics">—</span></div>
-            <div class="row-metric"><span>Хранение</span><span id="sStorage">—</span></div>
-            <div class="row-metric"><span>Прочие удержания</span><span id="sOther">—</span></div>
-            <div class="row-metric"><span>Платная приёмка</span><span id="sAcceptance">—</span></div>
-            <div class="row-metric"><span>Остальное</span><span id="sRest">—</span></div>
-            <div class="row-metric total"><span>Оплата на РС</span><span id="sPayment">—</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="row g-3">
-        <div class="col-lg-6">
-          <div class="panel">
             <div class="panel-title">
               Удержания WB
               <span class="text-muted fw-normal" id="deductionsTotalLabel"></span>
@@ -340,12 +384,12 @@
             </div>
             <div class="row-metric">
               <span>Хранение</span>
-              <span><span class="deduction-val" id="dStorage">—</span>
+              <span><span class="deduction-val" id="dStorageWrap">—</span>
                 <span class="metric-sub" id="dStoragePct"></span></span>
             </div>
             <div class="row-metric">
               <span>Прочие удержания</span>
-              <span><span class="deduction-val" id="dOther">—</span>
+              <span><span class="deduction-val" id="dOtherWrap">—</span>
                 <span class="metric-sub" id="dOtherPct"></span></span>
             </div>
             <div class="row-metric">
@@ -355,7 +399,7 @@
             </div>
           </div>
         </div>
-        <div class="col-lg-6">
+        <div class="col-lg-4">
           <div class="panel">
             <div class="panel-title">Компенсации и корректировки</div>
             <div class="row-metric">
@@ -398,6 +442,7 @@
                   <tr>
                     <th>Из чего складывается разница</th>
                     <th class="text-end text-nowrap">Сумма</th>
+                    <th class="text-end text-nowrap">Разнесено</th>
                   </tr>
                 </thead>
                 <tbody id="reconciliationBody"></tbody>
@@ -405,6 +450,7 @@
                   <tr>
                     <th>Итого разница</th>
                     <th class="text-end text-nowrap" id="recExplained">—</th>
+                    <th class="text-end text-nowrap" id="recAllocatedTotal">—</th>
                   </tr>
                 </tfoot>
               </table>
@@ -414,30 +460,46 @@
           <div class="panel">
             <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
               <div class="panel-title mb-0">Товары</div>
-              <button type="button" class="btn btn-success btn-sm" id="exportProductsBtn" disabled>Выгрузить в Excel</button>
+              <div class="dropdown">
+                <button type="button" class="btn btn-success btn-sm dropdown-toggle" id="exportProductsBtn" data-bs-toggle="dropdown" aria-expanded="false" disabled>
+                  Выгрузить в Excel
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="exportProductsBtn">
+                  <li><a class="dropdown-item" href="#" data-export-mode="full">Выгрузить всю таблицу</a></li>
+                  <li><a class="dropdown-item" href="#" data-export-mode="1c">Для загрузки в 1С</a></li>
+                </ul>
+              </div>
             </div>
-            <div class="table-responsive">
-              <table class="table table-sm table-hover align-middle mb-0" id="productsTable">
+            <div class="table-responsive" id="productsTableWrap">
+              <table class="table table-sm align-middle mb-0" id="productsTable">
                 <thead>
                   <tr>
                     <th class="text-nowrap" style="width:4rem;">№ п.п.</th>
                     <th class="text-nowrap">Баркод</th>
                     <th>Товар</th>
-                    <th class="text-end text-nowrap">Кол-во</th>
-                    <th class="text-end text-nowrap">Цена</th>
-                    <th class="text-end text-nowrap">Сумма</th>
-                    <th class="text-end text-nowrap">Цена с услугами</th>
-                    <th class="text-end text-nowrap">Сумма с услугами</th>
+                    <th class="text-nowrap">Кол-во</th>
+                    <th class="text-nowrap">Цена</th>
+                    <th class="text-nowrap">Сумма</th>
+                    <th class="text-nowrap">Логистика</th>
+                    <th class="text-nowrap">Хранение</th>
+                    <th class="text-nowrap">Платная приёмка</th>
+                    <th class="text-nowrap">Продвижение</th>
+                    <th class="text-nowrap">Цена с услугами</th>
+                    <th class="text-nowrap">Сумма с услугами</th>
                   </tr>
                 </thead>
                 <tbody id="productsBody"></tbody>
                 <tfoot>
                   <tr>
                     <th colspan="3" class="text-end">Итого</th>
-                    <th class="text-end text-nowrap" id="productsQtyTotal">0</th>
-                    <th class="text-end text-nowrap" id="productsAvgTotal">—</th>
+                    <th class="text-center text-nowrap" id="productsQtyTotal">0</th>
+                    <th class="text-end text-nowrap"></th>
                     <th class="text-end text-nowrap" id="productsSumTotal">—</th>
-                    <th class="text-end text-nowrap" id="productsAvgServicesTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsLogisticsTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsStorageTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsAcceptanceTotal">—</th>
+                    <th class="text-end text-nowrap" id="productsPromotionTotal">—</th>
+                    <th class="text-end text-nowrap"></th>
                     <th class="text-end text-nowrap" id="productsSumServicesTotal">—</th>
                   </tr>
                 </tfoot>
@@ -459,10 +521,42 @@
         </div>
         <div class="modal-body">
           <div class="text-muted small mb-2" id="compDetailMeta"></div>
+          <div id="storageSummaryBlock" class="mb-3" style="display:none;">
+            <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2">
+              <div class="fw-semibold">Общая сумма хранения (фин. отчёт)</div>
+              <div class="fs-5 fw-semibold" id="storageSummaryTotal">—</div>
+            </div>
+            <div class="text-muted small mt-1" id="storageSummaryNote"></div>
+          </div>
+          <div id="promotionBreakdownBlock" class="mt-3" style="display:none;">
+            <div class="fw-semibold mb-1">Продвижение по товарам</div>
+            <div class="text-muted small mb-2" id="promotionBreakdownNote"></div>
+            <div class="table-responsive">
+              <table class="table table-sm table-hover align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Баркод</th>
+                    <th>Артикул</th>
+                    <th>nmID</th>
+                    <th>Товар</th>
+                    <th class="text-end">Сумма</th>
+                  </tr>
+                </thead>
+                <tbody id="promotionBreakdownBody"></tbody>
+                <tfoot>
+                  <tr>
+                    <th colspan="4" class="text-end">Итого продвижение</th>
+                    <th class="text-end" id="promotionBreakdownSum">—</th>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div id="promotionBreakdownEmpty" class="text-muted py-2 text-center" style="display:none;">Нет данных по рекламируемым товарам</div>
+          </div>
           <div class="table-responsive">
-            <table class="table table-sm table-hover align-middle mb-0">
+            <table class="table table-sm table-hover align-middle mb-0" id="compDetailTable">
               <thead>
-                <tr>
+                <tr id="compDetailHeadRow">
                   <th>Артикул</th>
                   <th>nmID</th>
                   <th>Бренд / предмет</th>
@@ -474,7 +568,7 @@
               <tbody id="compDetailBody"></tbody>
               <tfoot>
                 <tr>
-                  <th colspan="4" class="text-end">Итого</th>
+                  <th colspan="4" class="text-end" id="compDetailFootLabel">Итого</th>
                   <th class="text-end" id="compDetailQtyTotal">0</th>
                   <th class="text-end" id="compDetailSumTotal">—</th>
                 </tr>
@@ -769,6 +863,7 @@
       returns: 'Возвраты',
       logistics: 'Логистика',
       storage: 'Хранение',
+      promotion: 'Продвижение',
       other: 'Прочие удержания',
       acceptance: 'Платная приёмка',
       returns_for_pay: 'К перечислению по возвратам',
@@ -846,8 +941,67 @@
         .replace(/"/g, '&quot;');
     }
 
+    function fillPromotionBreakdown(visible) {
+      const block = document.getElementById('promotionBreakdownBlock');
+      const body = document.getElementById('promotionBreakdownBody');
+      const empty = document.getElementById('promotionBreakdownEmpty');
+      const noteEl = document.getElementById('promotionBreakdownNote');
+      const sumEl = document.getElementById('promotionBreakdownSum');
+      if (!block || !body) return;
+      if (!visible) {
+        block.style.display = 'none';
+        return;
+      }
+      const rows = (lastDashboardData && lastDashboardData.promotion_by_product) || [];
+      const promoTotal = lastDashboardData ? lastDashboardData.promotion_total : 0;
+      const advertSum = lastDashboardData ? lastDashboardData.promotion_advert_sum : null;
+      const hasPromo = rows.length
+        || Math.abs(Number(promoTotal) || 0) >= 0.01
+        || (lastDashboardData && lastDashboardData.promotion_error);
+      if (!visible || !hasPromo) {
+        block.style.display = 'none';
+        return;
+      }
+      block.style.display = 'block';
+      body.innerHTML = '';
+      let note = 'Сумма удержаний «WB Продвижение» разнесена только по товарам, которые рекламировались в периоде (вес — затраты из статистики кампаний).';
+      if (promoTotal != null) note += ` Удержание: ${money(promoTotal)}.`;
+      if (advertSum != null && Number.isFinite(Number(advertSum))) note += ` Затраты в кабинете рекламы: ${money(advertSum)}.`;
+      if (lastDashboardData && lastDashboardData.promotion_error) {
+        note += ` Ошибка загрузки статистики: ${lastDashboardData.promotion_error}`;
+      }
+      if (noteEl) noteEl.textContent = note;
+
+      if (!rows.length) {
+        if (empty) empty.style.display = 'block';
+        if (sumEl) sumEl.textContent = money(0);
+        return;
+      }
+      if (empty) empty.style.display = 'none';
+      let sum = 0;
+      rows.forEach((row) => {
+        const amount = Number(row.amount) || 0;
+        sum += amount;
+        const name = row.subject_name || row.name || '—';
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+          `<td>${escapeHtml(row.barcode || '—')}</td>` +
+          `<td>${escapeHtml(row.sa_name || '—')}</td>` +
+          `<td>${escapeHtml(row.nm_id || '—')}</td>` +
+          `<td>${escapeHtml(name)}</td>` +
+          `<td class="text-end">${money(amount)}</td>`;
+        body.appendChild(tr);
+      });
+      if (sumEl) sumEl.textContent = money(sum);
+    }
+
     function openCompDetail(kind, titleOverride, fromReconciliation) {
       const details = getDetailRows(kind, !!fromReconciliation);
+      const isStorage = kind === 'storage';
+      const isLogistics = kind === 'logistics';
+      const isPromotion = kind === 'promotion';
+      const isOther = kind === 'other';
+      const hideQty = isStorage || isLogistics || isPromotion;
       const title = titleOverride || COMP_TITLES[kind] || 'Расшифровка';
       document.getElementById('compDetailModalLabel').textContent = title;
       const period = lastDashboardData
@@ -858,14 +1012,85 @@
 
       const body = document.getElementById('compDetailBody');
       const empty = document.getElementById('compDetailEmpty');
-      const table = body.closest('table');
+      const table = document.getElementById('compDetailTable') || body.closest('table');
+      const headRow = document.getElementById('compDetailHeadRow');
+      const footLabel = document.getElementById('compDetailFootLabel');
+      const qtyTotalEl = document.getElementById('compDetailQtyTotal');
+      const storageBlock = document.getElementById('storageSummaryBlock');
+      const storageTotalEl = document.getElementById('storageSummaryTotal');
+      const storageNoteEl = document.getElementById('storageSummaryNote');
       body.innerHTML = '';
 
+      if (isStorage && storageBlock && storageTotalEl) {
+        const finStorage = (lastDashboardData && lastDashboardData.deductions)
+          ? lastDashboardData.deductions.storage
+          : ((lastDashboardData && lastDashboardData.summary) ? lastDashboardData.summary.storage : 0);
+        const paidTotal = lastDashboardData ? lastDashboardData.paid_storage_total : null;
+        storageBlock.style.display = 'block';
+        storageTotalEl.textContent = money(finStorage);
+        let note = 'Ниже — расшифровка по товарам из отчёта «Платное хранение».';
+        if (paidTotal != null && Number.isFinite(Number(paidTotal))) {
+          note += ` Сумма по товарам: ${money(paidTotal)}.`;
+        }
+        if (lastDashboardData && lastDashboardData.paid_storage_error) {
+          note += ` Не удалось полностью загрузить отчёт: ${lastDashboardData.paid_storage_error}`;
+        }
+        if (storageNoteEl) storageNoteEl.textContent = note;
+        if (headRow) {
+          headRow.innerHTML =
+            '<th>Баркод</th><th>Артикул</th><th>nmID</th><th>Бренд / предмет</th>' +
+            '<th class="text-end">Сумма</th>';
+        }
+        if (footLabel) {
+          footLabel.colSpan = 4;
+          footLabel.textContent = 'Итого';
+        }
+      } else if (isLogistics) {
+        if (storageBlock) storageBlock.style.display = 'none';
+        if (headRow) {
+          headRow.innerHTML =
+            '<th>Баркод</th><th>Артикул</th><th>nmID</th><th>Бренд / предмет</th><th>Операция</th>' +
+            '<th class="text-end">Сумма</th>';
+        }
+        if (footLabel) {
+          footLabel.colSpan = 5;
+          footLabel.textContent = 'Итого';
+        }
+      } else if (isPromotion) {
+        if (storageBlock) storageBlock.style.display = 'none';
+        if (headRow) {
+          headRow.innerHTML =
+            '<th>Баркод</th><th>Артикул</th><th>nmID</th><th>Товар</th>' +
+            '<th class="text-end">Сумма</th>';
+        }
+        if (footLabel) {
+          footLabel.colSpan = 4;
+          footLabel.textContent = 'Итого';
+        }
+      } else {
+        if (storageBlock) storageBlock.style.display = 'none';
+        if (headRow) {
+          headRow.innerHTML =
+            '<th>Артикул</th><th>nmID</th><th>Бренд / предмет</th><th>Операция</th>' +
+            '<th class="text-end">Кол-во</th><th class="text-end">Сумма</th>';
+        }
+        if (footLabel) {
+          footLabel.colSpan = 4;
+          footLabel.textContent = 'Итого';
+        }
+      }
+
+      if (qtyTotalEl) qtyTotalEl.style.display = hideQty ? 'none' : '';
+
       if (!details.length) {
-        if (table) table.style.display = 'none';
+        if (table) table.style.display = isStorage ? '' : 'none';
         empty.style.display = 'block';
-        document.getElementById('compDetailQtyTotal').textContent = '0';
+        empty.textContent = isStorage
+          ? 'Нет данных платного хранения за выбранный период'
+          : 'Нет строк для расшифровки';
+        if (qtyTotalEl) qtyTotalEl.textContent = '0';
         document.getElementById('compDetailSumTotal').textContent = money(0);
+        if (table && !isStorage) table.style.display = 'none';
       } else {
         if (table) table.style.display = '';
         empty.style.display = 'none';
@@ -877,22 +1102,52 @@
           qtyTotal += q;
           sumTotal += amount;
           const brandSubj = [row.brand_name, row.subject_name].filter(Boolean).join(' / ') || '—';
-          const operParts = [row.oper, row.doc_type, row.bonus_type].filter(Boolean);
-          const oper = operParts.join(' · ') || '—';
-          const size = row.ts_name ? ` <span class="text-muted">(${escapeHtml(row.ts_name)})</span>` : '';
           const tr = document.createElement('tr');
-          tr.innerHTML =
-            `<td>${escapeHtml(row.sa_name || '—')}${size}</td>` +
-            `<td>${escapeHtml(row.nm_id || '—')}</td>` +
-            `<td>${escapeHtml(brandSubj)}</td>` +
-            `<td>${escapeHtml(oper)}</td>` +
-            `<td class="text-end">${qty(q)}</td>` +
-            `<td class="text-end">${money(amount)}</td>`;
+          if (isStorage) {
+            tr.innerHTML =
+              `<td>${escapeHtml(row.barcode || '—')}</td>` +
+              `<td>${escapeHtml(row.sa_name || '—')}</td>` +
+              `<td>${escapeHtml(row.nm_id || '—')}</td>` +
+              `<td>${escapeHtml(brandSubj)}</td>` +
+              `<td class="text-end">${money(amount)}</td>`;
+          } else if (isPromotion) {
+            const name = row.subject_name || row.name || brandSubj || '—';
+            tr.innerHTML =
+              `<td>${escapeHtml(row.barcode || '—')}</td>` +
+              `<td>${escapeHtml(row.sa_name || '—')}</td>` +
+              `<td>${escapeHtml(row.nm_id || '—')}</td>` +
+              `<td>${escapeHtml(name)}</td>` +
+              `<td class="text-end">${money(amount)}</td>`;
+          } else if (isLogistics) {
+            const operParts = [row.oper, row.doc_type, row.bonus_type].filter(Boolean);
+            const oper = operParts.join(' · ') || '—';
+            const size = row.ts_name ? ` <span class="text-muted">(${escapeHtml(row.ts_name)})</span>` : '';
+            tr.innerHTML =
+              `<td>${escapeHtml(row.barcode || '—')}</td>` +
+              `<td>${escapeHtml(row.sa_name || '—')}${size}</td>` +
+              `<td>${escapeHtml(row.nm_id || '—')}</td>` +
+              `<td>${escapeHtml(brandSubj)}</td>` +
+              `<td>${escapeHtml(oper)}</td>` +
+              `<td class="text-end">${money(amount)}</td>`;
+          } else {
+            const operParts = [row.oper, row.doc_type, row.bonus_type].filter(Boolean);
+            const oper = operParts.join(' · ') || '—';
+            const size = row.ts_name ? ` <span class="text-muted">(${escapeHtml(row.ts_name)})</span>` : '';
+            tr.innerHTML =
+              `<td>${escapeHtml(row.sa_name || '—')}${size}</td>` +
+              `<td>${escapeHtml(row.nm_id || '—')}</td>` +
+              `<td>${escapeHtml(brandSubj)}</td>` +
+              `<td>${escapeHtml(oper)}</td>` +
+              `<td class="text-end">${qty(q)}</td>` +
+              `<td class="text-end">${money(amount)}</td>`;
+          }
           body.appendChild(tr);
         });
-        document.getElementById('compDetailQtyTotal').textContent = qty(qtyTotal);
+        if (qtyTotalEl) qtyTotalEl.textContent = qty(qtyTotal);
         document.getElementById('compDetailSumTotal').textContent = money(sumTotal);
       }
+
+      fillPromotionBreakdown(isOther);
 
       if (!compDetailModal) {
         const el = document.getElementById('compDetailModal');
@@ -906,7 +1161,6 @@
       const s = data.sales || {};
       const d = data.deductions || {};
       const c = data.compensations || {};
-      const sum = data.summary || {};
 
       document.getElementById('mRevenue').textContent = money(s.revenue_rub);
       document.getElementById('mRevenueQty').textContent = qty(s.revenue_qty);
@@ -921,14 +1175,6 @@
       document.getElementById('mWbRealized').textContent = money(s.wb_realized);
       document.getElementById('mPayment').textContent = money(s.payment_to_account);
 
-      document.getElementById('sCommission').textContent = money(sum.commission);
-      document.getElementById('sLogistics').textContent = money(sum.logistics);
-      document.getElementById('sStorage').textContent = money(sum.storage);
-      document.getElementById('sOther').textContent = money(sum.other);
-      document.getElementById('sAcceptance').textContent = money(sum.acceptance);
-      document.getElementById('sRest').textContent = money(sum.rest);
-      document.getElementById('sPayment').textContent = money(sum.payment_to_account);
-
       document.getElementById('deductionsTotalLabel').textContent =
         d.total != null ? ` (${money(d.total)}${d.total_pct != null ? ', ' + Number(d.total_pct).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '% от выручки' : ''})` : '';
 
@@ -938,9 +1184,9 @@
       document.getElementById('dAcquiringPct').textContent = pct(d.acquiring_pct);
       document.getElementById('dLogistics').textContent = money(d.logistics);
       document.getElementById('dLogisticsPct').textContent = pct(d.logistics_pct);
-      document.getElementById('dStorage').textContent = money(d.storage);
+      setCompLink('dStorageWrap', d.storage, 'storage');
       document.getElementById('dStoragePct').textContent = pct(d.storage_pct);
-      document.getElementById('dOther').textContent = money(d.other);
+      setCompLink('dOtherWrap', d.other, 'other');
       document.getElementById('dOtherPct').textContent = pct(d.other_pct);
       document.getElementById('dAcceptance').textContent = money(d.acceptance);
       document.getElementById('dAcceptancePct').textContent = pct(d.acceptance_pct);
@@ -961,18 +1207,15 @@
       resultsBlock.style.display = 'block';
     }
 
-    async function exportProductsExcel() {
+    async function exportProductsExcel(mode) {
       const btn = document.getElementById('exportProductsBtn');
       const products = (lastDashboardData && lastDashboardData.products) || [];
       if (!products.length) {
         showAlert('Нет данных для выгрузки. Сначала загрузите отчёт.');
         return;
       }
-      const oldText = btn ? btn.textContent : '';
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Выгрузка…';
-      }
+      const exportMode = mode === '1c' ? '1c' : 'full';
+      if (btn) btn.disabled = true;
       try {
         const resp = await fetch('/api/report/finance-breakdown/products/export', {
           method: 'POST',
@@ -984,6 +1227,7 @@
           },
           body: JSON.stringify({
             products,
+            mode: exportMode,
             date_from_fmt: (lastDashboardData && lastDashboardData.date_from_fmt) || '',
             date_to_fmt: (lastDashboardData && lastDashboardData.date_to_fmt) || '',
           }),
@@ -997,7 +1241,7 @@
           throw new Error(msg);
         }
         const blob = await resp.blob();
-        let filename = 'rasshifrovka_po_tovaram.xlsx';
+        let filename = exportMode === '1c' ? 'dlya_1c.xlsx' : 'rasshifrovka_po_tovaram.xlsx';
         const cd = resp.headers.get('Content-Disposition') || '';
         const m = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(cd);
         if (m) filename = decodeURIComponent(m[1] || m[2]);
@@ -1012,10 +1256,7 @@
       } catch (err) {
         showAlert(err.message || String(err));
       } finally {
-        if (btn) {
-          btn.textContent = oldText || 'Выгрузить в Excel';
-          btn.disabled = !((lastDashboardData && lastDashboardData.products) || []).length;
-        }
+        if (btn) btn.disabled = !((lastDashboardData && lastDashboardData.products) || []).length;
       }
     }
 
@@ -1032,22 +1273,61 @@
       document.getElementById('recProductsTotal').textContent = money(rec.products_total);
       document.getElementById('recPayment').textContent = money(rec.payment_to_account);
       document.getElementById('recGap').textContent = money(rec.gap);
+      let allocSum = 0;
+      let hasAlloc = false;
       (rec.lines || []).forEach((line) => {
         const amount = Number(line.amount) || 0;
-        if (Math.abs(amount) < 0.005) return;
+        if (Math.abs(amount) < 0.005 && line.allocated == null) return;
         const kind = escapeHtml(line.key || '');
         const label = escapeHtml(line.label || '');
+        const hasAllocated = line.allocated != null && line.allocated !== '';
+        const allocated = hasAllocated ? Number(line.allocated) || 0 : null;
+        const diff = hasAllocated ? (Number(line.diff) || (amount - allocated)) : null;
+        if (hasAllocated) {
+          hasAlloc = true;
+          allocSum += allocated;
+        }
+
+        const amountHtml =
+          `<a href="#" class="fb-comp-link" data-comp-kind="${kind}" data-comp-title="${label}" data-from-rec="1">${money(amount)}</a>`;
+
+        let allocatedHtml = '—';
+        if (hasAllocated) {
+          allocatedHtml =
+            `<a href="#" class="fb-comp-link" data-comp-kind="${kind}" data-comp-title="${label}" data-from-rec="1">${money(allocated)}</a>`;
+          if (diff != null && Math.abs(diff) >= 0.01) {
+            const sign = diff > 0 ? '+' : '';
+            allocatedHtml += `<div class="text-muted" style="font-size:0.75rem;line-height:1.2;">разница ${sign}${money(diff)}</div>`;
+          }
+        }
+
         const tr = document.createElement('tr');
         tr.innerHTML =
           `<td><a href="#" class="fb-comp-link" data-comp-kind="${kind}" data-comp-title="${label}" data-from-rec="1">${label}</a></td>` +
-          `<td class="text-end text-nowrap"><a href="#" class="fb-comp-link" data-comp-kind="${kind}" data-comp-title="${label}" data-from-rec="1">${money(amount)}</a></td>`;
+          `<td class="text-end text-nowrap">${amountHtml}</td>` +
+          `<td class="text-end text-nowrap">${allocatedHtml}</td>`;
         body.appendChild(tr);
       });
       document.getElementById('recExplained').textContent = money(rec.gap);
+      const recAllocEl = document.getElementById('recAllocatedTotal');
+      if (recAllocEl) {
+        if (hasAlloc) {
+          const totalAmount = Number(rec.gap) || 0;
+          const totalDiff = totalAmount - allocSum;
+          let html = money(allocSum);
+          if (Math.abs(totalDiff) >= 0.01) {
+            const sign = totalDiff > 0 ? '+' : '';
+            html += `<div class="text-muted fw-normal" style="font-size:0.75rem;line-height:1.2;">разница ${sign}${money(totalDiff)}</div>`;
+          }
+          recAllocEl.innerHTML = html;
+        } else {
+          recAllocEl.textContent = '—';
+        }
+      }
       const hint = document.getElementById('recHint');
       if (hint) {
         hint.textContent =
-          'Нажмите на строку, чтобы открыть расшифровку. «Сумма по товарам» — к перечислению по строкам с баркодом без возвратов. «Оплата на РС» — выручка минус удержания WB.';
+          '«Разнесено» — сумма в таблице товаров. Разница = Сумма − Разнесено. Нажмите на строку для расшифровки.';
       }
     }
 
@@ -1061,51 +1341,85 @@
         empty.style.display = 'block';
         document.getElementById('productsQtyTotal').textContent = '0';
         document.getElementById('productsSumTotal').textContent = money(0);
-        document.getElementById('productsAvgTotal').textContent = '—';
+        document.getElementById('productsLogisticsTotal').textContent = money(0);
+        document.getElementById('productsStorageTotal').textContent = money(0);
+        document.getElementById('productsAcceptanceTotal').textContent = money(0);
+        document.getElementById('productsPromotionTotal').textContent = money(0);
         document.getElementById('productsSumServicesTotal').textContent = money(0);
-        document.getElementById('productsAvgServicesTotal').textContent = '—';
         return;
       }
       table.style.display = '';
       empty.style.display = 'none';
       let sum = 0;
       let sumServices = 0;
+      let sumLogistics = 0;
+      let sumStorage = 0;
+      let sumAcceptance = 0;
+      let sumPromotion = 0;
       let qtyTotal = 0;
       products.forEach((row, idx) => {
         const amount = Number(row.for_pay) || 0;
         const amountSvc = Number(row.for_pay_with_services);
+        const logistics = Number(row.logistics) || 0;
+        const storage = Number(row.storage) || 0;
+        const acceptance = Number(row.acceptance) || 0;
+        const promotion = Number(row.promotion) || 0;
         const salesQty = Number(row.sales_qty) || 0;
         const avgPrice = salesQty ? amount / salesQty : null;
         const priceSvc = (row.price_with_services != null && row.price_with_services !== '')
           ? Number(row.price_with_services)
           : (salesQty && Number.isFinite(amountSvc) ? amountSvc / salesQty : null);
         sum += amount;
+        sumLogistics += logistics;
+        sumStorage += storage;
+        sumAcceptance += acceptance;
+        sumPromotion += promotion;
         if (Number.isFinite(amountSvc)) sumServices += amountSvc;
         qtyTotal += salesQty;
         const tr = document.createElement('tr');
         tr.innerHTML =
-          `<td class="text-muted">${idx + 1}</td>` +
-          `<td>${escapeHtml(row.barcode || '—')}</td>` +
+          `<td class="text-center text-muted">${idx + 1}</td>` +
+          `<td class="text-center">${escapeHtml(row.barcode || '—')}</td>` +
           `<td>${escapeHtml(row.name || '—')}</td>` +
-          `<td class="text-end">${qty(salesQty)}</td>` +
+          `<td class="text-center">${qty(salesQty)}</td>` +
           `<td class="text-end">${avgPrice == null ? '—' : money(avgPrice)}</td>` +
           `<td class="text-end">${money(amount)}</td>` +
+          `<td class="text-end">${money(logistics)}</td>` +
+          `<td class="text-end">${money(storage)}</td>` +
+          `<td class="text-end">${money(acceptance)}</td>` +
+          `<td class="text-end">${money(promotion)}</td>` +
           `<td class="text-end">${priceSvc == null || !Number.isFinite(priceSvc) ? '—' : money(priceSvc)}</td>` +
           `<td class="text-end">${Number.isFinite(amountSvc) ? money(amountSvc) : '—'}</td>`;
         body.appendChild(tr);
       });
       document.getElementById('productsQtyTotal').textContent = qty(qtyTotal);
-      document.getElementById('productsAvgTotal').textContent = qtyTotal ? money(sum / qtyTotal) : '—';
       document.getElementById('productsSumTotal').textContent = money(sum);
-      document.getElementById('productsAvgServicesTotal').textContent = qtyTotal ? money(sumServices / qtyTotal) : '—';
+      document.getElementById('productsLogisticsTotal').textContent = money(sumLogistics);
+      document.getElementById('productsStorageTotal').textContent = money(sumStorage);
+      document.getElementById('productsAcceptanceTotal').textContent = money(sumAcceptance);
+      document.getElementById('productsPromotionTotal').textContent = money(sumPromotion);
       document.getElementById('productsSumServicesTotal').textContent = money(sumServices);
     }
 
     async function pollUntilReady() {
-      for (let i = 0; i < 600; i++) {
+      for (let i = 0; i < 1200; i++) {
         const p = await fetchJson(`/api/report/finance-breakdown/progress?_t=${Date.now()}`);
-        if (p.total) {
-          loadingProgress.textContent = `Интервал ${p.current || 0} из ${p.total}${p.period ? ': ' + p.period : ''}`;
+        if (p.total || p.period) {
+          const period = p.period || '';
+          if (/хранен/i.test(period)) {
+            loadingText.textContent = 'Загрузка отчёта «Платное хранение»…';
+          } else if (/продвижен/i.test(period)) {
+            loadingText.textContent = 'Загрузка статистики продвижения…';
+          } else if (/расчёт сводки/i.test(period)) {
+            loadingText.textContent = 'Расчёт сводки…';
+          } else if (/ожидание ответа/i.test(period)) {
+            loadingText.textContent = 'Ожидание ответа Wildberries…';
+          } else {
+            loadingText.textContent = 'Загрузка финансового отчёта из Wildberries…';
+          }
+          loadingProgress.textContent = period
+            ? `${p.current || 0} / ${p.total || 0}: ${period}`
+            : `Интервал ${p.current || 0} из ${p.total || 0}`;
         }
         if (p.ready) return fetchJson(`/api/report/finance-breakdown/result?_t=${Date.now()}`);
         if (!p.loading && i > 2) break;
@@ -1151,13 +1465,12 @@
     });
 
     dateCalendar.validateDates();
-    const exportProductsBtn = document.getElementById('exportProductsBtn');
-    if (exportProductsBtn) {
-      exportProductsBtn.addEventListener('click', function (e) {
+    document.querySelectorAll('[data-export-mode]').forEach((el) => {
+      el.addEventListener('click', function (e) {
         e.preventDefault();
-        exportProductsExcel();
+        exportProductsExcel(el.getAttribute('data-export-mode') || 'full');
       });
-    }
+    });
     document.getElementById('resultsBlock').addEventListener('click', function (e) {
       const link = e.target.closest('.fb-comp-link');
       if (!link) return;

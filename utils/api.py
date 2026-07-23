@@ -3,11 +3,15 @@
 import time
 import random
 import logging
-from typing import Dict, Any, List
+import threading
+from typing import Dict, Any, List, Callable, Optional
 from datetime import datetime, timedelta
 import requests
 from utils.constants import (
     MOSCOW_TZ, API_URL, SALES_API_URL, FIN_REPORT_URL,
+    PAID_STORAGE_CREATE_URL, PAID_STORAGE_STATUS_URL, PAID_STORAGE_DOWNLOAD_URL,
+    PAID_STORAGE_MAX_DAYS, PAID_STORAGE_CREATE_MIN_INTERVAL_S,
+    PAID_STORAGE_STATUS_POLL_S, PAID_STORAGE_STATUS_MAX_WAIT_S,
     WB_ORDERS_FETCH_MAX_PAGES, WB_ORDERS_FETCH_MAX_PAGES_INTRADAY,
     WB_ORDERS_PAGE_SLEEP_S, WB_ORDERS_PAGE_SLEEP_INTRADAY_S,
     FBW_SUPPLIES_LIST_URL, FBW_SUPPLY_DETAILS_URL, FBW_SUPPLY_GOODS_URL, FBW_SUPPLY_PACKAGE_URL,
@@ -24,6 +28,9 @@ from utils.helpers import parse_date, parse_wb_datetime, _parse_iso_datetime, to
 
 logger = logging.getLogger(__name__)
 
+# Размер страницы финотчёта: 100k одним ответом слишком долго качается без прогресса
+FIN_REPORT_PAGE_LIMIT = 10000
+
 # --- Throttling for WB supplies API ---
 _last_supplies_api_call_ts: float = 0.0
 
@@ -38,6 +45,40 @@ def supplies_api_throttle() -> None:
     if delta < SUPPLIES_API_MIN_INTERVAL_S:
         time.sleep(SUPPLIES_API_MIN_INTERVAL_S - delta)
     _last_supplies_api_call_ts = time.time()
+
+
+def _with_progress_heartbeat(
+    progress_callback: Optional[Callable],
+    current: int,
+    total: int,
+    base_period: str,
+    fn: Callable,
+    interval_s: float = 2.0,
+):
+    """Пока выполняется fn(), обновляет progress «ожидание ответа WB (N с)»."""
+    if not progress_callback:
+        return fn()
+    stop = threading.Event()
+    started = time.time()
+
+    def _beat() -> None:
+        while not stop.wait(interval_s):
+            elapsed = int(time.time() - started)
+            try:
+                progress_callback(
+                    current,
+                    total,
+                    f"{base_period} · ожидание ответа WB ({elapsed} с)",
+                )
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_beat, daemon=True)
+    thread.start()
+    try:
+        return fn()
+    finally:
+        stop.set()
 
 
 def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], max_retries: int = 3, timeout_s: int = 30) -> requests.Response:
@@ -62,10 +103,11 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
                 if sleep_s is None:
                     # Если заголовков нет, используем экспоненциальную задержку
                     if resp.status_code == 429:
-                        # Для 429 используем более длительную задержку
-                        sleep_s = min(120, 30 * (attempt + 1))
+                        sleep_s = min(60, 15 * (attempt + 1))
                     else:
                         sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
+                # Не даём Retry-After увести поток в многоминутный сон без прогресса
+                sleep_s = min(60.0, max(0.5, float(sleep_s)))
                 
                 time.sleep(sleep_s)
                 continue
@@ -311,6 +353,7 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
     all_rows: List[Dict[str, Any]] = []
     
     logging.info(f"Начинаем загрузку финансового отчета за период {date_from} - {date_to}, интервалов: {total_intervals}")
+    failed_intervals: List[str] = []
     for idx, (interval_from, interval_to) in enumerate(intervals, 1):
         logging.info(f"Загрузка интервала {idx}/{total_intervals}: {interval_from} - {interval_to}")
         
@@ -324,19 +367,38 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
         except Exception:
             df_iso = f"{interval_from}T00:00:00"
         
-        params_base: Dict[str, Any] = {"dateFrom": df_iso, "dateTo": interval_to, "limit": max(1, min(100000, int(limit)))}
+        page_limit = max(1, min(FIN_REPORT_PAGE_LIMIT, int(limit or FIN_REPORT_PAGE_LIMIT)))
+        params_base: Dict[str, Any] = {
+            "dateFrom": df_iso,
+            "dateTo": interval_to,
+            "limit": page_limit,
+        }
         interval_rows: List[Dict[str, Any]] = []
         rrdid = 0
         interval_error = None
         page_count = 0
+        base_period = f"{interval_from} - {interval_to}"
         
         while True:
             page_count += 1
             params = dict(params_base)
             params["rrdid"] = rrdid
+            if progress_callback:
+                progress_callback(
+                    idx,
+                    total_intervals,
+                    f"{base_period} · стр. {page_count} ({len(interval_rows)} зап.)",
+                )
             try:
-                resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=3, timeout_s=30)
-                
+                resp = _with_progress_heartbeat(
+                    progress_callback,
+                    idx,
+                    total_intervals,
+                    f"{base_period} · стр. {page_count}",
+                    lambda p=dict(params): get_with_retry(
+                        FIN_REPORT_URL, headers, p, max_retries=3, timeout_s=60
+                    ),
+                )                
                 # Проверяем, что ответ не пустой и имеет правильный Content-Type
                 if not resp.text or not resp.text.strip():
                     logging.warning(f"Пустой ответ от API для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid})")
@@ -465,13 +527,23 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
                 logging.info(f"Интервал {interval_from} - {interval_to}: получен пустой ответ")
                 break
             interval_rows.extend(data)
+            logging.info(
+                "Интервал %s - %s: стр. %s, +%s записей (итого %s)",
+                interval_from, interval_to, page_count, len(data), len(interval_rows),
+            )
+            if progress_callback:
+                progress_callback(
+                    idx,
+                    total_intervals,
+                    f"{base_period} · стр. {page_count} ({len(interval_rows)} зап.)",
+                )
             
             try:
                 last = data[-1]
                 rrdid = int(last.get("rrd_id") or last.get("rrdid") or last.get("rrdId") or 0)
             except Exception:
                 break
-            if len(data) < params_base.get("limit", 100000):
+            if len(data) < params_base.get("limit", page_limit):
                 break
             time.sleep(0.5)
         
@@ -479,6 +551,7 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
             all_rows.extend(interval_rows)
             logging.info(f"Интервал {interval_from} - {interval_to}: загружено {len(interval_rows)} записей")
         elif interval_error:
+            failed_intervals.append(f"{interval_from} — {interval_to}: {interval_error}")
             logging.error(f"ВНИМАНИЕ: Интервал {interval_from} - {interval_to} не загружен из-за ошибки: {interval_error}")
         
         if idx < total_intervals:
@@ -490,6 +563,132 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
             time.sleep(pause_time)
     
     logging.info(f"Загрузка финансового отчета завершена. Всего загружено {len(all_rows)} записей")
+    # Если ни одной строки и все интервалы упали с ошибкой — не продолжаем (иначе
+    # уйдём в хранение/продвижение на десятки тысяч строк и «зависнет» UI).
+    if not all_rows and failed_intervals:
+        raise RuntimeError(
+            "Не удалось загрузить финансовый отчёт Wildberries. "
+            f"{failed_intervals[0]}. Попробуйте ещё раз через минуту."
+        )
+    return all_rows
+
+
+# --- Paid Storage Report API ---
+def _paid_storage_create_task(headers: Dict[str, str], date_from: str, date_to: str) -> str:
+    """Создаёт задание на генерацию отчёта платного хранения. Возвращает taskId."""
+    params = {"dateFrom": date_from, "dateTo": date_to}
+    resp = get_with_retry(PAID_STORAGE_CREATE_URL, headers, params, max_retries=3, timeout_s=60)
+    data = resp.json() if resp.text else {}
+    task_id = None
+    if isinstance(data, dict):
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+        task_id = (inner or {}).get("taskId") or (inner or {}).get("task_id") or data.get("taskId")
+    if not task_id:
+        raise RuntimeError(f"Не получен taskId для платного хранения: {data!r}")
+    return str(task_id)
+
+
+def _paid_storage_wait_done(
+    headers: Dict[str, str],
+    task_id: str,
+    progress_callback=None,
+    progress_meta: tuple[int, int, str] | None = None,
+) -> None:
+    """Ждёт статус done у задания платного хранения."""
+    url = PAID_STORAGE_STATUS_URL.format(task_id=task_id)
+    started = time.time()
+    last_status = ""
+    while True:
+        elapsed = time.time() - started
+        if elapsed > PAID_STORAGE_STATUS_MAX_WAIT_S:
+            raise TimeoutError(f"Таймаут ожидания отчёта платного хранения (task={task_id})")
+        resp = get_with_retry(url, headers, {}, max_retries=3, timeout_s=30)
+        data = resp.json() if resp.text else {}
+        status = ""
+        if isinstance(data, dict):
+            inner = data.get("data") if isinstance(data.get("data"), dict) else data
+            status = str((inner or {}).get("status") or "").strip().lower()
+        if status and status != last_status:
+            logging.info("Платное хранение task=%s status=%s (%.0f с)", task_id, status, elapsed)
+            last_status = status
+        if progress_callback and progress_meta:
+            cur, total, base = progress_meta
+            progress_callback(cur, total, f"{base} · ожидание ({status or '…'}, {int(elapsed)} с)")
+        if status == "done":
+            return
+        if status in ("canceled", "purged", "cancelled"):
+            raise RuntimeError(f"Задание платного хранения отклонено: status={status}")
+        time.sleep(PAID_STORAGE_STATUS_POLL_S)
+
+
+def _paid_storage_download(headers: Dict[str, str], task_id: str) -> List[Dict[str, Any]]:
+    """Скачивает готовый отчёт платного хранения."""
+    url = PAID_STORAGE_DOWNLOAD_URL.format(task_id=task_id)
+    resp = get_with_retry(url, headers, {}, max_retries=3, timeout_s=180)
+    if resp.status_code == 204 or not (resp.text or "").strip():
+        return []
+    data = resp.json()
+    if isinstance(data, list):
+        return [r for r in data if isinstance(r, dict)]
+    if isinstance(data, dict):
+        rows = data.get("data") or data.get("report") or data.get("rows") or []
+        if isinstance(rows, list):
+            return [r for r in rows if isinstance(r, dict)]
+    return []
+
+
+def fetch_paid_storage_report(
+    token: str,
+    date_from: str,
+    date_to: str,
+    progress_callback=None,
+) -> List[Dict[str, Any]]:
+    """
+    Отчёт «Платное хранение» за период.
+    API: max 8 дней на задание, создание — 1 запрос/мин.
+    """
+    if not token:
+        return []
+    headers = {"Authorization": f"Bearer {token}"}
+    intervals = _split_date_range(date_from, date_to, days_per_chunk=PAID_STORAGE_MAX_DAYS)
+    total = len(intervals)
+    all_rows: List[Dict[str, Any]] = []
+    last_create_ts = 0.0
+
+    logging.info(
+        "Начинаем загрузку платного хранения за период %s — %s, интервалов: %s",
+        date_from, date_to, total,
+    )
+    for idx, (interval_from, interval_to) in enumerate(intervals, 1):
+        base_period = f"хранение {interval_from} — {interval_to}"
+        if progress_callback:
+            progress_callback(idx, total, f"{base_period} · создание задания")
+
+        if last_create_ts > 0:
+            wait = PAID_STORAGE_CREATE_MIN_INTERVAL_S - (time.time() - last_create_ts)
+            if wait > 0:
+                logging.info("Пауза %.0f с перед созданием задания хранения %s/%s", wait, idx, total)
+                if progress_callback:
+                    progress_callback(idx, total, f"{base_period} · пауза API {int(wait)} с")
+                time.sleep(wait)
+
+        logging.info("Платное хранение %s/%s: %s — %s", idx, total, interval_from, interval_to)
+        task_id = _paid_storage_create_task(headers, interval_from, interval_to)
+        last_create_ts = time.time()
+        _paid_storage_wait_done(
+            headers,
+            task_id,
+            progress_callback=progress_callback,
+            progress_meta=(idx, total, base_period),
+        )
+        if progress_callback:
+            progress_callback(idx, total, f"{base_period} · скачивание")
+        logging.info("Платное хранение %s/%s: скачивание task=%s…", idx, total, task_id)
+        rows = _paid_storage_download(headers, task_id)
+        all_rows.extend(rows)
+        logging.info("Платное хранение %s/%s: получено %s строк", idx, total, len(rows))
+
+    logging.info("Платное хранение: всего %s строк", len(all_rows))
     return all_rows
 
 
