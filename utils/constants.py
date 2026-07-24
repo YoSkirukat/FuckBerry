@@ -90,19 +90,12 @@ PAID_STORAGE_CREATE_MIN_INTERVAL_S = 61.0  # лимит WB: 1 создание /
 PAID_STORAGE_STATUS_POLL_S = 5.0
 PAID_STORAGE_STATUS_MAX_WAIT_S = 300.0
 
-# Advertising / Promotion API
+# Advertising / Promotion API (для колонки «Продвижение» в расшифровке финотчёта)
 ADVERT_API_BASE = "https://advert-api.wildberries.ru"
 ADV_ADVERTS_URL = f"{ADVERT_API_BASE}/api/advert/v2/adverts"
 ADV_FULLSTATS_URL = f"{ADVERT_API_BASE}/adv/v3/fullstats"
-ADV_BUDGET_URL = f"{ADVERT_API_BASE}/adv/v1/budget"
-ADV_COUNT_URL = f"{ADVERT_API_BASE}/adv/v1/promotion/count"
-ADV_NORMQUERY_STATS_URL = f"{ADVERT_API_BASE}/adv/v0/normquery/stats"
-ADV_NORMQUERY_BIDS_URL = f"{ADVERT_API_BASE}/adv/v0/normquery/get-bids"
-ADV_NORMQUERY_MINUS_URL = f"{ADVERT_API_BASE}/adv/v0/normquery/get-minus"
 ADV_FULLSTATS_CHUNK = 50
 ADV_FULLSTATS_MIN_INTERVAL_S = float(os.getenv("ADV_FULLSTATS_MIN_INTERVAL_S", "20.0"))
-ADV_BUDGET_MIN_INTERVAL_S = float(os.getenv("ADV_BUDGET_MIN_INTERVAL_S", "0.25"))
-ADV_NORMQUERY_MIN_INTERVAL_S = float(os.getenv("ADV_NORMQUERY_MIN_INTERVAL_S", "6.0"))
 
 # Cache directory
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache")

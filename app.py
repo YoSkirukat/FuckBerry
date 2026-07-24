@@ -335,7 +335,6 @@ from blueprints.stocks import stocks_bp
 from blueprints.reports import reports_bp
 from blueprints.tools import tools_bp
 from blueprints.admin import admin_bp
-from blueprints.marketing import marketing_bp
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(changelog_bp)
@@ -356,7 +355,6 @@ app.register_blueprint(stocks_bp)
 app.register_blueprint(reports_bp)
 app.register_blueprint(tools_bp)
 app.register_blueprint(admin_bp)
-app.register_blueprint(marketing_bp)
 
 # --- DB init helpers (portable across common DBs) ---
 def _ensure_schema_users_validity_columns() -> None:
