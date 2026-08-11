@@ -42,9 +42,12 @@
       Обновлено: <span id="stocksUpdatedAt">{{ updated_at or '' }}</span>
       <span class="ms-2">· автообновление каждые {{ ((stocks_auto_refresh_ms or 1800000) / 60000)|int }} мин</span>
     </div>
-    <div id="stocksMsg" class="small"></div>
+    <div id="stocksMsg" class="small">{% if stocks_loading %}Загрузка остатков из WB API… страница обновится автоматически{% endif %}</div>
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    {% if stocks_loading and not error %}
+      <div class="alert alert-info" id="stocksLoadingAlert">Идёт первая загрузка остатков. Это может занять до минуты из‑за лимитов WB API.</div>
     {% endif %}
     <ul class="nav nav-tabs" id="stocksTabs" role="tablist">
       <li class="nav-item" role="presentation">
@@ -231,9 +234,11 @@
     (function(){
       const btn = document.getElementById('refreshStocks');
       const AUTO_REFRESH_MS = {{ stocks_auto_refresh_ms|default(1800000) }};
-      const POLL_MS = 120000; // подхватить фоновое обновление без полного reload
+      const STOCKS_LOADING = {{ 'true' if stocks_loading else 'false' }};
+      const POLL_MS = STOCKS_LOADING ? 5000 : 120000; // при первой загрузке чаще
       let lastUpdatedAt = (document.getElementById('stocksUpdatedAt')?.textContent || '').trim();
       let refreshInFlight = false;
+      let initialLoadDone = !STOCKS_LOADING;
 
       async function renderStocksData(djson) {
         if (!djson) return;
@@ -293,6 +298,7 @@
 
       async function forceRefreshStocks(opts) {
         const silent = !!(opts && opts.silent);
+        const autoRetry = !(opts && opts.noAutoRetry);
         if (refreshInFlight) return;
         refreshInFlight = true;
         const prev = btn ? btn.textContent : '';
@@ -308,8 +314,14 @@
               const msgEl = document.getElementById('stocksMsg');
               const status = data.status || res.status;
               let retry = parseInt(data.retry_after || '0', 10);
-              if (!retry || isNaN(retry)) retry = (status === 429 ? 60 : 0);
-              if (msgEl) { msgEl.className = 'small text-danger'; msgEl.textContent = `Ошибка обновления (status ${status})`; }
+              if (!retry || isNaN(retry)) retry = (status === 429 ? 30 : 0);
+              const human = data.message
+                || (status === 429
+                  ? `Лимит WB API. Повтор через ${retry} сек.`
+                  : status === 403
+                  ? 'Нет доступа к API остатков (403). В токене нужна категория «Аналитика».'
+                  : `Ошибка обновления (status ${status})`);
+              if (msgEl) { msgEl.className = 'small text-danger'; msgEl.textContent = human; }
               if (btn) {
                 btn.textContent = retry > 0 ? `Подождите ${retry} c...` : 'Ошибка';
                 if (retry > 0) {
@@ -320,6 +332,9 @@
                       btn.textContent = prev;
                       btn.disabled = false;
                       if (msgEl) msgEl.textContent = '';
+                      if (autoRetry && status === 429) {
+                        forceRefreshStocks({ silent: false, noAutoRetry: true });
+                      }
                     } else {
                       btn.textContent = `Подождите ${retry} c...`;
                     }
@@ -335,8 +350,14 @@
           const updEl = document.getElementById('stocksUpdatedAt');
           if (updEl && data.updated_at) updEl.textContent = data.updated_at;
           try { await reloadStocksTables(); } catch(e) { console.error(e); }
+          const msgEl = document.getElementById('stocksMsg');
+          if (msgEl && data.from_cache) {
+            msgEl.className = 'small text-warning';
+            msgEl.textContent = data.message || 'Показаны сохранённые остатки (лимит WB API).';
+            setTimeout(()=>{ if (msgEl.textContent && msgEl.textContent.indexOf('сохранён') >= 0) msgEl.textContent = ''; }, 6000);
+          }
           if (btn && !silent) {
-            btn.textContent = 'Готово';
+            btn.textContent = data.from_cache ? 'Из кэша' : 'Готово';
             setTimeout(()=>{ btn.textContent = prev; btn.disabled = false; }, 1000);
           }
         } catch (e) {
@@ -358,19 +379,47 @@
         try {
           const res = await fetch('/api/stocks/update-time');
           const data = await res.json().catch(()=>({}));
+          if (data.error) {
+            const msgEl = document.getElementById('stocksMsg');
+            const loadEl = document.getElementById('stocksLoadingAlert');
+            if (loadEl) loadEl.remove();
+            if (btn && STOCKS_LOADING) {
+              btn.disabled = false;
+              btn.textContent = 'Обновить остатки';
+            }
+            if (msgEl) {
+              msgEl.className = 'small text-danger';
+              msgEl.textContent = data.error;
+            }
+            initialLoadDone = true;
+            return;
+          }
           const next = (data.updated_at || '').trim();
-          if (next && next !== lastUpdatedAt) {
+          if (next && next !== lastUpdatedAt && next !== 'Остатки не загружены') {
             lastUpdatedAt = next;
             await reloadStocksTables();
             const msgEl = document.getElementById('stocksMsg');
+            const loadEl = document.getElementById('stocksLoadingAlert');
+            if (loadEl) loadEl.remove();
+            if (btn && STOCKS_LOADING) {
+              btn.disabled = false;
+              btn.textContent = 'Обновить остатки';
+            }
             if (msgEl) {
               msgEl.className = 'small text-success';
-              msgEl.textContent = 'Остатки обновлены автоматически';
-              setTimeout(()=>{ if (msgEl.textContent === 'Остатки обновлены автоматически') msgEl.textContent = ''; }, 4000);
+              msgEl.textContent = initialLoadDone ? 'Остатки обновлены автоматически' : 'Остатки загружены';
+              initialLoadDone = true;
+              setTimeout(()=>{ if (msgEl.textContent === 'Остатки обновлены автоматически' || msgEl.textContent === 'Остатки загружены') msgEl.textContent = ''; }, 4000);
             }
           }
         } catch (e) { /* ignore */ }
       }, POLL_MS);
+
+      // Первая загрузка без кэша: сервер уже тянет в фоне — только поллим результат
+      if (STOCKS_LOADING && btn) {
+        btn.disabled = true;
+        btn.textContent = 'Загрузка...';
+      }
 
       // Принудительное обновление с WB по расписанию (пока страница открыта)
       if (AUTO_REFRESH_MS > 0) {

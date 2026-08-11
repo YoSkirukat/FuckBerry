@@ -48,8 +48,13 @@ FBS_SUPPLY_ADD_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/marketpl
 
 # DBS (Delivery by Seller) API
 DBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/new"
-DBS_STATUS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/status"
+DBS_STATUS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/status"  # legacy
 DBS_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders"
+DBS_STATUS_CONFIRM_URL = "https://marketplace-api.wildberries.ru/api/marketplace/v3/dbs/orders/status/confirm"
+DBS_STATUS_DELIVER_URL = "https://marketplace-api.wildberries.ru/api/marketplace/v3/dbs/orders/status/deliver"
+DBS_STATUS_INFO_URL = "https://marketplace-api.wildberries.ru/api/marketplace/v3/dbs/orders/status/info"
+DBS_CLIENT_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/client"
+DBS_DELIVERY_DATE_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/delivery-date"
 
 # Seller info
 SELLER_INFO_URL = "https://common-api.wildberries.ru/api/v1/seller-info"

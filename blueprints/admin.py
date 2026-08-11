@@ -6,7 +6,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from flask_login import login_required, current_user
 from models import User, db, delete_user_with_related
 from datetime import datetime
-from utils.cache import _cache_path_for_user_id
+from utils.cache import clear_all_user_caches
 from utils.wb_token import wb_api_key_expiry_summary
 
 admin_bp = Blueprint('admin', __name__)
@@ -142,9 +142,7 @@ def admin_users_delete(user_id: int):
     try:
         if delete_user_with_related(user_id):
             try:
-                cache_path = _cache_path_for_user_id(user_id)
-                if os.path.isfile(cache_path):
-                    os.remove(cache_path)
+                clear_all_user_caches(user_id)
             except Exception:
                 pass
             flash("Пользователь удалён")

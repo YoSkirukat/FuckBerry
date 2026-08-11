@@ -19,6 +19,7 @@ from utils.cache import (
     load_stocks_cache,
     save_stocks_cache,
     save_stocks_cache_for_user,
+    stocks_cache_matches_owner,
 )
 from utils.constants import STOCKS_AUTO_REFRESH_INTERVAL_S, STOCKS_CACHE_STALE_S
 from utils.helpers import enrich_stocks_from_products, normalize_stocks, stock_row_product_key
@@ -91,6 +92,7 @@ def _maybe_start_stocks_bg_refresh(user_id: int, token: str, cached: Dict[str, A
             save_stocks_cache_for_user(
                 user_id,
                 {"items": items, "updated_at": now_str, "_user_id": user_id},
+                token=token,
             )
             logger.info("Background stocks refresh done for user %s: %s items", user_id, len(items))
         except Exception as exc:
@@ -102,6 +104,84 @@ def _maybe_start_stocks_bg_refresh(user_id: int, token: str, cached: Dict[str, A
     threading.Thread(target=_worker, daemon=True).start()
 
 
+def _force_start_stocks_bg_refresh(user_id: int, token: str) -> None:
+    """Запускает фоновую загрузку остатков даже без кэша (первый заход)."""
+    if not user_id or not token:
+        return
+    with _stocks_bg_lock:
+        if user_id in _stocks_bg_users:
+            return
+        _stocks_bg_users.add(user_id)
+
+    def _worker() -> None:
+        try:
+            logger.info("Initial background stocks load started for user %s", user_id)
+            raw = fetch_stocks_resilient(token)
+            items = _normalize_and_enrich_stocks(raw, user_id=user_id)
+            now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            save_stocks_cache_for_user(
+                user_id,
+                {"items": items, "updated_at": now_str, "_user_id": user_id},
+                token=token,
+            )
+            logger.info("Initial background stocks load done for user %s: %s items", user_id, len(items))
+        except requests.HTTPError as http_err:
+            status = http_err.response.status_code if http_err.response is not None else "?"
+            msg = _http_error_message(status)
+            logger.warning("Initial background stocks load HTTP %s for user %s", status, user_id)
+            try:
+                save_stocks_cache_for_user(
+                    user_id,
+                    {
+                        "items": [],
+                        "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+                        "_user_id": user_id,
+                        "_load_error": msg,
+                        "_load_error_status": status,
+                    },
+                    token=token,
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning("Initial background stocks load failed for user %s: %s", user_id, exc)
+            try:
+                save_stocks_cache_for_user(
+                    user_id,
+                    {
+                        "items": [],
+                        "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+                        "_user_id": user_id,
+                        "_load_error": f"Ошибка загрузки остатков: {exc}",
+                    },
+                    token=token,
+                )
+            except Exception:
+                pass
+        finally:
+            with _stocks_bg_lock:
+                _stocks_bg_users.discard(user_id)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _http_error_message(status) -> str:
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return f"Ошибка API: {status}"
+    if code == 403:
+        return (
+            "Нет доступа к API остатков (403). "
+            "В токене WB нужна категория «Аналитика» (Analytics / stocks-report)."
+        )
+    if code == 401:
+        return "Токен WB отклонён (401). Проверьте API-ключ в профиле."
+    if code == 429:
+        return "Лимит запросов WB API (429). Подождите около минуты и нажмите «Обновить остатки»."
+    return f"Ошибка API: {code}"
+
+
 @stocks_bp.route("/stocks", methods=["GET"])
 @login_required
 def stocks_page():
@@ -109,28 +189,28 @@ def stocks_page():
     token = effective_wb_api_token(current_user)
     error = None
     items: List[Dict[str, Any]] = []
+    stocks_loading = False
 
     if not token:
         error = "Укажите токен API в профиле"
     else:
         try:
             cached = load_stocks_cache()
-            if cached and cached.get("_user_id") == current_user.id:
-                items = _enrich_stocks_items_for_user(cached.get("items", []), current_user.id)
-                # Показ из кэша; устаревший кэш обновляем в фоне
-                _maybe_start_stocks_bg_refresh(current_user.id, token, cached)
+            if stocks_cache_matches_owner(cached, current_user.id, token=token):
+                load_err = (cached or {}).get("_load_error")
+                if load_err and not (cached.get("items") or []):
+                    error = str(load_err)
+                else:
+                    items = _enrich_stocks_items_for_user(cached.get("items", []), current_user.id)
+                    # Показ из кэша; устаревший кэш обновляем в фоне
+                    _maybe_start_stocks_bg_refresh(current_user.id, token, cached)
             else:
-                raw = fetch_stocks_resilient(token)
-                items = _normalize_and_enrich_stocks(raw, user_id=current_user.id)
-                save_stocks_cache(
-                    {
-                        "items": items,
-                        "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
-                    }
-                )
+                # Не блокируем HTTP на долгих retry/429 — грузим в фоне
+                stocks_loading = True
+                _force_start_stocks_bg_refresh(current_user.id, token)
         except requests.HTTPError as http_err:
             status = http_err.response.status_code if http_err.response is not None else "?"
-            error = f"Ошибка API: {status}"
+            error = _http_error_message(status)
         except Exception as exc:
             error = f"Ошибка: {exc}"
 
@@ -271,7 +351,11 @@ def stocks_page():
     )
 
     cached = load_stocks_cache() or {}
-    updated_at = cached.get("updated_at") if cached.get("_user_id") == current_user.id else None
+    updated_at = (
+        cached.get("updated_at")
+        if stocks_cache_matches_owner(cached, current_user.id, token=token)
+        else None
+    )
 
     return render_template(
         "stocks.html",
@@ -281,6 +365,7 @@ def stocks_page():
         updated_at=updated_at,
         products_agg=products_agg,
         warehouses_agg=warehouses_agg,
+        stocks_loading=stocks_loading,
         stocks_auto_refresh_ms=int(float(STOCKS_AUTO_REFRESH_INTERVAL_S or 1800) * 1000),
     )
 
@@ -306,7 +391,10 @@ def api_stocks_refresh():
         logger.info("Normalized to %s items", len(items))
 
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        save_stocks_cache({"items": items, "updated_at": now_str, "_user_id": current_user.id})
+        save_stocks_cache(
+            {"items": items, "updated_at": now_str, "_user_id": current_user.id},
+            token=token,
+        )
         logger.info("Stocks cache saved successfully")
 
         return jsonify({"ok": True, "count": len(items), "updated_at": now_str})
@@ -339,15 +427,48 @@ def api_stocks_refresh():
             retry_after = None
             try:
                 if response_obj is not None:
-                    retry_after = response_obj.headers.get("Retry-After")
+                    retry_after = (
+                        response_obj.headers.get("X-Ratelimit-Retry")
+                        or response_obj.headers.get("Retry-After")
+                    )
             except Exception:
                 pass
+            try:
+                retry_after_int = int(float(retry_after)) if retry_after is not None else 30
+            except (TypeError, ValueError):
+                retry_after_int = 30
+            retry_after_int = max(20, min(90, retry_after_int))
+
+            # Не роняем UI: отдаём свой кэш, если он есть
+            cached = load_stocks_cache()
+            if stocks_cache_matches_owner(cached, current_user.id, token=token):
+                return jsonify({
+                    "ok": True,
+                    "from_cache": True,
+                    "count": len(cached.get("items") or []),
+                    "updated_at": cached.get("updated_at"),
+                    "message": "Лимит WB API (429). Показаны сохранённые остатки.",
+                    "retry_after": retry_after_int,
+                })
+
             return jsonify({
                 "error": "rate_limit",
                 "status": 429,
-                "retry_after": retry_after,
+                "retry_after": retry_after_int,
                 "detail": error_detail,
+                "message": "Лимит запросов WB API. Повторите через несколько секунд.",
             }), 429
+
+        if status_code == 403:
+            return jsonify({
+                "error": "forbidden",
+                "status": 403,
+                "detail": error_detail,
+                "message": (
+                    "Нет доступа к API остатков (403). "
+                    "В токене WB нужна категория «Аналитика» (Analytics / stocks-report)."
+                ),
+            }), 403
 
         return jsonify({
             "error": "http",
@@ -364,17 +485,23 @@ def api_stocks_refresh():
 @stocks_bp.route("/api/stocks/update-time", methods=["GET"])
 @login_required
 def api_stocks_update_time():
+    token = effective_wb_api_token(current_user)
     cached = load_stocks_cache() or {}
-    if cached.get("_user_id") == current_user.id:
-        return jsonify({"updated_at": cached.get("updated_at")})
+    if stocks_cache_matches_owner(cached, current_user.id, token=token or None):
+        payload = {"updated_at": cached.get("updated_at")}
+        if cached.get("_load_error") and not (cached.get("items") or []):
+            payload["error"] = cached.get("_load_error")
+            payload["status"] = cached.get("_load_error_status")
+        return jsonify(payload)
     return jsonify({"updated_at": None})
 
 
 @stocks_bp.route("/api/stocks/data", methods=["GET"])
 @login_required
 def api_stocks_data():
+    token = effective_wb_api_token(current_user)
     cached = load_stocks_cache()
-    if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
+    if not stocks_cache_matches_owner(cached, current_user.id, token=token or None):
         return jsonify({"products": [], "warehouses": [], "total_qty_all": 0, "updated_at": None})
 
     items = _enrich_stocks_items_for_user(cached.get("items", []), current_user.id)
@@ -517,15 +644,18 @@ def stocks_export():
         return redirect(url_for("stocks.stocks_page"))
     try:
         cached = load_stocks_cache()
-        if cached and cached.get("_user_id") == current_user.id:
+        if stocks_cache_matches_owner(cached, current_user.id, token=token):
             items = cached.get("items", [])
         else:
             raw = fetch_stocks_resilient(token)
             items = _normalize_and_enrich_stocks(raw, user_id=current_user.id)
-            save_stocks_cache({
-                "items": items,
-                "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
-            })
+            save_stocks_cache(
+                {
+                    "items": items,
+                    "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+                },
+                token=token,
+            )
         wb = Workbook()
         ws = wb.active
         ws.title = "Остатки"

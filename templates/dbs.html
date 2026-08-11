@@ -6,28 +6,93 @@
   {% block extra_styles %}
   <style>
     h1 { font-size: 1.7rem; }
+    .dbs-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .35rem;
+      background: #f0f1f5;
+      border-radius: .75rem;
+      padding: .3rem;
+      width: fit-content;
+      max-width: 100%;
+    }
+    .dbs-tab {
+      border: 0;
+      background: transparent;
+      border-radius: .55rem;
+      padding: .45rem .85rem;
+      font-size: .95rem;
+      color: #4b5563;
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      cursor: pointer;
+    }
+    .dbs-tab.active {
+      background: #fff;
+      color: #111827;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    }
+    .dbs-tab-count {
+      background: #e8e0f5;
+      color: #5b3d8f;
+      font-size: .75rem;
+      font-weight: 600;
+      border-radius: .35rem;
+      padding: .05rem .35rem;
+      min-width: 1.25rem;
+      text-align: center;
+    }
+    .dbs-tab.active .dbs-tab-count { background: #efe9f8; }
     .status-badge {
       display: inline-block;
-      padding: 0.15rem 0.4rem;
-      border-radius: 0.25rem;
+      padding: .2rem .55rem;
+      border-radius: .4rem;
       font-weight: 600;
-      line-height: 1.1;
+      font-size: .82rem;
+      line-height: 1.2;
     }
-    .status-ok {
-      color: #0f5132; /* тёмно-зелёный */
-      background-color: #d1e7dd; /* светло-зелёный фон */
+    .status-ok { color: #0f5132; background: #d1e7dd; }
+    .status-cancel { color: #842029; background: #f8d7da; }
+    .status-pending { color: #084298; background: #cfe2ff; }
+    .status-deliver { color: #084298; background: #cfe2ff; }
+    .status-warn { color: #b35c00; background: #ffe5cc; }
+    .ago-pill {
+      display: inline-block;
+      margin-top: .2rem;
+      font-size: .72rem;
+      color: #b35c00;
+      background: #ffe8cc;
+      border-radius: .3rem;
+      padding: .05rem .35rem;
     }
-    .status-cancel {
-      color: #842029; /* красный текст */
-      background-color: #f8d7da; /* розовый фон */
+    .dbs-product {
+      display: flex;
+      gap: .65rem;
+      align-items: flex-start;
     }
-    .status-pending {
-      color: #b35c00; /* тёмно-оранжевый */
-      background-color: #ffe5cc; /* светло-оранжевый фон */
+    .dbs-product img {
+      width: 42px;
+      height: 56px;
+      object-fit: cover;
+      border-radius: .25rem;
+      flex-shrink: 0;
     }
-    .status-deliver {
-      color: #084298; /* тёмно-синий */
-      background-color: #cfe2ff; /* светло-синий фон */
+    .dbs-sub { color: #6c757d; font-size: .78rem; }
+    .dbs-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin: .85rem 0 .5rem;
+    }
+    .form-switch-label { font-size: .92rem; color: #374151; }
+    .group-header {
+      background: #f8f9fa;
+      font-weight: 600;
+      font-size: .9rem;
     }
   </style>
   {% endblock %}
@@ -35,8 +100,14 @@
 <body>
   {% include '_navbar.html' %}
 
-  <div class="container mt-3">
-    <h1 class="mb-4">Маркетплейс DBS</h1>
+  <div class="container mt-3 mb-4">
+    <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+      <h1 class="mb-0">Маркетплейс DBS</h1>
+      <div class="d-flex align-items-center gap-2 small text-muted">
+        <span>Обновлено: <span id="dbsUpdatedAt">—</span></span>
+        <button id="dbsRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить</button>
+      </div>
+    </div>
 
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
@@ -45,74 +116,45 @@
       <div class="alert alert-warning">{{ products_hint }}</div>
     {% endif %}
 
+    <div class="dbs-tabs" role="tablist">
+      <button type="button" class="dbs-tab active" data-tab="new">Новые <span class="dbs-tab-count" id="cnt-new">0</span></button>
+      <button type="button" class="dbs-tab" data-tab="confirm">На сборке <span class="dbs-tab-count" id="cnt-confirm">0</span></button>
+      <button type="button" class="dbs-tab" data-tab="deliver">В доставке <span class="dbs-tab-count" id="cnt-deliver">0</span></button>
+      <button type="button" class="dbs-tab" data-tab="archive">Архив <span class="dbs-tab-count" id="cnt-archive">0</span></button>
+      <button type="button" class="dbs-tab" data-tab="cancel">Отменённые <span class="dbs-tab-count" id="cnt-cancel">0</span></button>
+    </div>
+
+    <div class="dbs-toolbar">
+      <div class="form-check form-switch m-0">
+        <input class="form-check-input" type="checkbox" id="groupByAddr">
+        <label class="form-check-label form-switch-label" for="groupByAddr">Сгруппировать по адресу и дате доставки</label>
+      </div>
+      <div class="d-flex gap-2">
+        <button id="dbsActionBtn" class="btn btn-primary btn-sm" disabled>Действие</button>
+      </div>
+    </div>
+    <div id="dbsMsg" class="small mb-2"></div>
+    <div id="dbsTabHint" class="alert alert-light border py-2 px-3 small d-none mb-2"></div>
+
     <div class="card">
-      <div class="card-body">
-        <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
-          <h6 class="mb-0">Новые заказы DBS</h6>
-          <div class="d-flex align-items-center gap-2 small text-muted">
-            <span>Обновлено: <span id="dbsUpdatedAt">—</span></span>
-            <button id="dbsRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить</button>
-          </div>
-        </div>
+      <div class="card-body p-0">
         <div class="table-responsive">
-          <table class="table table-sm table-striped">
+          <table class="table table-sm align-middle mb-0" id="dbsTable">
             <thead>
               <tr>
-                <th class="text-center" style="width:40px;">
-                  <input type="checkbox" id="selectAllDbs" class="form-check-input">
-                </th>
-                <th class="text-center" style="width:60px;">#</th>
-                <th class="text-center">Номер и дата заказа</th>
-                <th class="text-center" style="width:70px;">Фото</th>
-                <th class="text-center">Наименование товара</th>
-                <th class="text-center">Цена</th>
-                <th class="text-center">Адрес</th>
-                <th class="text-center">Баркод</th>
+                <th class="text-center" style="width:40px;"><input type="checkbox" id="selectAll" class="form-check-input"></th>
+                <th style="min-width:140px;">Заказ</th>
+                <th style="min-width:260px;">Наименование</th>
+                <th style="min-width:180px;">Способ и статус доставки</th>
+                <th class="text-end" style="min-width:90px;">Стоимость</th>
+                <th style="min-width:130px;">Доставьте покупателю</th>
+                <th style="min-width:200px;">Данные для доставки</th>
               </tr>
             </thead>
             <tbody id="dbsBody">
-              <tr><td colspan="8" class="text-muted text-center">Загрузка...</td></tr>
+              <tr><td colspan="7" class="text-muted text-center py-4">Загрузка...</td></tr>
             </tbody>
           </table>
-          <div class="d-flex justify-content-between mt-2">
-            <button id="dbsDeliverBtn" class="btn btn-primary btn-sm" disabled>
-              Передать в доставку (<span id="selectedDbsCount">0</span>)
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="container mt-4">
-    <div class="card">
-      <div class="card-body">
-        <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
-          <h6 class="mb-0">Завершённые задания DBS</h6>
-          <div class="d-flex align-items-center gap-2 small text-muted">
-            <span>Загружено: <span id="dbsDoneUpdatedAt">—</span></span>
-            <button id="dbsDoneRefreshBtn" class="btn btn-sm btn-outline-primary">Обновить</button>
-          </div>
-        </div>
-        <div class="table-responsive">
-          <table class="table table-sm table-striped" id="dbsDoneTable">
-            <thead>
-              <tr>
-                <th class="text-center" style="width:60px;">#</th>
-                <th class="text-center" style="width:140px;">Статус</th>
-                <th class="text-center">Номер и дата заказа</th>
-                <th class="text-center" style="width:70px;">Фото</th>
-                <th class="text-center">Наименование товара</th>
-                <th class="text-center">Баркод</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td colspan="6" class="text-muted">Загрузка...</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="text-center mt-2">
-          <button id="dbsDoneMoreBtn" class="btn btn-outline-secondary btn-sm d-none">Показать ещё</button>
         </div>
       </div>
     </div>
@@ -129,8 +171,7 @@
       document.addEventListener('mouseover', function(e){
         const t = e.target;
         if (t && t.classList && t.classList.contains('product-thumb')){
-          const src = t.getAttribute('data-src') || t.getAttribute('src');
-          previewImg.src = src;
+          previewImg.src = t.getAttribute('data-src') || t.getAttribute('src');
           preview.style.display = 'block';
         }
       });
@@ -143,194 +184,341 @@
       });
     })();
 
-    let dbsBtn, dbsTime;
-    let dbsDoneBtn, dbsDoneTime, dbsDoneMoreBtn;
-    let dbsDoneNext = null;
-    let selectedDbs = new Set();
+    let board = { counts: {}, tabs: {}, updated_at: null, discovery: {} };
+    let activeTab = 'new';
+    let selected = new Set();
+    let groupByAddr = false;
+    let discoveryTimer = null;
+    let firstLoad = true;
 
-    document.addEventListener('DOMContentLoaded', function(){
-      dbsBtn = document.getElementById('dbsRefreshBtn');
-      dbsTime = document.getElementById('dbsUpdatedAt');
-      dbsBtn?.addEventListener('click', ()=> loadDbsOrders(true));
-      dbsDoneBtn = document.getElementById('dbsDoneRefreshBtn');
-      dbsDoneTime = document.getElementById('dbsDoneUpdatedAt');
-      dbsDoneMoreBtn = document.getElementById('dbsDoneMoreBtn');
-      dbsDoneBtn?.addEventListener('click', ()=> loadDbsDone(true));
-      dbsDoneMoreBtn?.addEventListener('click', ()=> loadDbsDone(false, true));
-      document.getElementById('dbsDeliverBtn')?.addEventListener('click', deliverSelected);
-      loadDbsOrders(true);
-      loadDbsDone(true);
-    });
+    const ACTION_LABELS = {
+      new: 'Передать на сборку',
+      confirm: 'Передать в доставку',
+      deliver: '',
+      archive: '',
+      cancel: '',
+    };
 
-    function setDbsLoading(isLoading){
-      if (dbsBtn){
-        dbsBtn.disabled = !!isLoading;
-        dbsBtn.textContent = isLoading ? 'Загрузка…' : 'Обновить';
-      }
+    function esc(s){
+      return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
-    async function loadDbsOrders(refresh){
+    function timeAgo(dateStr){
+      if (!dateStr) return '';
+      // dateStr like 10.08.2026 12:30
+      const m = String(dateStr).match(/(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+      if (!m) return '';
+      const d = new Date(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0));
+      const diff = Date.now() - d.getTime();
+      if (diff < 0) return '';
+      const mins = Math.floor(diff / 60000);
+      const h = Math.floor(mins / 60);
+      const mLeft = mins % 60;
+      if (h <= 0) return `${mLeft} мин назад`;
+      return `${h} ч ${mLeft} мин назад`;
+    }
+
+    function statusBadge(r){
+      const raw = String(r.status || '').toLowerCase();
+      const text = r.statusName || r.status || '—';
+      let cls = 'status-badge status-pending';
+      if (raw === 'receive') cls = 'status-badge status-ok';
+      else if (['cancel','reject','cancel_missed_call'].includes(raw)) cls = 'status-badge status-cancel';
+      else if (raw === 'deliver') cls = 'status-badge status-deliver';
+      else if (raw === 'confirm') cls = 'status-badge status-pending';
+      else if (raw === 'new') cls = 'status-badge status-warn';
+      return `<span class="${cls}">${esc(text)}</span>`;
+    }
+
+    function updateCounts(){
+      const c = board.counts || {};
+      ['new','confirm','deliver','archive','cancel'].forEach(k => {
+        const el = document.getElementById('cnt-' + k);
+        if (el) el.textContent = c[k] != null ? c[k] : 0;
+      });
+    }
+
+    function updateActionBtn(){
+      const btn = document.getElementById('dbsActionBtn');
+      if (!btn) return;
+      const label = ACTION_LABELS[activeTab] || '';
+      if (!label){
+        btn.classList.add('d-none');
+        btn.disabled = true;
+        return;
+      }
+      btn.classList.remove('d-none');
+      btn.textContent = `${label} (${selected.size})`;
+      btn.disabled = selected.size === 0;
+    }
+
+    function updateTabHint(){
+      const hint = document.getElementById('dbsTabHint');
+      if (!hint) return;
+      const texts = {
+        cancel: 'Остаток у отменённого товара не прибавится автоматически — обновить его можно только самостоятельно в разделе «Управление остатками».',
+        archive: 'Услуги можно отменить в течение 14 дней.',
+      };
+      const t = texts[activeTab];
+      if (!t){ hint.classList.add('d-none'); hint.textContent = ''; return; }
+      hint.classList.remove('d-none');
+      hint.textContent = t;
+    }
+
+    function copyText(text){
+      if (!text) return;
+      navigator.clipboard?.writeText(String(text)).catch(()=>{});
+    }
+
+    function rowHtml(r, idx){
+      const parts = String(r['Номер и дата заказа']||'').split(' | ');
+      const num = parts[0] || r.orderId || '';
+      const dt = parts[1] || r.createdAt || '';
+      const ago = timeAgo(dt);
+      const photo = r.photo
+        ? `<img src="${esc(r.photo)}" data-src="${esc(r.photo)}" class="product-thumb" alt="">`
+        : `<div class="text-muted" style="width:42px;height:56px;background:#f1f3f5;border-radius:.25rem;"></div>`;
+      const title = r.title || r['Наименование товара'] || '';
+      const artParts = [];
+      if (r['Наименование товара'] && r['Наименование товара'] !== title) artParts.push(r['Наименование товара']);
+      if (r.barcode) artParts.push('Баркод: ' + r.barcode);
+      const art = artParts.join(' · ');
+      const price = r['Цена'] != null ? `${Number(r['Цена']).toLocaleString('ru-RU')} ₽` : '—';
+      const dDate = r.dDate || '—';
+      const dWin = (r.dTimeFrom || r.dTimeTo) ? `с ${esc(r.dTimeFrom||'—')} до ${esc(r.dTimeTo||'—')}` : '';
+      const addr = r['Адрес'] || '';
+      const phone = r.phone || '';
+      const phoneShow = phone ? (String(phone).startsWith('+') ? phone : `+${phone}`) : '';
+      return `<tr>
+        <td class="text-center"><input type="checkbox" class="form-check-input row-cb" data-id="${esc(r.orderId||'')}"></td>
+        <td>
+          <div><strong>${esc(num)}</strong></div>
+          <div class="dbs-sub">${dt ? 'от ' + esc(dt.split(' ')[0] || dt) : ''}</div>
+          ${ago ? `<div class="ago-pill">${esc(ago)}</div>` : ''}
+        </td>
+        <td>
+          <div class="dbs-product">
+            ${photo}
+            <div>
+              <div>${esc(title)}</div>
+              <div class="dbs-sub">${esc(art)}</div>
+            </div>
+          </div>
+        </td>
+        <td>
+          ${statusBadge(r)}
+          <div class="dbs-sub mt-1">Самостоятельная доставка</div>
+        </td>
+        <td class="text-end">${esc(price)}</td>
+        <td>
+          <div><strong>${esc(dDate)}</strong></div>
+          <div class="dbs-sub">${dWin}</div>
+        </td>
+        <td>
+          <div>${esc(addr || '—')}</div>
+          ${phoneShow ? `<div class="dbs-sub">${esc(phoneShow)}</div>` : ''}
+          ${addr ? `<button type="button" class="btn btn-link btn-sm p-0 copy-addr" data-text="${esc(addr)}">Скопировать</button>` : ''}
+        </td>
+      </tr>`;
+    }
+
+    function createdSortKey(r){
+      // createdAt: "10.08.2026 12:04" или ISO; fallback — orderId
+      const raw = String(r.createdAt || r.createdDate || '');
+      let ms = 0;
+      const m = raw.match(/(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}):(\d{2}))?/);
+      if (m){
+        ms = Date.UTC(+m[3], +m[2]-1, +m[1], +(m[4]||0), +(m[5]||0));
+      } else {
+        const t = Date.parse(raw);
+        if (!Number.isNaN(t)) ms = t;
+      }
+      const oid = Number(r.orderId) || 0;
+      return [ms, oid];
+    }
+
+    function tabItems(){
+      const items = (board.tabs && board.tabs[activeTab]) ? board.tabs[activeTab].slice() : [];
+      if (activeTab === 'deliver'){
+        items.sort((a, b) => {
+          const ka = createdSortKey(a), kb = createdSortKey(b);
+          return (ka[0] - kb[0]) || (ka[1] - kb[1]);
+        });
+      }
+      return items;
+    }
+
+    function render(){
+      const tbody = document.getElementById('dbsBody');
+      if (!tbody) return;
+      const items = tabItems();
+      selected.clear();
+      const selectAll = document.getElementById('selectAll');
+      if (selectAll) selectAll.checked = false;
+
+      if (!items.length){
+        tbody.innerHTML = `<tr><td colspan="7" class="text-muted text-center py-4">Нет заказов в этой вкладке</td></tr>`;
+        updateActionBtn();
+        return;
+      }
+
+      if (!groupByAddr){
+        tbody.innerHTML = items.map((r, i) => rowHtml(r, i)).join('');
+        updateActionBtn();
+        return;
+      }
+
+      const groups = {};
+      items.forEach(r => {
+        const key = `${r['Адрес']||'Без адреса'}||${r.dDate||'без даты'}`;
+        (groups[key] ||= []).push(r);
+      });
+      let html = '';
+      Object.keys(groups).sort().forEach(key => {
+        const [addr, date] = key.split('||');
+        html += `<tr class="group-header"><td colspan="7">${esc(addr)} · ${esc(date)}</td></tr>`;
+        html += groups[key].map((r,i) => rowHtml(r,i)).join('');
+      });
+      tbody.innerHTML = html;
+      updateActionBtn();
+    }
+
+    async function loadBoard(opts){
+      const forceDiscover = !!(opts && opts.discover);
+      const btn = document.getElementById('dbsRefreshBtn');
+      const msg = document.getElementById('dbsMsg');
       try{
-        setDbsLoading(true);
-        const r = await fetch('/api/dbs/orders/new' + (refresh ? '?refresh=1' : ''), { credentials: 'include' });
-        const d = await r.json();
-        renderDbs(d);
+        if (btn){ btn.disabled = true; btn.textContent = 'Загрузка…'; }
+        const q = (forceDiscover || firstLoad) ? '?discover=1' : '';
+        firstLoad = false;
+        const res = await fetch('/api/dbs/orders/board' + q, { credentials: 'include' });
+        const data = await res.json();
+        board = data || { counts: {}, tabs: {} };
+        if (data.error && msg){
+          msg.className = 'small text-danger mb-2';
+          msg.textContent = data.error;
+        }
+        const disc = data.discovery || {};
+        if (disc.status === 'running'){
+          if (msg && !data.error){
+            msg.className = 'small text-muted mb-2';
+            msg.textContent = disc.message || 'Ищем заказы на сборке и в доставке…';
+          }
+          if (discoveryTimer) clearTimeout(discoveryTimer);
+          discoveryTimer = setTimeout(() => loadBoard({ discover: false }), 60000);
+        } else if (disc.status === 'done' && disc.found > 0){
+          if (msg){
+            msg.className = 'small text-success mb-2';
+            msg.textContent = disc.message || `Найдено незавершённых: ${disc.found}`;
+          }
+          if (discoveryTimer) clearTimeout(discoveryTimer);
+          // один повторный reload без discover, чтобы подтянуть найденные ID
+          if (opts && opts._afterDiscover) {
+            /* already reloaded */
+          } else if (disc.found > 0) {
+            discoveryTimer = setTimeout(() => loadBoard({ discover: false, _afterDiscover: true }), 800);
+          }
+        } else if (disc.status === 'done' && msg && !data.error){
+          // не затираем другие сообщения пустым done
+        }
+        const upd = document.getElementById('dbsUpdatedAt');
+        if (upd) upd.textContent = data.updated_at || '—';
+        updateCounts();
+        render();
       }catch(e){
         console.error(e);
         const tbody = document.getElementById('dbsBody');
-        if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="text-muted text-center">Ошибка загрузки</td></tr>';
+        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="text-danger text-center py-4">Ошибка загрузки</td></tr>`;
       }finally{
-        setDbsLoading(false);
+        if (btn){ btn.disabled = false; btn.textContent = 'Обновить'; }
       }
     }
 
-    function renderDbs(data){
-      const tbody = document.getElementById('dbsBody');
-      if (!tbody) return;
-      tbody.innerHTML = '';
-      (data.items || []).forEach((r, idx) => {
-        const tr = document.createElement('tr');
-        const parts = String(r['Номер и дата заказа']||'').split(' | ');
-        const num = parts[0]||''; const dt = parts[1]||'';
-        const img = r.photo ? `<img src='${r.photo}' class='product-thumb' style='width:31px;height:42px;object-fit:cover;'>` : '—';
-        tr.innerHTML = `<td class="text-center"><input type="checkbox" class="form-check-input dbs-checkbox" data-order-id="${r.orderId || ''}"></td>
-          <td class="text-center">${idx+1}</td>
-          <td><div>${num}</div>${dt?`<div class='text-muted' style='font-size:0.68rem;'>${dt}</div>`:''}</td>
-          <td class="text-center">${img}</td>
-          <td>${r['Наименование товара']||''}</td>
-          <td class="text-center">${r['Цена']!=null ? r['Цена'] : ''}</td>
-          <td>${r['Адрес']||''}</td>
-          <td>${r.barcode || '—'}</td>`;
-        tbody.appendChild(tr);
-      });
-      if (!(data.items||[]).length){
-        tbody.innerHTML = '<tr><td colspan="8" class="text-muted text-center">Нет новых заказов DBS</td></tr>';
+    async function runAction(){
+      if (!selected.size) return;
+      const ids = Array.from(selected).map(x => Number(x)).filter(Boolean);
+      const msg = document.getElementById('dbsMsg');
+      const btn = document.getElementById('dbsActionBtn');
+      let url = '';
+      let body = { orderIds: ids };
+      if (activeTab === 'new'){
+        url = '/api/dbs/orders/confirm';
+      } else if (activeTab === 'confirm'){
+        url = '/api/dbs/orders/deliver';
+      } else {
+        return;
       }
-      if (dbsTime) dbsTime.textContent = data.updated_at || '—';
-      // reset selection
-      selectedDbs.clear();
-      updateDeliverButton();
-      const selectAll = document.getElementById('selectAllDbs');
-      if (selectAll) selectAll.checked = false;
-    }
-
-    async function loadDbsDone(refresh, append){
-      try{
-        if (dbsDoneBtn){ dbsDoneBtn.disabled = true; dbsDoneBtn.textContent = 'Загрузка…'; }
-        let url = '/api/dbs/orders?limit=1000';
-        if (append && dbsDoneNext){ url += `&next=${encodeURIComponent(dbsDoneNext)}`; }
-        const r = await fetch(url, { credentials: 'include' });
-        const d = await r.json();
-        renderDbsDone(d, append);
-        if (dbsDoneTime) dbsDoneTime.textContent = new Date().toLocaleString('ru-RU');
-      }catch(e){
-        console.error(e);
-        const tbody = document.querySelector('#dbsDoneTable tbody');
-        if (!append && tbody){ tbody.innerHTML = '<tr><td colspan="6" class="text-muted">Ошибка загрузки</td></tr>'; }
-      }finally{
-        if (dbsDoneBtn){ dbsDoneBtn.disabled = false; dbsDoneBtn.textContent = 'Обновить'; }
-      }
-    }
-
-    function renderDbsDone(data, append){
-      const tbody = document.querySelector('#dbsDoneTable tbody');
-      if (!tbody) return;
-      if (!append){ tbody.innerHTML = ''; }
-      const currentCount = append ? tbody.querySelectorAll('tr').length : 0;
-      (data.items || []).forEach((r, idx) => {
-        const tr = document.createElement('tr');
-        const parts = String(r['Номер и дата заказа']||'').split(' | ');
-        const num = parts[0]||''; const dt = parts[1]||'';
-        const img = r.photo ? `<img src='${r.photo}' class='product-thumb' style='width:31px;height:42px;object-fit:cover;'>` : '—';
-        // map statuses
-        let rawStatus = (r.status || '').toLowerCase();
-        let statusText = r.statusName || r.status || '';
-        if (rawStatus === 'receive') statusText = 'Выкуплен';
-        if (rawStatus === 'cancel') statusText = 'Отменен';
-        if (rawStatus === 'confirm') statusText = 'На сборке';
-        if (rawStatus === 'deliver') statusText = 'В доставке';
-        let statusClass = '';
-        if (rawStatus === 'receive') statusClass = 'status-badge status-ok';
-        else if (rawStatus === 'cancel') statusClass = 'status-badge status-cancel';
-        else if (rawStatus === 'confirm') statusClass = 'status-badge status-pending';
-        else if (rawStatus === 'deliver') statusClass = 'status-badge status-deliver';
-        const statusHtml = statusText ? `<span class="${statusClass}">${statusText}</span>` : '';
-        tr.innerHTML = `<td class="text-center">${(currentCount + idx + 1)}</td>
-          <td class="text-center">${statusHtml}</td>
-          <td><div>${num}</div>${dt?`<div class='text-muted' style='font-size:0.68rem;'>${dt}</div>`:''}</td>
-          <td class="text-center">${img}</td>
-          <td>${r['Наименование товара']||''}</td>
-          <td class="text-center">${r.barcode || '—'}</td>`;
-        tbody.appendChild(tr);
-      });
-      dbsDoneNext = data.next || null;
-      if (!append && !(data.items||[]).length){
-        tbody.innerHTML = '<tr><td colspan="6" class="text-muted">Нет данных</td></tr>';
-      }
-      if (dbsDoneMoreBtn){
-        if (dbsDoneNext){ dbsDoneMoreBtn.classList.remove('d-none'); } else { dbsDoneMoreBtn.classList.add('d-none'); }
-      }
-    }
-
-    document.getElementById('selectAllDbs')?.addEventListener('change', function(){
-      const checkboxes = document.querySelectorAll('.dbs-checkbox');
-      checkboxes.forEach(cb => {
-        cb.checked = this.checked;
-        if (this.checked){ selectedDbs.add(cb.dataset.orderId); } else { selectedDbs.delete(cb.dataset.orderId); }
-      });
-      updateDeliverButton();
-    });
-
-    document.addEventListener('change', function(e){
-      if (e.target.classList && e.target.classList.contains('dbs-checkbox')){
-        const id = e.target.dataset.orderId;
-        if (e.target.checked){ selectedDbs.add(id); } else { selectedDbs.delete(id); }
-        updateDeliverButton();
-        updateSelectAllState();
-      }
-    });
-
-    function updateDeliverButton(){
-      const btn = document.getElementById('dbsDeliverBtn');
-      const cnt = document.getElementById('selectedDbsCount');
-      if (btn && cnt){
-        cnt.textContent = selectedDbs.size;
-        btn.disabled = selectedDbs.size === 0;
-      }
-    }
-
-    function updateSelectAllState(){
-      const selectAll = document.getElementById('selectAllDbs');
-      const boxes = document.querySelectorAll('.dbs-checkbox');
-      if (!selectAll || !boxes.length) return;
-      const checkedCount = document.querySelectorAll('.dbs-checkbox:checked').length;
-      selectAll.checked = checkedCount === boxes.length;
-      selectAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
-    }
-
-    async function deliverSelected(){
-      if (selectedDbs.size === 0) return;
-      const btn = document.getElementById('dbsDeliverBtn');
       try{
         if (btn){ btn.disabled = true; btn.textContent = 'Отправка…'; }
-        let ok = 0, err = 0;
-        for (const id of selectedDbs){
-          try{
-            const r = await fetch(`/api/dbs/orders/${encodeURIComponent(id)}/deliver`, { method: 'PATCH', credentials: 'include' });
-            if (r.ok){ ok++; } else { err++; }
-          }catch(ex){ err++; }
+        if (msg){ msg.className = 'small text-muted mb-2'; msg.textContent = 'Обновление статусов…'; }
+        const res = await fetch(url, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(()=>({}));
+        if (!res.ok){
+          if (msg){
+            msg.className = 'small text-danger mb-2';
+            msg.textContent = data.error ? JSON.stringify(data.error) : `Ошибка ${res.status}`;
+          }
+        } else if (msg){
+          msg.className = 'small text-success mb-2';
+          msg.textContent = activeTab === 'new'
+            ? `Передано на сборку: ${ids.length}`
+            : `Передано в доставку: ${ids.length}`;
         }
-        // Refresh list
-        await loadDbsOrders(true);
-        alert(`Передано в доставку: ${ok}${err?`, ошибок: ${err}`:''}`);
+        await loadBoard();
+      }catch(e){
+        console.error(e);
+        if (msg){ msg.className = 'small text-danger mb-2'; msg.textContent = 'Ошибка сети'; }
       }finally{
-        if (btn){ btn.disabled = selectedDbs.size===0; btn.textContent = `Передать в доставку (<span id="selectedDbsCount">${selectedDbs.size}</span>)`; }
+        updateActionBtn();
       }
     }
+
+    document.addEventListener('DOMContentLoaded', function(){
+      document.querySelectorAll('.dbs-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.dbs-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          activeTab = btn.dataset.tab;
+          updateTabHint();
+          render();
+        });
+      });
+      updateTabHint();
+      document.getElementById('dbsRefreshBtn')?.addEventListener('click', () => loadBoard({ discover: true }));
+      document.getElementById('dbsActionBtn')?.addEventListener('click', runAction);
+      document.getElementById('groupByAddr')?.addEventListener('change', (e) => {
+        groupByAddr = !!e.target.checked;
+        render();
+      });
+      document.getElementById('selectAll')?.addEventListener('change', function(){
+        document.querySelectorAll('.row-cb').forEach(cb => {
+          cb.checked = this.checked;
+          const id = cb.dataset.id;
+          if (this.checked) selected.add(id); else selected.delete(id);
+        });
+        updateActionBtn();
+      });
+      document.addEventListener('change', (e) => {
+        if (e.target.classList?.contains('row-cb')){
+          const id = e.target.dataset.id;
+          if (e.target.checked) selected.add(id); else selected.delete(id);
+          updateActionBtn();
+        }
+      });
+      document.addEventListener('click', (e) => {
+        if (e.target.classList?.contains('copy-addr')){
+          copyText(e.target.dataset.text || '');
+        }
+      });
+      loadBoard();
+    });
   </script>
 
   {% include '_footer.html' %}
 </body>
 </html>
-
-

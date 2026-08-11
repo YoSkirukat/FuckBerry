@@ -3,7 +3,7 @@
 from collections import defaultdict
 from typing import List, Dict, Any, Tuple
 from utils.helpers import parse_date, build_stocks_qty_indexes, lookup_stock_qty
-from utils.cache import load_products_cache, load_stocks_cache
+from utils.cache import load_products_cache, load_stocks_cache, stocks_cache_matches_owner
 
 
 def to_rows(data: List[Dict[str, Any]], start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -248,18 +248,23 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     stocks_by_vendor: Dict[str, int] = {}
     try:
         from flask_login import current_user
+        from utils.wb_token import effective_wb_api_token
         stocks_cached = load_stocks_cache()
-        # load_stocks_cache() уже берёт файл текущего пользователя; _user_id — доп. проверка
-        if stocks_cached and stocks_cached.get("_user_id"):
-            try:
-                user_id_match = current_user.is_authenticated and stocks_cached.get("_user_id") == current_user.id
-            except Exception:
-                user_id_match = True
-            if user_id_match:
-                stocks_by_barcode, stocks_by_nm, stocks_by_vendor = build_stocks_qty_indexes(
-                    stocks_cached.get("items", []),
-                    warehouse,
-                )
+        token = None
+        try:
+            if current_user.is_authenticated:
+                token = effective_wb_api_token(current_user)
+        except Exception:
+            token = None
+        if stocks_cache_matches_owner(
+            stocks_cached,
+            current_user.id if getattr(current_user, "is_authenticated", False) else 0,
+            token=token,
+        ):
+            stocks_by_barcode, stocks_by_nm, stocks_by_vendor = build_stocks_qty_indexes(
+                stocks_cached.get("items", []),
+                warehouse,
+            )
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Error loading stocks cache: {e}")

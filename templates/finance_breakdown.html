@@ -233,12 +233,22 @@
       white-space: nowrap;
     }
     #productsTable td:nth-child(1),
-    #productsTable td:nth-child(2),
-    #productsTable td:nth-child(4),
+    #productsTable td:nth-child(3),
     #productsTable tfoot th:nth-child(2) {
       text-align: center;
     }
-    #productsTable td:nth-child(2) { white-space: nowrap; }
+    #productsTable .fb-product-meta {
+      margin-top: 0.15rem;
+      font-size: 0.85em;
+      color: #6c757d;
+      line-height: 1.25;
+      white-space: normal;
+    }
+    #productsTable .fb-product-meta span + span::before {
+      content: "·";
+      margin: 0 0.35rem;
+      color: #adb5bd;
+    }
     #productsTable tfoot tr th {
       background-color: #eef5fb;
       color: #0b3d91;
@@ -475,7 +485,6 @@
                 <thead>
                   <tr>
                     <th class="text-nowrap" style="width:4rem;">№ п.п.</th>
-                    <th class="text-nowrap">Баркод</th>
                     <th>Товар</th>
                     <th class="text-nowrap">Кол-во</th>
                     <th class="text-nowrap">Цена</th>
@@ -491,7 +500,7 @@
                 <tbody id="productsBody"></tbody>
                 <tfoot>
                   <tr>
-                    <th colspan="3" class="text-end">Итого</th>
+                    <th colspan="2" class="text-end">Итого</th>
                     <th class="text-center text-nowrap" id="productsQtyTotal">0</th>
                     <th class="text-end text-nowrap"></th>
                     <th class="text-end text-nowrap" id="productsSumTotal">—</th>
@@ -1376,11 +1385,18 @@
         sumPromotion += promotion;
         if (Number.isFinite(amountSvc)) sumServices += amountSvc;
         qtyTotal += salesQty;
+        const barcode = (row.barcode != null && String(row.barcode).trim()) ? String(row.barcode).trim() : '';
+        const nmId = (row.nm_id != null && String(row.nm_id).trim() !== '') ? String(row.nm_id).trim() : '';
+        const metaParts = [];
+        if (barcode) metaParts.push(`<span>Баркод ${escapeHtml(barcode)}</span>`);
+        if (nmId) metaParts.push(`<span>Артикул WB ${escapeHtml(nmId)}</span>`);
+        const metaHtml = metaParts.length
+          ? `<div class="fb-product-meta">${metaParts.join('')}</div>`
+          : '';
         const tr = document.createElement('tr');
         tr.innerHTML =
           `<td class="text-center text-muted">${idx + 1}</td>` +
-          `<td class="text-center">${escapeHtml(row.barcode || '—')}</td>` +
-          `<td>${escapeHtml(row.name || '—')}</td>` +
+          `<td><div>${escapeHtml(row.name || '—')}</div>${metaHtml}</td>` +
           `<td class="text-center">${qty(salesQty)}</td>` +
           `<td class="text-end">${avgPrice == null ? '—' : money(avgPrice)}</td>` +
           `<td class="text-end">${money(amount)}</td>` +

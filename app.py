@@ -299,8 +299,10 @@ login_manager = LoginManager(app)
 login_manager.login_view = "login"
 login_manager.login_message = "Пожалуйста, войдите в систему для доступа к этой странице."
 login_manager.login_message_category = "info"
-login_manager.session_protection = "strong"  # Защита сессии
-login_manager.refresh_view = "login"  # Страница для обновления сессии
+# "strong" при параллельных AJAX (прогресс отчёта + уведомления) периодически
+# сбрасывает сессию (cookie race / смена IP в WSL) → внезапный выход.
+login_manager.session_protection = "basic"
+login_manager.refresh_view = "login"
 login_manager.needs_refresh_message = "Пожалуйста, войдите в систему для доступа к этой странице."
 login_manager.needs_refresh_message_category = "info"
 
@@ -1210,69 +1212,15 @@ def save_articles_cache(payload: Dict[str, Any]) -> None:
         pass
 
 
-# Stocks cache helpers (per user)
-def _stocks_cache_path_for_user() -> str:
-    if current_user.is_authenticated:
-        return os.path.join(CACHE_DIR, f"stocks_user_{current_user.id}.json")
-    return os.path.join(CACHE_DIR, "stocks_anon.json")
-
-
-def load_stocks_cache() -> Dict[str, Any] | None:
-    path = _stocks_cache_path_for_user()
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def save_stocks_cache(payload: Dict[str, Any]) -> None:
-    path = _stocks_cache_path_for_user()
-    try:
-        enriched = dict(payload)
-        if current_user.is_authenticated:
-            enriched["_user_id"] = current_user.id
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(enriched, f, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-def load_stocks_cache_for_user(user_id: int) -> Dict[str, Any] | None:
-    """Загружает кэш остатков для конкретного пользователя"""
-    path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
-    try:
-        if os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return None
-
-
-def save_stocks_cache_for_user(user_id: int, payload: Dict[str, Any]) -> None:
-    """Сохраняет кэш остатков для конкретного пользователя"""
-    path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
-    try:
-        enriched = dict(payload)
-        enriched["_user_id"] = user_id
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(enriched, f, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-def clear_stocks_cache_for_user(user_id: int) -> None:
-    """Очищает кэш остатков для конкретного пользователя"""
-    path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-            print(f"Cleared stocks cache for user {user_id}")
-    except Exception as e:
-        print(f"Error clearing stocks cache for user {user_id}: {e}")
+# Stocks cache helpers (per user) — единый источник в utils.cache
+from utils.cache import (  # noqa: E402
+    load_stocks_cache,
+    save_stocks_cache,
+    load_stocks_cache_for_user,
+    save_stocks_cache_for_user,
+    clear_stocks_cache_for_user,
+    stocks_cache_matches_owner,
+)
 
 
 # FBS supplies cache helpers (per user)
@@ -2039,7 +1987,13 @@ def _enforce_account_validity():
     public_pages = ["/login", "/logout", "/favicon.ico", "/logo.png"]
     if not any(request.path.startswith(page) for page in public_pages):
         if not current_user.is_authenticated:
-            # Если пользователь не авторизован, перенаправляем на логин
+            # API — только JSON, иначе fetch получает HTML логина и «ломает» сессию в UI
+            if request.path.startswith("/api/"):
+                return jsonify({
+                    "success": False,
+                    "error": "unauthorized",
+                    "message": "Сессия истекла. Обновите страницу и войдите снова.",
+                }), 401
             return redirect(url_for("login"))
     
     if current_user.is_authenticated:
@@ -2047,7 +2001,7 @@ def _enforce_account_validity():
             logout_user()
             # For API requests return JSON 401 to avoid HTML redirect in fetch()
             if request.path.startswith("/api/"):
-                return jsonify({"error": "expired"}), 401
+                return jsonify({"error": "expired", "message": "Срок действия учётной записи истёк"}), 401
             flash("Срок действия учётной записи истёк")
             return redirect(url_for("login"))
 
@@ -3241,7 +3195,8 @@ def aggregate_top_products_orders(rows: List[Dict[str, Any]], warehouse: str | N
     stocks_by_vendor: Dict[str, int] = {}
     try:
         stocks_cached = load_stocks_cache()
-        if stocks_cached and stocks_cached.get("_user_id"):
+        token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+        if stocks_cache_matches_owner(stocks_cached, current_user.id if current_user.is_authenticated else 0, token=token):
             stocks_by_barcode, stocks_by_nm, stocks_by_vendor = build_stocks_qty_indexes(
                 stocks_cached.get("items", []),
                 warehouse,
@@ -4587,7 +4542,7 @@ def auto_refresh_stocks_for_all_users():
                     cached = load_stocks_cache_for_user(user.id)
                     should_refresh = True
                     
-                    if cached and cached.get("_user_id") == user.id:
+                    if stocks_cache_matches_owner(cached, user.id, token=token):
                         updated_at = cached.get("updated_at")
                         if updated_at:
                             try:
@@ -4616,7 +4571,11 @@ def auto_refresh_stocks_for_all_users():
                         except Exception:
                             items = normalize_stocks(raw)
                         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                        save_stocks_cache_for_user(user.id, {"items": items, "updated_at": now_str})
+                        save_stocks_cache_for_user(
+                            user.id,
+                            {"items": items, "updated_at": now_str},
+                            token=token,
+                        )
                         print(f"Auto-refresh completed for user {user.id}: {len(items)} items at {now_str}")
                     
                 except requests.HTTPError as e:
@@ -5920,6 +5879,13 @@ def api_fbw_warehouses():
         # (например, "Казань"), даже если WB-ручка складов их не вернула.
         try:
             cached_stocks = load_stocks_cache() or {}
+            token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+            if not stocks_cache_matches_owner(
+                cached_stocks,
+                current_user.id if current_user.is_authenticated else 0,
+                token=token,
+            ):
+                cached_stocks = {}
             if isinstance(cached_stocks, dict):
                 stock_items = cached_stocks.get("items") or []
                 if isinstance(stock_items, list):
@@ -5976,7 +5942,7 @@ def _load_stocks_for_planning(token: str, user_id: int, max_cache_age_sec: int =
     cached_items: list = []
     updated_at: str | None = None
 
-    if cached and cached.get("_user_id") == user_id:
+    if stocks_cache_matches_owner(cached, user_id, token=token):
         cached_items = cached.get("items", []) or []
         updated_at = cached.get("updated_at")
 
@@ -6005,7 +5971,10 @@ def _load_stocks_for_planning(token: str, user_id: int, max_cache_age_sec: int =
         raw_stocks = fetch_stocks_resilient(token, lock_timeout=90.0)
         stocks = normalize_stocks(raw_stocks)
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        save_stocks_cache({"items": stocks, "_user_id": user_id, "updated_at": now_str})
+        save_stocks_cache(
+            {"items": stocks, "_user_id": user_id, "updated_at": now_str},
+            token=token,
+        )
         print(f"Остатки загружены для планирования: {len(stocks)} товаров в {now_str}")
         return stocks, now_str
     except TimeoutError:
@@ -6115,6 +6084,13 @@ def api_fbw_planning_stocks():
         
         # Берем время обновления из кэша, если есть
         cached = load_stocks_cache()
+        token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+        if not stocks_cache_matches_owner(
+            cached,
+            current_user.id if current_user.is_authenticated else 0,
+            token=token,
+        ):
+            cached = None
         now_str = _stocks_updated_at or (cached.get("updated_at") if cached else datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
         
         if warehouse_id == "all":
@@ -8875,9 +8851,8 @@ def report_sales_page():
     stocks_metadata = {}  # Дополнительная информация о товарах из остатков
     try:
         stocks_cached = load_stocks_cache()
-        # print(f"DEBUG: stocks_cached loaded: {stocks_cached is not None}")
-        if stocks_cached and stocks_cached.get("_user_id"):
-            # print(f"DEBUG: stocks_cached user_id: {stocks_cached.get('_user_id')}, current_user.id: {current_user.id if current_user.is_authenticated else 'not authenticated'}")
+        token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+        if stocks_cache_matches_owner(stocks_cached, current_user.id if current_user.is_authenticated else 0, token=token):
             items = stocks_cached.get("items", [])
             # print(f"DEBUG: stocks items count: {len(items)}")
             for stock_item in items:
@@ -9083,7 +9058,8 @@ def report_orders_page():
     stocks_metadata = {}  # Дополнительная информация о товарах из остатков
     try:
         stocks_cached = load_stocks_cache()
-        if stocks_cached and stocks_cached.get("_user_id"):
+        token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+        if stocks_cache_matches_owner(stocks_cached, current_user.id if current_user.is_authenticated else 0, token=token):
             items = stocks_cached.get("items", [])
             for stock_item in items:
                 barcode = stock_item.get("barcode")
@@ -9304,7 +9280,8 @@ def api_report_orders():
         stocks_metadata = {}
         try:
             stocks_cached = load_stocks_cache()
-            if stocks_cached and stocks_cached.get("_user_id"):
+            token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+            if stocks_cache_matches_owner(stocks_cached, current_user.id if current_user.is_authenticated else 0, token=token):
                 items = stocks_cached.get("items", [])
                 for stock_item in items:
                     barcode = stock_item.get("barcode")
@@ -9652,7 +9629,8 @@ def api_report_sales():
         stocks_metadata = {}  # Дополнительная информация о товарах из остатков
         try:
             stocks_cached = load_stocks_cache()
-            if stocks_cached and stocks_cached.get("_user_id"):
+            token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+            if stocks_cache_matches_owner(stocks_cached, current_user.id if current_user.is_authenticated else 0, token=token):
                 for stock_item in stocks_cached.get("items", []):
                     barcode = stock_item.get("barcode")
                     stock_warehouse = stock_item.get("warehouse", "")
@@ -12395,7 +12373,7 @@ def api_acceptance_coefficients():
             "error": "http",
             "status": status,
             "retry_after": retry_after,
-            "updated_at": (cached.get("updated_at") if cached and cached.get("_user_id") == current_user.id else None)
+            "updated_at": (cached.get("updated_at") if stocks_cache_matches_owner(cached, current_user.id, token=effective_wb_api_token(current_user) or None) else None)
         }), status
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -13144,6 +13122,9 @@ def api_product_analytics(nm_id: int):
         stock_by_warehouse: dict[str, int] = {}
         try:
             stocks_cached = load_stocks_cache() or {}
+            token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+            if not stocks_cache_matches_owner(stocks_cached, current_user.id if current_user.is_authenticated else 0, token=token):
+                stocks_cached = {}
             for stock_item in (stocks_cached.get("items") or []):
                 bc = str(stock_item.get("barcode") or "")
                 if not bc or (product_barcodes and bc not in product_barcodes):
@@ -13643,7 +13624,7 @@ def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False
         cached = load_stocks_cache_for_user(user_id)
         should_refresh = force_update
         
-        if not should_refresh and cached:
+        if not should_refresh and stocks_cache_matches_owner(cached, user_id, token=token):
             # Проверяем, когда последний раз обновлялись остатки
             updated_at = cached.get("updated_at")
             if updated_at:
@@ -13667,6 +13648,8 @@ def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False
         else:
             if not force_update:
                 should_refresh = True
+            if not stocks_cache_matches_owner(cached, user_id, token=token):
+                print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Кэш остатков не принадлежит пользователю {user_id} ===")
             print(f"=== ОТЧЕТ ПО ЗАКАЗАМ: Нет кэша или принудительное обновление ===")
         
         if should_refresh:
@@ -13677,13 +13660,17 @@ def update_stocks_if_needed(user_id: int, token: str, force_update: bool = False
                 stocks = enrich_stocks_from_products(_ns(raw_stocks), products)
                 from datetime import datetime
                 now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                save_stocks_cache_for_user(user_id, {"items": stocks, "updated_at": now_str})
+                save_stocks_cache_for_user(
+                    user_id,
+                    {"items": stocks, "updated_at": now_str},
+                    token=token,
+                )
                 print(f"Остатки обновлены для отчета по заказам: {len(stocks)} товаров в {now_str}")
                 return True
             except requests.HTTPError as e:
                 if e.response and e.response.status_code == 429:
                     print("=== ОТЧЕТ ПО ЗАКАЗАМ: Ошибка 429, используем кэш ===")
-                    if cached:
+                    if stocks_cache_matches_owner(cached, user_id, token=token):
                         print(f"Используем кэшированные остатки: {len(cached.get('items', []))} товаров")
                         return False
                     else:
@@ -13730,8 +13717,9 @@ def _start_stocks_update_bg(user_id: int, token: str) -> None:
 def api_stocks_update_time():
     """API для получения времени последнего обновления остатков"""
     try:
+        token = effective_wb_api_token(current_user)
         cached = load_stocks_cache()
-        if cached and cached.get("_user_id") == current_user.id:
+        if stocks_cache_matches_owner(cached, current_user.id, token=token or None):
             return jsonify({
                 "updated_at": cached.get("updated_at", "Неизвестно")
             })
@@ -13754,14 +13742,27 @@ def stocks_page():
     else:
         try:
             cached = load_stocks_cache()
-            if cached and cached.get("_user_id") == current_user.id:
+            if stocks_cache_matches_owner(cached, current_user.id, token=token):
                 items = cached.get("items", [])
             else:
-                raw = fetch_stocks_resilient(token)
-                items = normalize_stocks(raw)
-                save_stocks_cache({"items": items, "updated_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S")})
+                # Не блокируем страницу на retry/429 — фоновое обновление + JS polling
+                try:
+                    from blueprints.stocks import _force_start_stocks_bg_refresh
+                    _force_start_stocks_bg_refresh(current_user.id, token)
+                except Exception:
+                    pass
+                error = None
         except requests.HTTPError as http_err:
-            error = f"Ошибка API: {http_err.response.status_code}"
+            status = http_err.response.status_code if http_err.response is not None else "?"
+            if status == 403:
+                error = (
+                    "Нет доступа к API остатков (403). "
+                    "В токене WB нужна категория «Аналитика» (Analytics / stocks-report)."
+                )
+            elif status == 429:
+                error = "Лимит запросов WB API (429). Подождите и нажмите «Обновить остатки»."
+            else:
+                error = f"Ошибка API: {status}"
         except Exception as exc:
             error = f"Ошибка: {exc}"
     # Aggregations
@@ -13865,7 +13866,7 @@ def stocks_page():
     updated_at = None
     try:
         cached = load_stocks_cache()
-        if cached and cached.get("_user_id") == current_user.id:
+        if stocks_cache_matches_owner(cached, current_user.id, token=effective_wb_api_token(current_user) or None):
             updated_at = cached.get("updated_at")
     except Exception:
         updated_at = None
@@ -13891,17 +13892,48 @@ def api_stocks_refresh():
         raw = fetch_stocks_resilient(token)
         items = normalize_stocks(raw)
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        save_stocks_cache({"items": items, "updated_at": now_str})
+        save_stocks_cache({"items": items, "updated_at": now_str}, token=token)
         return jsonify({"ok": True, "count": len(items), "updated_at": now_str})
     except requests.HTTPError as http_err:
-        return jsonify({"error": "http", "status": http_err.response.status_code}), 502
+        status = http_err.response.status_code if http_err.response is not None else 502
+        if status == 429:
+            retry_after = 30
+            try:
+                hdr = None
+                if http_err.response is not None:
+                    hdr = (
+                        http_err.response.headers.get("X-Ratelimit-Retry")
+                        or http_err.response.headers.get("Retry-After")
+                    )
+                if hdr is not None:
+                    retry_after = max(20, min(90, int(float(hdr))))
+            except Exception:
+                retry_after = 30
+            cached = load_stocks_cache()
+            if stocks_cache_matches_owner(cached, current_user.id, token=token):
+                return jsonify({
+                    "ok": True,
+                    "from_cache": True,
+                    "count": len(cached.get("items") or []),
+                    "updated_at": cached.get("updated_at"),
+                    "message": "Лимит WB API (429). Показаны сохранённые остатки.",
+                    "retry_after": retry_after,
+                })
+            return jsonify({
+                "error": "rate_limit",
+                "status": 429,
+                "retry_after": retry_after,
+                "message": "Лимит запросов WB API. Повторите через несколько секунд.",
+            }), 429
+        return jsonify({"error": "http", "status": status}), 502
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 @app.route("/api/stocks/data", methods=["GET"]) 
 @login_required
 def api_stocks_data():
+    token = effective_wb_api_token(current_user)
     cached = load_stocks_cache()
-    if not cached or not (current_user.is_authenticated and cached.get("_user_id") == current_user.id):
+    if not stocks_cache_matches_owner(cached, current_user.id, token=token or None):
         return jsonify({"products": [], "warehouses": [], "total_qty_all": 0, "updated_at": None})
     items = cached.get("items", [])
     # Total
@@ -14028,12 +14060,12 @@ def stocks_export():
         return redirect(url_for("stocks_page"))
     try:
         cached = load_stocks_cache()
-        if cached and cached.get("_user_id") == current_user.id:
+        if stocks_cache_matches_owner(cached, current_user.id, token=token):
             items = cached.get("items", [])
         else:
             raw = fetch_stocks_all(token)
             items = normalize_stocks(raw)
-            save_stocks_cache({"items": items})
+            save_stocks_cache({"items": items}, token=token)
 
         wb = Workbook()
         ws = wb.active
@@ -14504,9 +14536,8 @@ def admin_users_delete(user_id: int):
     try:
         if delete_user_with_related(user_id):
             try:
-                cache_path = _cache_path_for_user_id(user_id)
-                if os.path.isfile(cache_path):
-                    os.remove(cache_path)
+                from utils.cache import clear_all_user_caches
+                clear_all_user_caches(user_id)
             except Exception:
                 pass
             flash("Пользователь удалён")
@@ -14683,6 +14714,22 @@ def _init_db_once_per_process():
         if not User.query.filter_by(username="admin").first():
             db.session.add(User(username="admin", password="admin", is_admin=True, is_active=True))
             db.session.commit()
+
+        # Удаляем кэши удалённых пользователей (защита от утечки при reuse SQLite id)
+        try:
+            from utils.cache import purge_orphan_user_caches, clear_stocks_cache_for_user, load_stocks_cache_for_user
+            existing_ids = [int(r[0]) for r in db.session.query(User.id).all()]
+            removed = purge_orphan_user_caches(existing_ids)
+            if removed:
+                print(f"Purged {removed} orphan user cache file(s)")
+            # Старые остатки без _token_fp нельзя доверять (возможен чужой кэш после reuse id)
+            for uid in existing_ids:
+                cached = load_stocks_cache_for_user(uid)
+                if cached and not str(cached.get("_token_fp") or "").strip():
+                    clear_stocks_cache_for_user(uid)
+                    print(f"Cleared legacy stocks cache without token fingerprint for user {uid}")
+        except Exception as purge_exc:
+            print(f"Orphan cache purge failed: {purge_exc}")
         
         # Start notification monitoring
         start_notification_monitoring()
@@ -15037,7 +15084,8 @@ def tools_prices_page():
             stocks_data = {}
             try:
                 stocks_cached = load_stocks_cache()
-                if stocks_cached and stocks_cached.get("_user_id") == current_user.id:
+                token = effective_wb_api_token(current_user) if current_user.is_authenticated else None
+                if stocks_cache_matches_owner(stocks_cached, current_user.id, token=token):
                     items = stocks_cached.get("items", [])
                     # Агрегируем остатки по штрихкоду
                     for stock_item in items:

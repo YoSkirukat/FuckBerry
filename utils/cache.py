@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """Функции кэширования"""
 import os
+import re
 import json
-from typing import Dict, Any
+import hashlib
+from typing import Dict, Any, Iterable
 from flask import session
 from flask_login import current_user
 from utils.constants import (
@@ -13,6 +15,106 @@ from utils.constants import (
 )
 from utils.helpers import _get_session_id
 from datetime import datetime, timedelta
+
+
+def wb_token_fingerprint(token: str | None) -> str:
+    """Короткий отпечаток WB API токена (без хранения самого токена)."""
+    raw = (token or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith("bearer "):
+        raw = raw[7:].strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def stocks_cache_matches_owner(
+    cached: Dict[str, Any] | None,
+    user_id: int,
+    token: str | None = None,
+) -> bool:
+    """
+    Кэш остатков принадлежит пользователю только если совпадают user_id
+    и отпечаток текущего API-токена. Кэш без _token_fp не доверяем
+    (защита от переиспользования SQLite id после удаления пользователя).
+    """
+    if not cached or not isinstance(cached, dict):
+        return False
+    try:
+        if int(cached.get("_user_id") or 0) != int(user_id):
+            return False
+    except (TypeError, ValueError):
+        return False
+    cached_fp = str(cached.get("_token_fp") or "").strip()
+    if not cached_fp:
+        return False
+    # Без токена нельзя подтвердить владельца — не отдаём чужой/старый кэш
+    if token is None or not str(token).strip():
+        return False
+    return cached_fp == wb_token_fingerprint(token)
+
+
+def _attach_stocks_owner_meta(
+    payload: Dict[str, Any],
+    user_id: int | None,
+    token: str | None = None,
+) -> Dict[str, Any]:
+    enriched = dict(payload)
+    if user_id is not None:
+        enriched["_user_id"] = int(user_id)
+    tok = token
+    if tok is None and current_user is not None and getattr(current_user, "is_authenticated", False):
+        tok = getattr(current_user, "wb_token", None) or ""
+    fp = wb_token_fingerprint(tok)
+    if fp:
+        enriched["_token_fp"] = fp
+    return enriched
+
+
+def clear_all_user_caches(user_id: int) -> int:
+    """Удаляет все файлы кэша пользователя (*_user_{id}*). Возвращает число удалённых."""
+    removed = 0
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return 0
+    if not os.path.isdir(CACHE_DIR):
+        return 0
+    # user_1 не должен матчить user_10 / user_18
+    rx = re.compile(rf"(?:^|_)user_{uid}(?:[._]|$)")
+    for name in os.listdir(CACHE_DIR):
+        if not rx.search(name):
+            continue
+        path = os.path.join(CACHE_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+            print(f"Cleared cache file for user {uid}: {name}")
+        except Exception as exc:
+            print(f"Error clearing cache {name} for user {uid}: {exc}")
+    return removed
+
+
+def purge_orphan_user_caches(existing_user_ids: Iterable[int] | None = None) -> int:
+    """Удаляет кэши для user_id, которых нет в списке существующих пользователей."""
+    if existing_user_ids is None:
+        return 0
+    existing = {int(x) for x in existing_user_ids}
+    if not os.path.isdir(CACHE_DIR):
+        return 0
+    found_ids: set[int] = set()
+    rx = re.compile(r"(?:^|_)user_(\d+)(?:[._]|$)")
+    for name in os.listdir(CACHE_DIR):
+        m = rx.search(name)
+        if m:
+            found_ids.add(int(m.group(1)))
+    removed = 0
+    for uid in sorted(found_ids - existing):
+        removed += clear_all_user_caches(uid)
+    return removed
 
 
 def _cache_path_for_user() -> str:
@@ -124,13 +226,12 @@ def load_stocks_cache() -> Dict[str, Any] | None:
         return None
 
 
-def save_stocks_cache(payload: Dict[str, Any]) -> None:
+def save_stocks_cache(payload: Dict[str, Any], token: str | None = None) -> None:
     """Сохраняет кэш остатков"""
     path = _stocks_cache_path_for_user()
     try:
-        enriched = dict(payload)
-        if current_user.is_authenticated:
-            enriched["_user_id"] = current_user.id
+        user_id = current_user.id if current_user.is_authenticated else None
+        enriched = _attach_stocks_owner_meta(payload, user_id, token=token)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False)
     except Exception:
@@ -149,12 +250,15 @@ def load_stocks_cache_for_user(user_id: int) -> Dict[str, Any] | None:
     return None
 
 
-def save_stocks_cache_for_user(user_id: int, payload: Dict[str, Any]) -> None:
+def save_stocks_cache_for_user(
+    user_id: int,
+    payload: Dict[str, Any],
+    token: str | None = None,
+) -> None:
     """Сохраняет кэш остатков для конкретного пользователя"""
     path = os.path.join(CACHE_DIR, f"stocks_user_{user_id}.json")
     try:
-        enriched = dict(payload)
-        enriched["_user_id"] = user_id
+        enriched = _attach_stocks_owner_meta(payload, user_id, token=token)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(enriched, f, ensure_ascii=False)
     except Exception:
@@ -803,21 +907,62 @@ def _ensure_dbs_cache_dir() -> None:
         pass
 
 
-def load_dbs_active_ids() -> Dict[str, Any]:
-    """Загружает активные ID заказов DBS"""
+def _dbs_user_suffix() -> str:
+    if current_user is not None and getattr(current_user, "is_authenticated", False):
+        return f"user_{current_user.id}"
+    return "anon"
+
+
+def _dbs_tasks_cache_path() -> str:
+    return os.path.join(CACHE_DIR, f"dbs_tasks_{_dbs_user_suffix()}.json")
+
+
+def load_dbs_tasks_cache() -> Dict[str, Any] | None:
+    """Кэш новых заданий DBS (как fbs_tasks)."""
     _ensure_dbs_cache_dir()
-    path = os.path.join(CACHE_DIR, "dbs_active_ids.json")
+    path = _dbs_tasks_cache_path()
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def save_dbs_tasks_cache(payload: Dict[str, Any]) -> None:
+    _ensure_dbs_cache_dir()
+    path = _dbs_tasks_cache_path()
+    try:
+        enriched = dict(payload)
+        if current_user is not None and getattr(current_user, "is_authenticated", False):
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def load_dbs_active_ids() -> Dict[str, Any]:
+    """Загружает активные ID заказов DBS (per-user)."""
+    _ensure_dbs_cache_dir()
+    path = os.path.join(CACHE_DIR, f"dbs_active_ids_{_dbs_user_suffix()}.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"ids": [], "updated_at": None}
+        # legacy global file fallback
+        try:
+            with open(os.path.join(CACHE_DIR, "dbs_active_ids.json"), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {"ids": [], "updated_at": None}
 
 
 def save_dbs_active_ids(data: Dict[str, Any]) -> None:
     """Сохраняет активные ID заказов DBS"""
     _ensure_dbs_cache_dir()
-    path = os.path.join(CACHE_DIR, "dbs_active_ids.json")
+    path = os.path.join(CACHE_DIR, f"dbs_active_ids_{_dbs_user_suffix()}.json")
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -842,20 +987,24 @@ def add_dbs_active_ids(ids: list[int]) -> None:
 
 
 def load_dbs_known_orders() -> Dict[str, Any]:
-    """Загружает известные заказы DBS"""
+    """Загружает известные заказы DBS (per-user)."""
     _ensure_dbs_cache_dir()
-    path = os.path.join(CACHE_DIR, "dbs_known_orders.json")
+    path = os.path.join(CACHE_DIR, f"dbs_known_orders_{_dbs_user_suffix()}.json")
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"orders": {}, "updated_at": None}
+        try:
+            with open(os.path.join(CACHE_DIR, "dbs_known_orders.json"), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {"orders": {}, "updated_at": None}
 
 
 def save_dbs_known_orders(data: Dict[str, Any]) -> None:
     """Сохраняет известные заказы DBS"""
     _ensure_dbs_cache_dir()
-    path = os.path.join(CACHE_DIR, "dbs_known_orders.json")
+    path = os.path.join(CACHE_DIR, f"dbs_known_orders_{_dbs_user_suffix()}.json")
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)

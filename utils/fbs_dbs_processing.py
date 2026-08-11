@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """Функции для обработки данных FBS и DBS"""
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.helpers import parse_wb_datetime, to_moscow
 
+
 def _extract_created_at(obj: Any) -> datetime:
-    """Извлекает дату создания из объекта"""
+    """Извлекает дату создания; всегда naive (для корректной сортировки)."""
     if not isinstance(obj, dict):
         return datetime.min
     val = (
@@ -22,23 +23,33 @@ def _extract_created_at(obj: Any) -> datetime:
         or obj.get("time")
         or ""
     )
-    # Numeric timestamp support (ms or s)
     try:
         if isinstance(val, (int, float)):
             ts = float(val)
-            if ts > 1e12:  # milliseconds
-                return datetime.fromtimestamp(ts / 1000)
-            if ts > 1e9:   # seconds
-                return datetime.fromtimestamp(ts)
+            if ts > 1e12:
+                return datetime.utcfromtimestamp(ts / 1000)
+            if ts > 1e9:
+                return datetime.utcfromtimestamp(ts)
         s = str(val).strip()
+        if not s:
+            return datetime.min
         if s.isdigit():
             ts = float(s)
             if ts > 1e12:
-                return datetime.fromtimestamp(ts / 1000)
+                return datetime.utcfromtimestamp(ts / 1000)
             if ts > 1e9:
-                return datetime.fromtimestamp(ts)
+                return datetime.utcfromtimestamp(ts)
         dt = parse_wb_datetime(s)
-        return dt or datetime.min
+        if dt is None:
+            for fmt, n in (("%d.%m.%Y %H:%M", 16), ("%d.%m.%Y", 10)):
+                try:
+                    return datetime.strptime(s[:n], fmt)
+                except Exception:
+                    pass
+            return datetime.min
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except Exception:
         return datetime.min
 
@@ -115,23 +126,33 @@ def to_dbs_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
                 _dt_msk = to_moscow(_dt) if _dt else None
                 created_str = _dt_msk.strftime("%d.%m.%Y %H:%M") if _dt_msk else (str(created_raw) if created_raw else "")
+                created_date = _dt_msk.strftime("%d.%m.%Y") if _dt_msk else ""
             except Exception:
                 created_str = str(created_raw) if created_raw else ""
+                created_date = ""
             nm_id = it.get("nmId") or it.get("nmID")
             article = it.get("article") or it.get("vendorCode") or ""
-            price = (
-                it.get("finalPrice")
-                or it.get("convertedFinalPrice")
+            price_raw = (
+                it.get("convertedFinalPrice")
+                or it.get("finalPrice")
+                or it.get("convertedPrice")
                 or it.get("salePrice")
                 or it.get("price")
             )
+            try:
+                price_value = int(price_raw) // 100
+            except Exception:
+                try:
+                    price_value = int(float(price_raw)) // 100
+                except Exception:
+                    price_value = price_raw
             addr = None
             adr = it.get("address") or {}
             if isinstance(adr, dict):
                 addr = adr.get("fullAddress") or None
             status_val = (
-                it.get("status")
-                or it.get("supplierStatus")
+                it.get("supplierStatus")
+                or it.get("status")
                 or it.get("wbStatus")
             )
             status_name_val = (
@@ -140,15 +161,52 @@ def to_dbs_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 or it.get("wbStatusName")
                 or status_val
             )
+            skus = it.get("skus") if isinstance(it.get("skus"), list) else []
+            barcode = str(skus[0]) if skus else (it.get("barcode") or "")
+            d_date = it.get("dDate") or it.get("ddate") or it.get("deliveryDate") or ""
+            # ISO date → ДД.ММ.ГГГГ
+            if isinstance(d_date, str) and len(d_date) >= 10 and d_date[4] == "-":
+                try:
+                    d_date = datetime.fromisoformat(d_date[:10]).strftime("%d.%m.%Y")
+                except Exception:
+                    pass
+            d_from = it.get("dTimeFrom") or it.get("dTimeFromOld") or ""
+            d_to = it.get("dTimeTo") or it.get("dTimeToOld") or ""
+            phone = it.get("phone") or it.get("buyerPhone") or ""
+            phone_code = it.get("phoneCode") or ""
+            full_name = it.get("fullName") or it.get("firstName") or ""
+            warehouse = (
+                it.get("warehouseName")
+                or it.get("warehouse")
+                or it.get("warehouseId")
+                or ""
+            )
+            title = it.get("title") or ""
+            photo = it.get("photo") or it.get("img") or ""
             rows.append({
                 "orderId": it.get("id") or it.get("orderId") or it.get("ID"),
                 "Номер и дата заказа": f"{it.get('id') or it.get('orderId') or ''} | {created_str}".strip(" |"),
                 "Наименование товара": article,
-                "Цена": price,
+                "title": title,
+                "photo": photo,
+                "Цена": price_value,
                 "Адрес": addr or "",
                 "nm_id": nm_id,
                 "status": status_val,
                 "statusName": status_name_val,
+                "wbStatus": it.get("wbStatus") or "",
+                "barcode": barcode,
+                "requiredMeta": it.get("requiredMeta") or [],
+                "createdAt": created_str,
+                "createdDate": created_date,
+                "dDate": d_date,
+                "dTimeFrom": d_from,
+                "dTimeTo": d_to,
+                "phone": phone,
+                "phoneCode": phone_code,
+                "fullName": full_name,
+                "warehouse": warehouse,
+                "deliveryType": it.get("deliveryType") or "dbs",
             })
         except Exception:
             continue

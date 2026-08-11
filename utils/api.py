@@ -18,6 +18,8 @@ from utils.constants import (
     TRANSIT_TARIFFS_URL,
     FBS_NEW_URL, FBS_ORDERS_URL, FBS_ORDERS_STATUS_URL,
     DBS_NEW_URL, DBS_STATUS_URL, DBS_ORDERS_URL,
+    DBS_STATUS_CONFIRM_URL, DBS_STATUS_DELIVER_URL, DBS_STATUS_INFO_URL,
+    DBS_CLIENT_URL, DBS_DELIVERY_DATE_URL,
     SELLER_INFO_URL, ACCEPT_COEFS_URL,
     FBS_WAREHOUSES_URL, WB_OFFICES_URL, FBS_STOCKS_BY_WAREHOUSE_URL, SUPPLIES_WAREHOUSES_URL,
     STOCKS_API_URL, STOCKS_API_PAGE_LIMIT, STOCKS_API_MIN_INTERVAL_S, WB_CARDS_LIST_URL,
@@ -139,21 +141,49 @@ def post_with_retry(url: str, headers: Dict[str, str], json_body: Dict[str, Any]
     last_resp: requests.Response | None = None
     for attempt in range(max_retries):
         try:
-            resp = requests.post(url, headers=headers, json=json_body, timeout=30)
+            resp = requests.post(url, headers=headers, json=json_body, timeout=60)
             last_resp = resp
             if resp.status_code in (429, 500, 502, 503, 504):
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after is not None:
-                    try:
-                        sleep_s = float(retry_after)
-                    except ValueError:
-                        sleep_s = 1.0
+                sleep_s = None
+                if resp.status_code == 429:
+                    retry_header = (
+                        resp.headers.get("X-Ratelimit-Retry")
+                        or resp.headers.get("Retry-After")
+                    )
+                    if retry_header is not None:
+                        try:
+                            sleep_s = float(retry_header)
+                        except ValueError:
+                            sleep_s = None
+                    if sleep_s is None:
+                        # Глобальный лимитер WB часто без Retry-After — ждём дольше
+                        sleep_s = min(60.0, 20.0 * (attempt + 1))
+                    else:
+                        # WB иногда отдаёт слишком маленький Retry — не долбим API
+                        sleep_s = min(60.0, max(20.0, float(sleep_s)))
+                    logger.warning(
+                        "POST 429 %s attempt %s/%s, sleep %.1fs",
+                        url,
+                        attempt + 1,
+                        max_retries,
+                        sleep_s,
+                    )
                 else:
-                    sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
-                time.sleep(sleep_s)
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after is not None:
+                        try:
+                            sleep_s = float(retry_after)
+                        except ValueError:
+                            sleep_s = 1.0
+                    else:
+                        sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
+                time.sleep(float(sleep_s or 1.0))
                 continue
             resp.raise_for_status()
             return resp
+        except requests.HTTPError:
+            # 4xx/после raise_for_status — не маскируем под сетевой retry
+            raise
         except requests.RequestException as exc:
             last_exc = exc
             time.sleep(min(8, 0.5 * (2 ** attempt) + random.uniform(0, 0.5)))
@@ -783,13 +813,25 @@ def fetch_fbw_supply_packages(token: str, supply_id: int | str) -> list[dict[str
 
 # --- FBS API ---
 def fetch_fbs_new_orders(token: str) -> List[Dict[str, Any]]:
-    """Получает новые заказы FBS"""
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        resp = get_with_retry(FBS_NEW_URL, headers, params={})
-        return resp.json() or []
-    except Exception:
+    """Получает новые сборочные задания FBS. Ответ WB: {\"orders\": [...]}."""
+    if not token:
         return []
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err: Exception | None = None
+    for headers in headers_list:
+        try:
+            resp = get_with_retry(FBS_NEW_URL, headers, params={})
+            data = resp.json()
+            return _unwrap_orders_list(data)
+        except Exception as exc:
+            last_err = exc
+            continue
+    if last_err:
+        logger.warning("fetch_fbs_new_orders failed: %s", last_err)
+    return []
 
 
 def fetch_fbs_orders(token: str, limit: int = 100, next_cursor: str | None = None) -> Dict[str, Any]:
@@ -816,39 +858,228 @@ def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
         return {}
 
 
+def _unwrap_orders_list(data: Any) -> List[Dict[str, Any]]:
+    """Достаёт список заказов из типичных обёрток WB API."""
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        arr = data.get("orders")
+        if isinstance(arr, list):
+            return [x for x in arr if isinstance(x, dict)]
+        inner = data.get("data")
+        if isinstance(inner, list):
+            return [x for x in inner if isinstance(x, dict)]
+        if isinstance(inner, dict):
+            arr2 = inner.get("orders") or inner.get("items")
+            if isinstance(arr2, list):
+                return [x for x in arr2 if isinstance(x, dict)]
+        items = data.get("items")
+        if isinstance(items, list):
+            return [x for x in items if isinstance(x, dict)]
+    return []
+
+
 # --- DBS API ---
 def fetch_dbs_new_orders(token: str) -> List[Dict[str, Any]]:
-    """Получает новые заказы DBS"""
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        resp = get_with_retry(DBS_NEW_URL, headers, params={})
-        return resp.json() or []
-    except Exception:
+    """Получает новые заказы DBS. Ответ WB: {\"orders\": [...]}."""
+    if not token:
         return []
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err: Exception | None = None
+    for headers in headers_list:
+        try:
+            resp = get_with_retry(DBS_NEW_URL, headers, params={})
+            return _unwrap_orders_list(resp.json())
+        except Exception as exc:
+            last_err = exc
+            continue
+    if last_err:
+        logger.warning("fetch_dbs_new_orders failed: %s", last_err)
+    return []
 
 
 def fetch_dbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:
-    """Получает статусы заказов DBS"""
-    headers = {"Authorization": f"Bearer {token}"}
-    body = {"orders": order_ids}
-    try:
-        resp = post_with_retry(DBS_STATUS_URL, headers, body)
-        return resp.json() or {}
-    except Exception:
+    """Получает статусы заказов DBS (новый status/info + legacy fallback)."""
+    if not token or not order_ids:
         return {}
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    bodies = [
+        {"ordersIds": order_ids},
+        {"orderIds": order_ids},
+        {"orders": order_ids},
+    ]
+    urls = [DBS_STATUS_INFO_URL, DBS_STATUS_URL]
+    last_err: Exception | None = None
+    for url in urls:
+        for headers in headers_list:
+            for body in bodies:
+                try:
+                    resp = post_with_retry(url, headers, body)
+                    data = resp.json()
+                    if isinstance(data, dict):
+                        return data
+                except Exception as exc:
+                    last_err = exc
+                    continue
+    if last_err:
+        logger.warning("fetch_dbs_statuses failed: %s", last_err)
+    return {}
 
 
-def fetch_dbs_orders(token: str, limit: int = 100, next_cursor: str | None = None) -> Dict[str, Any]:
-    """Получает заказы DBS с пагинацией"""
-    headers = {"Authorization": f"Bearer {token}"}
-    params: Dict[str, Any] = {"limit": limit}
-    if next_cursor:
-        params["next"] = next_cursor
-    try:
-        resp = get_with_retry(DBS_ORDERS_URL, headers, params=params)
-        return resp.json() or {}
-    except Exception:
+def fetch_dbs_orders(
+    token: str,
+    limit: int = 100,
+    next_cursor: Any | None = None,
+    date_from_ts: int | None = None,
+    date_to_ts: int | None = None,
+) -> Dict[str, Any]:
+    """Получает завершённые/клиентские заказы DBS с пагинацией."""
+    if not token:
         return {}
+    params: Dict[str, Any] = {
+        "limit": max(1, min(1000, int(limit or 100))),
+        "next": 0 if next_cursor is None else next_cursor,
+    }
+    if date_from_ts is not None:
+        params["dateFrom"] = int(date_from_ts)
+    if date_to_ts is not None:
+        params["dateTo"] = int(date_to_ts)
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err: Exception | None = None
+    for headers in headers_list:
+        try:
+            resp = get_with_retry(DBS_ORDERS_URL, headers, params=params)
+            data = resp.json() if (resp.text or "").strip() else {}
+            return data if isinstance(data, dict) else {"orders": _unwrap_orders_list(data)}
+        except Exception as exc:
+            last_err = exc
+            continue
+    if last_err:
+        logger.warning("fetch_dbs_orders failed: %s", last_err)
+    return {}
+
+
+def dbs_confirm_orders(token: str, order_ids: List[int]) -> Dict[str, Any]:
+    """Переводит DBS-заказы new → confirm (на сборке)."""
+    return _dbs_status_change(token, DBS_STATUS_CONFIRM_URL, order_ids)
+
+
+def dbs_deliver_orders(token: str, order_ids: List[int]) -> Dict[str, Any]:
+    """Переводит DBS-заказы confirm → deliver (в доставку)."""
+    return _dbs_status_change(token, DBS_STATUS_DELIVER_URL, order_ids)
+
+
+def fetch_dbs_clients(token: str, order_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Контакты покупателя по ID заказов DBS."""
+    if not token or not order_ids:
+        return {}
+    headers_list = [
+        {"Authorization": f"{token}", "Content-Type": "application/json"},
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    ]
+    bodies = [
+        {"orders": order_ids},
+        {"ordersIds": order_ids},
+    ]
+    for headers in headers_list:
+        for body in bodies:
+            try:
+                resp = post_with_retry(DBS_CLIENT_URL, headers, body, max_retries=2)
+                data = resp.json() if (resp.text or "").strip() else {}
+                arr = data.get("orders") if isinstance(data, dict) else None
+                out: Dict[int, Dict[str, Any]] = {}
+                if isinstance(arr, list):
+                    for x in arr:
+                        if not isinstance(x, dict):
+                            continue
+                        try:
+                            oid = int(x.get("orderID") or x.get("orderId") or x.get("id") or 0)
+                        except Exception:
+                            continue
+                        if oid:
+                            out[oid] = x
+                return out
+            except Exception:
+                continue
+    return {}
+
+
+def fetch_dbs_delivery_dates(token: str, order_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Дата/окно доставки по ID заказов DBS."""
+    if not token or not order_ids:
+        return {}
+    headers_list = [
+        {"Authorization": f"{token}", "Content-Type": "application/json"},
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    ]
+    bodies = [
+        {"orders": order_ids},
+        {"ordersIds": order_ids},
+    ]
+    for headers in headers_list:
+        for body in bodies:
+            try:
+                resp = post_with_retry(DBS_DELIVERY_DATE_URL, headers, body, max_retries=2)
+                data = resp.json() if (resp.text or "").strip() else {}
+                arr = data.get("orders") if isinstance(data, dict) else None
+                out: Dict[int, Dict[str, Any]] = {}
+                if isinstance(arr, list):
+                    for x in arr:
+                        if not isinstance(x, dict):
+                            continue
+                        try:
+                            oid = int(x.get("id") or x.get("orderId") or x.get("orderID") or 0)
+                        except Exception:
+                            continue
+                        if oid:
+                            out[oid] = x
+                return out
+            except Exception:
+                continue
+    return {}
+
+
+def _dbs_status_change(token: str, url: str, order_ids: List[int]) -> Dict[str, Any]:
+    if not token or not order_ids:
+        return {"results": []}
+    headers_list = [
+        {"Authorization": f"{token}", "Content-Type": "application/json"},
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    ]
+    bodies = [
+        {"ordersIds": order_ids},
+        {"orderIds": order_ids},
+        {"orders": order_ids},
+    ]
+    last_err: Exception | None = None
+    last_data: Dict[str, Any] | None = None
+    for headers in headers_list:
+        for body in bodies:
+            try:
+                resp = post_with_retry(url, headers, body, max_retries=2)
+                data = resp.json() if (resp.text or "").strip() else {}
+                if isinstance(data, dict):
+                    last_data = data
+                    # если есть results — считаем формат верным
+                    if "results" in data or "requestId" in data or resp.status_code in (200, 204):
+                        return data
+            except Exception as exc:
+                last_err = exc
+                continue
+    if last_data is not None:
+        return last_data
+    if last_err:
+        raise last_err
+    return {"results": []}
 
 
 # --- Other APIs ---
@@ -1174,78 +1405,118 @@ def _extract_wb_stocks_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def fetch_wb_warehouse_stocks(token: str) -> List[Dict[str, Any]]:
+_wb_stocks_meta_lock = threading.Lock()
+_wb_stocks_locks: Dict[str, threading.Lock] = {}
+_wb_stocks_last_request_ts: Dict[str, float] = {}
+
+
+def _wb_stocks_lock_key(token: str) -> str:
+    try:
+        from utils.cache import wb_token_fingerprint
+        return wb_token_fingerprint(token) or "anon"
+    except Exception:
+        return "anon"
+
+
+def fetch_wb_warehouse_stocks(token: str, max_retries: int = 4) -> List[Dict[str, Any]]:
     """Текущие остатки на складах WB через Analytics API.
 
     POST /api/analytics/v1/stocks-report/wb-warehouses
     Замена устаревшего GET /api/v1/supplier/stocks.
-    Лимит: 1 запрос / 20 сек, до 250000 строк в ответе, offset-пагинация.
+    Лимит: 1 запрос / 20 сек на продавца, до 250000 строк в ответе, offset-пагинация.
     """
     if not token:
         return []
 
-    headers_variants = [
-        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        {"Authorization": f"{token}", "Content-Type": "application/json"},
-    ]
-    collected: List[Dict[str, Any]] = []
-    offset = 0
-    limit = int(STOCKS_API_PAGE_LIMIT or 250000)
-    page_num = 0
-    auth_idx = 0
+    lock_key = _wb_stocks_lock_key(token)
+    with _wb_stocks_meta_lock:
+        lock = _wb_stocks_locks.setdefault(lock_key, threading.Lock())
 
-    while True:
-        page_num += 1
-        if page_num > 50:
-            logger.warning("WB stocks pagination safety stop after %s pages", page_num - 1)
-            break
+    acquired = lock.acquire(timeout=180.0)
+    if not acquired:
+        raise TimeoutError("Таймаут ожидания доступа к API остатков WB")
 
-        body = {"limit": limit, "offset": offset}
-        last_err: Exception | None = None
-        resp = None
+    try:
+        min_interval = float(STOCKS_API_MIN_INTERVAL_S or 20.0)
+        now = time.time()
+        last_ts = float(_wb_stocks_last_request_ts.get(lock_key) or 0.0)
+        wait_s = min_interval - (now - last_ts)
+        if wait_s > 0:
+            logger.info("WB stocks rate-limit pause %.1fs before request (key=%s)", wait_s, lock_key)
+            time.sleep(wait_s)
 
-        for idx in range(auth_idx, len(headers_variants)):
-            headers = headers_variants[idx]
-            try:
-                if page_num > 1:
-                    time.sleep(float(STOCKS_API_MIN_INTERVAL_S or 20.0))
-                logger.info(
-                    "Fetching WB warehouse stocks page=%s offset=%s limit=%s auth=%s",
-                    page_num,
-                    offset,
-                    limit,
-                    "Bearer" if idx == 0 else "raw",
-                )
-                resp = post_with_retry(STOCKS_API_URL, headers, body, max_retries=2)
-                auth_idx = idx
+        # Analytics API принимает Bearer; raw пробуем только при 401
+        headers_variants = [
+            {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            {"Authorization": f"{token}", "Content-Type": "application/json"},
+        ]
+        collected: List[Dict[str, Any]] = []
+        offset = 0
+        limit = int(STOCKS_API_PAGE_LIMIT or 250000)
+        page_num = 0
+        auth_idx = 0
+
+        while True:
+            page_num += 1
+            if page_num > 50:
+                logger.warning("WB stocks pagination safety stop after %s pages", page_num - 1)
                 break
-            except requests.HTTPError as err:
-                last_err = err
-                status = err.response.status_code if err.response is not None else None
-                if status in (401, 403) and idx + 1 < len(headers_variants):
-                    continue
-                raise
-            except Exception as err:
-                last_err = err
-                raise
 
-        if resp is None:
-            if last_err:
-                raise last_err
-            break
+            body = {"limit": limit, "offset": offset}
+            last_err: Exception | None = None
+            resp = None
 
-        payload = resp.json()
-        items = _extract_wb_stocks_items(payload)
-        logger.info("WB warehouse stocks page=%s got %s rows", page_num, len(items))
-        if not items:
-            break
+            for idx in range(auth_idx, len(headers_variants)):
+                headers = headers_variants[idx]
+                try:
+                    if page_num > 1:
+                        time.sleep(float(STOCKS_API_MIN_INTERVAL_S or 20.0))
+                    logger.info(
+                        "Fetching WB warehouse stocks page=%s offset=%s limit=%s auth=%s",
+                        page_num,
+                        offset,
+                        limit,
+                        "Bearer" if idx == 0 else "raw",
+                    )
+                    _wb_stocks_last_request_ts[lock_key] = time.time()
+                    resp = post_with_retry(
+                        STOCKS_API_URL,
+                        headers,
+                        body,
+                        max_retries=max(1, int(max_retries)),
+                    )
+                    auth_idx = idx
+                    break
+                except requests.HTTPError as err:
+                    last_err = err
+                    status = err.response.status_code if err.response is not None else None
+                    # 403 = нет доступа к категории Analytics — смена формата токена не поможет
+                    if status == 401 and idx + 1 < len(headers_variants):
+                        continue
+                    raise
+                except Exception as err:
+                    last_err = err
+                    raise
 
-        collected.extend(items)
-        if len(items) < limit:
-            break
-        offset += limit
+            if resp is None:
+                if last_err:
+                    raise last_err
+                break
 
-    return collected
+            payload = resp.json()
+            items = _extract_wb_stocks_items(payload)
+            logger.info("WB warehouse stocks page=%s got %s rows", page_num, len(items))
+            if not items:
+                break
+
+            collected.extend(items)
+            if len(items) < limit:
+                break
+            offset += limit
+
+        return collected
+    finally:
+        lock.release()
 
 
 def fetch_cards_list(
