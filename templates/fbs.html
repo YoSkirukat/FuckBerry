@@ -25,6 +25,13 @@
       font-size: 0.72rem;
       color: #6c757d;
     }
+    .supply-group-btn.active {
+      font-weight: 600;
+    }
+    .supply-items-count {
+      font-weight: 700;
+      font-size: 1.05rem;
+    }
   </style>
   {% endblock %}
 </head>
@@ -248,6 +255,99 @@
       }
     }
 
+    function groupSupplyItems(items) {
+      const groups = new Map();
+      (items || []).forEach((it) => {
+        const barcode = String(it.barcode || '').trim();
+        const article = String(it.article || '').trim();
+        const nmId = it.nm_id != null ? String(it.nm_id) : '';
+        const key = barcode || article || nmId || String(it.id || '');
+        if (!key) return;
+        if (!groups.has(key)) {
+          groups.set(key, {
+            article,
+            barcode,
+            photo: it.photo || null,
+            count: 0,
+          });
+        }
+        const g = groups.get(key);
+        g.count += 1;
+        if (!g.photo && it.photo) g.photo = it.photo;
+        if (!g.article && article) g.article = article;
+        if (!g.barcode && barcode) g.barcode = barcode;
+      });
+      return Array.from(groups.values()).sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return String(a.article || a.barcode).localeCompare(String(b.article || b.barcode), 'ru');
+      });
+    }
+
+    function renderSupplyItemsContent(wrap, items, grouped) {
+      wrap._items = items;
+      wrap._grouped = !!grouped;
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'd-flex justify-content-between align-items-center mb-2 flex-wrap gap-2';
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm supply-group-btn ' + (grouped ? 'btn-primary active' : 'btn-outline-primary');
+      btn.textContent = 'Сгруппировать по товарам';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        renderSupplyItemsContent(wrap, wrap._items || [], !wrap._grouped);
+      });
+
+      const summary = document.createElement('span');
+      summary.className = 'text-muted small';
+      const groups = groupSupplyItems(items);
+      summary.textContent = grouped
+        ? `${items.length} заказов · ${groups.length} позиций`
+        : `${items.length} заказов`;
+
+      toolbar.appendChild(btn);
+      toolbar.appendChild(summary);
+
+      const table = document.createElement('table');
+      table.className = 'table table-sm mb-0';
+
+      if (grouped) {
+        table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center" style="width:90px;">Кол-во</th></tr></thead><tbody></tbody>';
+        const tb = table.querySelector('tbody');
+        if (!groups.length) {
+          tb.innerHTML = '<tr><td colspan="4" class="text-muted text-center">Нет товаров</td></tr>';
+        } else {
+          groups.forEach((g) => {
+            const tr2 = document.createElement('tr');
+            const img = g.photo
+              ? `<img src="${g.photo}" data-src="${g.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">`
+              : '<span class="text-muted">—</span>';
+            tr2.innerHTML = `<td class="text-center">${img}</td><td>${g.article || '—'}</td><td class="text-center">${g.barcode || '—'}</td><td class="text-center supply-items-count">${g.count}</td>`;
+            tb.appendChild(tr2);
+          });
+        }
+      } else {
+        table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
+        const tb = table.querySelector('tbody');
+        (items || []).forEach((it) => {
+          const tr2 = document.createElement('tr');
+          const img = it.photo
+            ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">`
+            : '<span class="text-muted">—</span>';
+          tr2.innerHTML = `<td class="text-center">${img}</td><td>${it.article || '—'}</td><td class="text-center">${it.barcode || '—'}</td><td class="text-center">${it.createdAt || '—'}</td>`;
+          tb.appendChild(tr2);
+        });
+        if (!items.length) {
+          tb.innerHTML = '<tr><td colspan="4" class="text-muted text-center">Нет товаров в поставке</td></tr>';
+        }
+      }
+
+      wrap.innerHTML = '';
+      wrap.appendChild(toolbar);
+      wrap.appendChild(table);
+    }
+
     function renderSupplies(data, append = false){
       console.log('renderSupplies получила данные:', data.items?.length || 0, 'поставок');
       if (data.items && data.items.length > 0) {
@@ -324,18 +424,7 @@
               console.log(`Нет товаров в поставке ${s.supplyId}`);
               wrap.innerHTML = '<div class="text-muted text-center">Нет товаров в поставке</div>';
             } else {
-              const table = document.createElement('table');
-              table.className = 'table table-sm mb-0';
-              table.innerHTML = '<thead><tr><th class="text-center" style="width:70px;">Фото</th><th>Наименование</th><th class="text-center">Баркод</th><th class="text-center">Дата</th></tr></thead><tbody></tbody>';
-              const tb = table.querySelector('tbody');
-              items.forEach(it => {
-                const tr2 = document.createElement('tr');
-                const img = it.photo ? `<img src="${it.photo}" data-src="${it.photo}" class="product-thumb" alt="photo" style="width:31px;height:42px;object-fit:cover;cursor: zoom-in;">` : '';
-                tr2.innerHTML = `<td class="text-center">${img}</td><td>${(it.article||'')}</td><td class="text-center">${(it.barcode||'')}</td><td class="text-center">${(it.createdAt||'')}</td>`;
-                tb.appendChild(tr2);
-              });
-              wrap.innerHTML = '';
-              wrap.appendChild(table);
+              renderSupplyItemsContent(wrap, items, false);
             }
             wrap.setAttribute('data-loaded','1');
           } catch(e){

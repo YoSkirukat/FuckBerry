@@ -5910,6 +5910,50 @@ def api_fbw_warehouses():
                             "address": "",
                             "is_sorting_center": False,
                         })
+                        known_names.add(_norm_name(nm))
+        except Exception:
+            pass
+
+        # Склады из кэша заказов (например «Склад WB РФ» — в остатках может быть «Склад WB»)
+        try:
+            orders_path = _cache_path_for_user()
+            cached_orders: dict[str, Any] = {}
+            if os.path.isfile(orders_path):
+                with open(orders_path, "r", encoding="utf-8") as f:
+                    cached_orders = json.load(f) or {}
+            if isinstance(cached_orders, dict):
+                order_items = cached_orders.get("orders") or cached_orders.get("items") or []
+                if not isinstance(order_items, list):
+                    days = cached_orders.get("days")
+                    if isinstance(days, dict):
+                        order_items = []
+                        for day_orders in days.values():
+                            if isinstance(day_orders, list):
+                                order_items.extend(day_orders)
+                    else:
+                        order_items = []
+                def _norm_name2(v: str) -> str:
+                    return str(v or "").strip().lower().replace("ё", "е")
+                known_names2 = {_norm_name2(str(w.get("name") or "")) for w in warehouses}
+                for it in order_items:
+                    if not isinstance(it, dict):
+                        continue
+                    nm = str(
+                        it.get("warehouseName")
+                        or it.get("Склад отгрузки")
+                        or it.get("warehouse")
+                        or ""
+                    ).strip()
+                    if not nm or _norm_name2(nm) in known_names2:
+                        continue
+                    warehouses.append({
+                        "id": f"name::{nm}",
+                        "name": nm,
+                        "city": "",
+                        "address": "",
+                        "is_sorting_center": False,
+                    })
+                    known_names2.add(_norm_name2(nm))
         except Exception:
             pass
 
@@ -6019,35 +6063,7 @@ def api_fbw_planning_stocks():
             return jsonify({"error": "no_stocks", "message": "Нет данных об остатках. Попробуйте позже."}), 500
         
         # Определяем название склада: по ID WB или fallback-id вида name::<название>
-        warehouse_name = None
-        if str(warehouse_id).startswith("name::"):
-            warehouse_name = str(warehouse_id)[len("name::"):].strip() or None
-        try:
-            # Загружаем список складов WB для поиска названия по ID
-            warehouses_response = requests.get(
-                "https://supplies-api.wildberries.ru/api/v1/warehouses",
-                headers={"Authorization": token, "Content-Type": "application/json"},
-                timeout=30
-            )
-            if warehouses_response.status_code == 200:
-                warehouses_data = warehouses_response.json()
-                if isinstance(warehouses_data, dict):
-                    warehouses_data = warehouses_data.get("warehouses") or warehouses_data.get("items") or warehouses_data.get("data") or []
-                if not isinstance(warehouses_data, list):
-                    warehouses_data = []
-                for warehouse in warehouses_data:
-                    if not isinstance(warehouse, dict):
-                        continue
-                    wid = warehouse.get("ID") or warehouse.get("id") or warehouse.get("warehouseID") or warehouse.get("warehouseId")
-                    if str(wid) == str(warehouse_id):
-                        warehouse_name = warehouse.get("name") or warehouse.get("warehouseName")
-                        break
-        except Exception as e:
-            print(f"Ошибка получения названия склада: {e}")
-        
-        # Fallback по id
-        if not warehouse_name:
-            warehouse_name = str(warehouse_id)
+        warehouse_name = _resolve_fbw_warehouse_name(token, warehouse_id)
         
         # Отладочная информация - посмотрим, какие склады есть в данных
         unique_warehouses = set()
@@ -6144,6 +6160,81 @@ def _normalize_warehouse_name(name: str) -> str:
     normalized = re.sub(r'\s+\d+$', '', name.strip())
     return normalized
 
+
+# Остатки WB часто отдают «Склад WB», а заказы — «Склад WB РФ» (и наоборот).
+_WB_VIRTUAL_WAREHOUSE_ALIASES = frozenset({"склад wb", "склад wb рф"})
+
+
+def _warehouse_alias_keys(name: str) -> set[str]:
+    """Ключи для сопоставления алиасов виртуальных складов WB."""
+    key = str(name or "").strip().lower().replace("ё", "е")
+    if not key:
+        return set()
+    keys = {key}
+    if key in _WB_VIRTUAL_WAREHOUSE_ALIASES:
+        keys |= set(_WB_VIRTUAL_WAREHOUSE_ALIASES)
+    return keys
+
+
+def _resolve_fbw_warehouse_name(token: str, warehouse_id: str) -> str:
+    """
+    Определяет человекочитаемое имя склада для планирования FBW.
+    Поддерживает fallback-id вида name::<название> (когда supplies-api недоступен).
+    """
+    wid = str(warehouse_id or "").strip()
+    if not wid:
+        return ""
+
+    if wid.startswith("name::"):
+        return wid[len("name::"):].strip()
+
+    warehouse_name = None
+    try:
+        warehouses_response = requests.get(
+            "https://supplies-api.wildberries.ru/api/v1/warehouses",
+            headers={"Authorization": token, "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if warehouses_response.status_code == 200:
+            warehouses_data = warehouses_response.json()
+            if isinstance(warehouses_data, dict):
+                warehouses_data = (
+                    warehouses_data.get("warehouses")
+                    or warehouses_data.get("items")
+                    or warehouses_data.get("data")
+                    or []
+                )
+            if isinstance(warehouses_data, list):
+                for warehouse in warehouses_data:
+                    if not isinstance(warehouse, dict):
+                        continue
+                    hid = (
+                        warehouse.get("ID")
+                        or warehouse.get("id")
+                        or warehouse.get("warehouseID")
+                        or warehouse.get("warehouseId")
+                    )
+                    if str(hid) == wid:
+                        warehouse_name = (
+                            warehouse.get("name")
+                            or warehouse.get("warehouseName")
+                            or warehouse.get("officeName")
+                        )
+                        break
+        elif warehouses_response.status_code == 429:
+            print("=== FBW warehouse resolve: 429 от supplies-api ===")
+    except Exception as e:
+        print(f"Ошибка получения названия склада: {e}")
+
+    if warehouse_name:
+        return str(warehouse_name).strip()
+
+    # Числовой ID без имени — помечаем префиксом; иначе это уже имя (старые клиенты)
+    if wid.isdigit():
+        return f"Склад {wid}"
+    return wid
+
+
 def _warehouse_names_match(name1: str, name2: str) -> bool:
     """
     Проверяет, соответствуют ли два названия склада друг другу.
@@ -6156,6 +6247,10 @@ def _warehouse_names_match(name1: str, name2: str) -> bool:
     # Точное совпадение
     if name1 == name2:
         return True
+
+    # Алиасы виртуального склада WB (остатки vs заказы)
+    if _warehouse_alias_keys(name1) & _warehouse_alias_keys(name2):
+        return True
     
     # Частичное совпадение (одно содержит другое)
     if name1 in name2 or name2 in name1:
@@ -6167,6 +6262,8 @@ def _warehouse_names_match(name1: str, name2: str) -> bool:
     if norm1 and norm2:
         # Прямое совпадение нормализованных названий
         if norm1 == norm2:
+            return True
+        if _warehouse_alias_keys(norm1) & _warehouse_alias_keys(norm2):
             return True
         # Проверяем, что нормализованные названия отличаются только окончанием
         # (например, "Перспективный" и "Перспективная")
@@ -6544,47 +6641,9 @@ def api_fbw_planning_data():
         if not stocks:
             return jsonify({"error": "no_stocks", "message": "Нет данных об остатках. Попробуйте позже."}), 500
         
-        # 3. Получаем название склада
-        warehouse_name = None
-        try:
-            warehouses_response = requests.get(
-                "https://supplies-api.wildberries.ru/api/v1/warehouses",
-                headers={"Authorization": token, "Content-Type": "application/json"},
-                timeout=30
-            )
-            if warehouses_response.status_code == 200:
-                warehouses_data = warehouses_response.json()
-                print(f"=== DEBUG: Получены данные складов: {len(warehouses_data)} элементов")
-                for warehouse in warehouses_data:
-                    if str(warehouse.get("ID")) == str(warehouse_id):
-                        warehouse_name = warehouse.get("name")
-                        print(f"Найден склад: ID={warehouse_id}, Name='{warehouse_name}'")
-                        break
-                if not warehouse_name:
-                    print(f"Склад с ID {warehouse_id} не найден в списке складов")
-                    print("Доступные склады:")
-                    for wh in warehouses_data[:10]:  # Показываем первые 10
-                        print(f"  ID={wh.get('ID')}, Name='{wh.get('name')}'")
-            elif warehouses_response.status_code == 429:
-                print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Ошибка 429 при загрузке складов ===")
-                # Используем fallback название
-                warehouse_name = f"Склад {warehouse_id}"
-                print(f"Используем fallback название: '{warehouse_name}'")
-        except requests.HTTPError as e:
-            if e.response and e.response.status_code == 429:
-                print("=== ПЛАНИРОВАНИЕ ПОСТАВКИ: Ошибка 429 при загрузке складов ===")
-                warehouse_name = f"Склад {warehouse_id}"
-                print(f"Используем fallback название: '{warehouse_name}'")
-            else:
-                print(f"Ошибка получения названия склада: {e}")
-                warehouse_name = f"Склад {warehouse_id}"
-        except Exception as e:
-            print(f"Ошибка получения названия склада: {e}")
-            warehouse_name = f"Склад {warehouse_id}"
-        
-        if not warehouse_name:
-            warehouse_name = f"Склад {warehouse_id}"
-            print(f"Используем fallback название: '{warehouse_name}'")
+        # 3. Получаем название склада (в т.ч. fallback id name::<название>)
+        warehouse_name = _resolve_fbw_warehouse_name(token, warehouse_id)
+        print(f"Найден склад: ID={warehouse_id}, Name='{warehouse_name}'")
         
         # 4. Обрабатываем остатки для конкретного склада и всех складов
         warehouse_stocks = {}
@@ -6948,25 +7007,7 @@ def api_fbw_planning_orders():
         return jsonify({"error": "no_token"}), 401
     
     try:
-        # Получаем название склада из API складов
-        warehouse_name = None
-        try:
-            warehouses_response = requests.get(
-                "https://supplies-api.wildberries.ru/api/v1/warehouses",
-                headers={"Authorization": token, "Content-Type": "application/json"},
-                timeout=30
-            )
-            if warehouses_response.status_code == 200:
-                warehouses_data = warehouses_response.json()
-                for warehouse in warehouses_data:
-                    if str(warehouse.get("ID")) == str(warehouse_id):
-                        warehouse_name = warehouse.get("name")
-                        break
-        except Exception as e:
-            print(f"Ошибка получения названия склада: {e}")
-        
-        if not warehouse_name:
-            warehouse_name = f"Склад {warehouse_id}"
+        warehouse_name = _resolve_fbw_warehouse_name(token, warehouse_id)
         
         print(f"Загружаем заказы для склада: '{warehouse_name}' за период {date_from} - {date_to}")
         
@@ -7162,25 +7203,7 @@ def api_fbw_planning_orders_dynamics():
         except Exception:
             pass
 
-        # Получаем название склада из API складов (как и в других planning endpoints)
-        warehouse_name = None
-        try:
-            warehouses_response = requests.get(
-                "https://supplies-api.wildberries.ru/api/v1/warehouses",
-                headers={"Authorization": token, "Content-Type": "application/json"},
-                timeout=30,
-            )
-            if warehouses_response.status_code == 200:
-                warehouses_data = warehouses_response.json()
-                for wh in warehouses_data:
-                    if str(wh.get("ID")) == str(warehouse_id):
-                        warehouse_name = wh.get("name")
-                        break
-        except Exception as e:
-            print(f"Ошибка получения названия склада (dynamics): {e}")
-
-        if not warehouse_name:
-            warehouse_name = f"Склад {warehouse_id}"
+        warehouse_name = _resolve_fbw_warehouse_name(token, warehouse_id)
 
         # Загружаем заказы с пагинацией (по lastChangeDate), фильтруем по реальной дате (date)
         # days_back небольшой, чтобы захватить "догоняющие" обновления, но не раздувать выборку.
