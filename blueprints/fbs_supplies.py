@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """Blueprint для поставок FBS (список и состав поставок)."""
 
+import io
 import requests
 from datetime import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from flask_login import login_required, current_user
 from utils.wb_token import effective_wb_api_token
 from typing import Dict, Any, List
@@ -209,161 +210,208 @@ def api_fbs_supplies():
     )
 
 
-@fbs_supplies_bp.route("/api/fbs/supplies/<supply_id>/orders", methods=["GET"])
-@login_required
-def api_fbs_supply_orders(supply_id: str):
-    """Состав (товары) конкретной поставки FBS."""
-    print(f"=== FBS supply {supply_id} orders request received ===")
-    token = effective_wb_api_token(current_user)
-    if not token:
-        print(f"No token for supply {supply_id}")
-        return jsonify({"items": []}), 200
-
+def _fetch_supply_orders_raw(token: str, supply_id: str) -> tuple[List[Dict[str, Any]], str | None]:
+    """Загружает сырые заказы поставки FBS через /api/v3/orders."""
     headers_list = [
         {"Authorization": f"{token}"},
         {"Authorization": f"Bearer {token}"},
     ]
-    last_err = None
+    last_err: str | None = None
     items: List[Dict[str, Any]] = []
-    print(f"Starting request for supply {supply_id} orders")
-    try:
-        # Устаревший endpoint теперь возвращает 404 (deprecated)
-        # Получаем все заказы через /api/v3/orders и фильтруем по supplyId на стороне сервера
-        for idx, hdrs in enumerate(headers_list):
-            print(f"Trying header set {idx + 1}/{len(headers_list)}")
-            try:
-                # Получаем все заказы через /api/v3/orders с правильными параметрами
-                # Используем логику из app.py: параметр next: 0 обязателен
-                orders_url = FBS_ORDERS_URL
-                orders_params = {"limit": 1000, "next": 0}
-                print(f"Requesting all FBS orders from: {orders_url} with params: {orders_params}")
-                orders_resp = requests.get(orders_url, headers=hdrs, params=orders_params, timeout=30)
-                print(f"Orders request completed, status: {orders_resp.status_code}")
-                
-                if orders_resp.status_code != 200:
-                    print(f"Non-200 status: {orders_resp.status_code}, text: {orders_resp.text[:200]}")
-                    continue
-                
-                orders_data = orders_resp.json()
-                print(f"Orders response: type={type(orders_data)}, keys={list(orders_data.keys()) if isinstance(orders_data, dict) else 'not dict'}")
-                
-                # Извлекаем список заказов
-                all_orders: List[Dict[str, Any]] = []
-                if isinstance(orders_data, dict):
-                    if isinstance(orders_data.get("orders"), list):
-                        all_orders = orders_data["orders"]
-                        print(f"Got {len(all_orders)} orders from 'orders' key")
-                    elif isinstance(orders_data.get("data"), list):
-                        all_orders = orders_data["data"]
-                        print(f"Got {len(all_orders)} orders from 'data' list")
-                elif isinstance(orders_data, list):
-                    all_orders = [it for it in orders_data if isinstance(it, dict)]
-                    print(f"Got {len(all_orders)} orders from list response")
-                
-                # Фильтруем заказы по supplyId
-                supply_id_fields = ["supplyId", "supply_id", "supplyID", "supply"]
-                filtered_items: List[Dict[str, Any]] = []
-                for order in all_orders:
-                    if not isinstance(order, dict):
-                        continue
-                    order_supply_id = None
-                    for field in supply_id_fields:
-                        if field in order:
-                            order_supply_id = order[field]
-                            break
-                    if order_supply_id and str(order_supply_id) == str(supply_id):
-                        filtered_items.append(order)
-                
-                print(f"Filtered to {len(filtered_items)} orders for supply {supply_id} out of {len(all_orders)} total orders")
-                
-                # Если получили данные, сохраняем и выходим из цикла
-                if len(filtered_items) > 0:
-                    items = filtered_items
-                    break
-                
-                print(f"Parsed {len(filtered_items)} raw items for supply {supply_id}")
-            except Exception as e:
-                last_err = str(e)
-                continue
-        
-        # Нормализуем товары и обогащаем из кэша товаров (после цикла, когда items уже получены)
-        if not isinstance(items, list):
-            items = []
-        
-        print(f"Normalizing {len(items)} items for supply {supply_id}")
-        norm: List[Dict[str, Any]] = []
-        prod_cached = load_products_cache() or {}
-        by_nm: Dict[int, Dict[str, Any]] = {}
+    supply_id_fields = ["supplyId", "supply_id", "supplyID", "supply"]
+
+    for idx, hdrs in enumerate(headers_list):
         try:
-            for it in (prod_cached.get("items") or []):
-                nmv = it.get("nm_id") or it.get("nmID")
-                if nmv:
-                    by_nm[int(nmv)] = it
-        except Exception:
-            pass
-
-        for it in items:
-            if not isinstance(it, dict):
+            orders_params = {"limit": 1000, "next": 0}
+            orders_resp = requests.get(
+                FBS_ORDERS_URL, headers=hdrs, params=orders_params, timeout=30
+            )
+            if orders_resp.status_code != 200:
                 continue
-            nm = it.get("nmId") or it.get("nmID")
-            photo = None
-            barcode = None
-            created_raw = (
-                it.get("createdAt")
-                or it.get("dateCreated")
-                or it.get("date")
+
+            orders_data = orders_resp.json()
+            all_orders: List[Dict[str, Any]] = []
+            if isinstance(orders_data, dict):
+                if isinstance(orders_data.get("orders"), list):
+                    all_orders = orders_data["orders"]
+                elif isinstance(orders_data.get("data"), list):
+                    all_orders = orders_data["data"]
+            elif isinstance(orders_data, list):
+                all_orders = [it for it in orders_data if isinstance(it, dict)]
+
+            filtered_items: List[Dict[str, Any]] = []
+            for order in all_orders:
+                if not isinstance(order, dict):
+                    continue
+                order_supply_id = None
+                for field in supply_id_fields:
+                    if field in order:
+                        order_supply_id = order[field]
+                        break
+                if order_supply_id and str(order_supply_id) == str(supply_id):
+                    filtered_items.append(order)
+
+            if filtered_items:
+                return filtered_items, None
+            items = filtered_items
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    return items, last_err
+
+
+def _normalize_supply_order_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Нормализует заказы поставки и обогащает из кэша товаров."""
+    norm: List[Dict[str, Any]] = []
+    prod_cached = load_products_cache() or {}
+    by_nm: Dict[int, Dict[str, Any]] = {}
+    try:
+        for it in (prod_cached.get("items") or []):
+            nmv = it.get("nm_id") or it.get("nmID")
+            if nmv:
+                by_nm[int(nmv)] = it
+    except Exception:
+        pass
+
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        nm = it.get("nmId") or it.get("nmID")
+        photo = None
+        barcode = None
+        created_raw = it.get("createdAt") or it.get("dateCreated") or it.get("date")
+        try:
+            _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
+            _dt_msk = to_moscow(_dt) if _dt else None
+            created_str = (
+                _dt_msk.strftime("%d.%m.%Y %H:%M")
+                if _dt_msk
+                else (str(created_raw) if created_raw else "")
             )
+        except Exception:
+            created_str = str(created_raw) if created_raw else ""
+
+        if nm:
             try:
-                _dt = parse_wb_datetime(str(created_raw)) if created_raw else None
-                _dt_msk = to_moscow(_dt) if _dt else None
-                created_str = (
-                    _dt_msk.strftime("%d.%m.%Y %H:%M")
-                    if _dt_msk
-                    else (str(created_raw) if created_raw else "")
-                )
+                hit = by_nm.get(int(nm))
             except Exception:
-                created_str = str(created_raw) if created_raw else ""
+                hit = None
+            if hit:
+                photo = hit.get("photo")
+                if hit.get("barcode"):
+                    barcode = hit.get("barcode")
+                elif isinstance(hit.get("barcodes"), list) and hit.get("barcodes"):
+                    barcode = str(hit.get("barcodes")[0])
+                else:
+                    sizes = hit.get("sizes") or []
+                    if isinstance(sizes, list):
+                        for s in sizes:
+                            bar_list = s.get("skus") or s.get("barcodes")
+                            if isinstance(bar_list, list) and bar_list:
+                                barcode = str(bar_list[0])
+                                break
 
-            if nm:
-                try:
-                    hit = by_nm.get(int(nm))
-                except Exception:
-                    hit = None
-                if hit:
-                    photo = hit.get("photo")
-                    if hit.get("barcode"):
-                        barcode = hit.get("barcode")
-                    elif isinstance(hit.get("barcodes"), list) and hit.get(
-                        "barcodes"
-                    ):
-                        barcode = str(hit.get("barcodes")[0])
-                    else:
-                        sizes = hit.get("sizes") or []
-                        if isinstance(sizes, list):
-                            for s in sizes:
-                                bar_list = s.get("skus") or s.get("barcodes")
-                                if isinstance(bar_list, list) and bar_list:
-                                    barcode = str(bar_list[0])
-                                    break
+        norm.append(
+            {
+                "id": it.get("id") or it.get("orderId"),
+                "article": it.get("article") or it.get("supplierArticle"),
+                "barcode": barcode or it.get("barcode") or "",
+                "nm_id": nm,
+                "photo": photo,
+                "createdAt": created_str,
+            }
+        )
+    return norm
 
-            norm.append(
-                {
-                    "id": it.get("id") or it.get("orderId"),
-                    "article": it.get("article") or it.get("supplierArticle"),
-                    "barcode": barcode or it.get("barcode") or "",
-                    "nm_id": nm,
-                    "photo": photo,
-                    "createdAt": created_str,
-                }
-            )
 
-        print(f"Normalized {len(norm)} items for supply {supply_id}")
+def _group_supply_items_for_export(items: List[Dict[str, Any]]) -> List[tuple[str, str, str, int]]:
+    """Группирует товары поставки для экспорта: (наименование, nm_id, баркод, кол-во)."""
+    agg: Dict[tuple[str, str, str], int] = {}
+    for it in items:
+        name = str(it.get("article") or "").strip()
+        nm_id = str(it.get("nm_id") or "").strip()
+        barcode = str(it.get("barcode") or "").strip()
+        key = (name, nm_id, barcode)
+        agg[key] = agg.get(key, 0) + 1
+    return [
+        (name, nm_id, barcode, qty)
+        for (name, nm_id, barcode), qty in sorted(
+            agg.items(), key=lambda x: (-x[1], x[0][0])
+        )
+    ]
+
+
+def _build_supply_xls(rows: List[tuple[str, str, str, int]], sheet_name: str = "Поставка") -> io.BytesIO:
+    """Собирает .xls с группированными товарами."""
+    try:
+        import xlwt  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("На сервере отсутствует зависимость xlwt (для .xls)") from exc
+
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet(sheet_name[:31])
+    header_style = xlwt.easyxf("font: bold on; align: horiz center")
+    num_style = xlwt.easyxf("align: horiz right")
+    ws.write(0, 0, "Наименование", header_style)
+    ws.write(0, 1, "Артикул WB (nmId)", header_style)
+    ws.write(0, 2, "Баркод", header_style)
+    ws.write(0, 3, "Количество", header_style)
+    for row_idx, (name, nm_id, barcode, qty) in enumerate(rows, start=1):
+        ws.write(row_idx, 0, name)
+        ws.write(row_idx, 1, nm_id)
+        ws.write(row_idx, 2, barcode)
+        ws.write(row_idx, 3, qty, num_style)
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+@fbs_supplies_bp.route("/api/fbs/supplies/<supply_id>/orders", methods=["GET"])
+@login_required
+def api_fbs_supply_orders(supply_id: str):
+    """Состав (товары) конкретной поставки FBS."""
+    token = effective_wb_api_token(current_user)
+    if not token:
+        return jsonify({"items": []}), 200
+
+    try:
+        items, last_err = _fetch_supply_orders_raw(token, supply_id)
+        norm = _normalize_supply_order_items(items)
         return jsonify({"items": norm}), 200
     except Exception as e:
-        last_err = str(e)
-        print(f"Error in api_fbs_supply_orders: {last_err}")
+        return jsonify({"items": [], "error": str(e)}), 200
 
-    return jsonify({"items": [], "error": last_err or "Unknown error"}), 200
+
+@fbs_supplies_bp.route("/api/fbs/supplies/<supply_id>/export", methods=["GET"])
+@login_required
+def api_fbs_supply_export(supply_id: str):
+    """Экспорт состава поставки FBS в Excel (сгруппировано по товарам)."""
+    token = effective_wb_api_token(current_user)
+    if not token:
+        return ("Требуется API токен", 400)
+
+    try:
+        items, _ = _fetch_supply_orders_raw(token, supply_id)
+        norm = _normalize_supply_order_items(items)
+        if not norm:
+            return ("Нет товаров в поставке", 400)
+
+        grouped = _group_supply_items_for_export(norm)
+        out = _build_supply_xls(grouped, sheet_name=f"Поставка {supply_id}")
+        safe_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(supply_id))
+        filename = f"fbs_supply_{safe_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xls"
+        return send_file(
+            out,
+            mimetype="application/vnd.ms-excel",
+            as_attachment=True,
+            download_name=filename,
+        )
+    except RuntimeError as exc:
+        return (str(exc), 500)
+    except Exception as exc:
+        return (f"Ошибка: {exc}", 500)
 
 
 @fbs_supplies_bp.route("/api/fbs/supplies/<supply_id>/orders/<order_id>", methods=["PATCH", "POST"])

@@ -290,6 +290,9 @@
       const toolbar = document.createElement('div');
       toolbar.className = 'd-flex justify-content-between align-items-center mb-2 flex-wrap gap-2';
 
+      const btnWrap = document.createElement('div');
+      btnWrap.className = 'd-flex gap-2 flex-wrap align-items-center';
+
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-sm supply-group-btn ' + (grouped ? 'btn-primary active' : 'btn-outline-primary');
@@ -299,6 +302,20 @@
         renderSupplyItemsContent(wrap, wrap._items || [], !wrap._grouped);
       });
 
+      const exportBtn = document.createElement('button');
+      exportBtn.type = 'button';
+      exportBtn.className = 'btn btn-success btn-sm';
+      exportBtn.textContent = 'Сохранить в Excel';
+      exportBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const supplyId = wrap.dataset.supplyId;
+        if (!supplyId) return;
+        window.location.href = `/api/fbs/supplies/${encodeURIComponent(supplyId)}/export`;
+      });
+
+      btnWrap.appendChild(btn);
+      btnWrap.appendChild(exportBtn);
+
       const summary = document.createElement('span');
       summary.className = 'text-muted small';
       const groups = groupSupplyItems(items);
@@ -306,7 +323,7 @@
         ? `${items.length} заказов · ${groups.length} позиций`
         : `${items.length} заказов`;
 
-      toolbar.appendChild(btn);
+      toolbar.appendChild(btnWrap);
       toolbar.appendChild(summary);
 
       const table = document.createElement('table');
@@ -402,7 +419,7 @@
         tbody.appendChild(tr);
         const details = document.createElement('tr');
         details.className = 'd-none supply-details-row';
-        details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
+        details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\" data-supply-id=\"${s.supplyId}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
         tbody.appendChild(details);
         tr.addEventListener('click', async () => {
           document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
