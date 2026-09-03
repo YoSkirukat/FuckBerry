@@ -45,6 +45,11 @@ FBS_SUPPLY_ORDERS_IDS_URL_V2 = "https://marketplace-api.wildberries.ru/api/v2/su
 FBS_SUPPLY_ORDERS_IDS_URL_V3 = "https://marketplace-api.wildberries.ru/api/v3/supply/orders/ids"  # Try v3 as fallback
 # Новый endpoint для добавления сборочных заданий в поставку
 FBS_SUPPLY_ADD_ORDERS_URL = "https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies/{supplyId}/orders"
+FBS_ORDERS_STICKERS_URL = "https://marketplace-api.wildberries.ru/api/v3/orders/stickers"
+FBS_SUPPLY_BARCODE_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}/barcode"
+FBS_SUPPLY_DELIVER_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}/deliver"
+FBS_SUPPLY_TRBX_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}/trbx"
+FBS_SUPPLY_TRBX_STICKERS_URL = "https://marketplace-api.wildberries.ru/api/v3/supplies/{supplyId}/trbx/stickers"
 
 # DBS (Delivery by Seller) API
 DBS_NEW_URL = "https://marketplace-api.wildberries.ru/api/v3/dbs/orders/new"

@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Печать поставки {{ supply_id }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 16px;
+      color: #111;
+      background: #f8f9fa;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      padding: 12px;
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+    }
+    .toolbar button {
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid #0d6efd;
+      background: #0d6efd;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .toolbar button.secondary {
+      background: #fff;
+      color: #0d6efd;
+    }
+    .toolbar button.success {
+      background: #198754;
+      border-color: #198754;
+      color: #fff;
+    }
+    .toolbar a.btn-link {
+      display: inline-block;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid #0d6efd;
+      background: #fff;
+      color: #0d6efd;
+      text-decoration: none;
+      font-size: 14px;
+      line-height: 1.2;
+    }
+    .toolbar a.btn-link:hover {
+      background: #e7f1ff;
+    }
+    .section {
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .section h2 {
+      margin: 0 0 8px;
+      font-size: 1.1rem;
+    }
+    .section .hint {
+      margin: 0 0 12px;
+      color: #6c757d;
+      font-size: 0.88rem;
+    }
+    .muted { color: #6c757d; font-size: 0.9rem; }
+    .alert {
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #fff3cd;
+      border: 1px solid #ffecb5;
+      color: #664d03;
+      margin-bottom: 12px;
+    }
+    .qr-wrap {
+      text-align: center;
+      padding: 12px 0;
+    }
+    .label-img {
+      display: block;
+      width: 100%;
+      max-width: 320px;
+      height: auto;
+      margin: 0 auto;
+    }
+    .stickers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .sticker-card {
+      text-align: center;
+    }
+    .trbx-id {
+      margin-top: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      word-break: break-all;
+    }
+    .section-actions {
+      margin-bottom: 12px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .pdf-link {
+      display: inline-block;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid #6c757d;
+      background: #fff;
+      color: #495057;
+      text-decoration: none;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .pdf-link:hover {
+      background: #f1f3f5;
+      color: #212529;
+    }
+    /* Лента стикеров как в ЛК WB: штрихкод → QR сборки → штрихкод → … */
+    .tape-feed {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+      max-width: 340px;
+    }
+    .tape-label {
+      width: 100%;
+      max-width: 320px;
+      line-height: 0;
+      border: 1px dashed #adb5bd;
+      box-sizing: border-box;
+      background: #fff;
+    }
+    .tape-label.product-label {
+      line-height: normal;
+    }
+    .tape-label img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .product-label {
+      width: 58mm;
+      max-width: 58mm;
+      min-height: 40mm;
+      padding: 1.5mm 2mm 0;
+      box-sizing: border-box;
+      display: block;
+      text-align: center;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #000;
+      background: #fff;
+      line-height: normal;
+    }
+    .product-label .pl-barcode {
+      width: 100%;
+      line-height: 0;
+    }
+    .product-label .pl-barcode svg {
+      width: 100%;
+      height: auto;
+      max-height: 11mm;
+      display: block;
+    }
+    .product-label .pl-num {
+      font-size: 8pt;
+      margin-top: 1.2mm;
+      letter-spacing: 0.02em;
+      line-height: 1;
+    }
+    .product-label .pl-seller {
+      font-size: 7pt;
+      margin-top: 4mm;
+      max-width: 100%;
+      word-break: break-word;
+      line-height: 1.15;
+    }
+    .product-label .pl-title {
+      font-size: 7.5pt;
+      font-weight: 400;
+      margin-top: 1.5mm;
+      max-width: 100%;
+      word-break: break-word;
+      line-height: 1.15;
+    }
+    .product-label .pl-title + .pl-title {
+      margin-top: 1mm;
+    }
+    .product-label .pl-row {
+      font-size: 6.5pt;
+      margin-top: 1.1mm;
+      max-width: 100%;
+      word-break: break-word;
+      line-height: 1.15;
+    }
+    .product-label .pl-row--cont {
+      margin-top: 0.7mm;
+    }
+    .product-label .pl-val {
+      font-weight: 400;
+    }
+    .print-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .print-modal[hidden] {
+      display: none !important;
+    }
+    .print-modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+    }
+    .print-modal-dialog {
+      position: relative;
+      width: 100%;
+      max-width: 420px;
+      background: #fff;
+      border-radius: 10px;
+      padding: 20px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    }
+    .print-modal-dialog h3 {
+      margin: 0 0 16px;
+      font-size: 1.15rem;
+    }
+    .print-modal-list {
+      list-style: none;
+      margin: 0 0 20px;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .print-modal-list label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+    .print-modal-list input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .print-modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .print-modal-actions button {
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid #0d6efd;
+      background: #0d6efd;
+      color: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .print-modal-actions button.secondary {
+      background: #fff;
+      color: #0d6efd;
+    }
+    .pdf-loading {
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .pdf-loading[hidden] {
+      display: none !important;
+    }
+    .pdf-loading-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 22px 28px;
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12);
+      min-width: 220px;
+    }
+    .pdf-loading-spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid #dee2e6;
+      border-top-color: #0d6efd;
+      border-radius: 50%;
+      animation: pdf-spin 0.8s linear infinite;
+    }
+    .pdf-loading-text {
+      font-size: 15px;
+      color: #212529;
+    }
+    @keyframes pdf-spin {
+      to { transform: rotate(360deg); }
+    }
+    @media print {
+      @page {
+        margin: 0;
+      }
+      @page sticker {
+        size: 58mm 40mm;
+        margin: 0;
+      }
+      html, body {
+        background: #fff;
+        margin: 0;
+        padding: 0;
+      }
+      .no-print { display: none !important; }
+      .print-hide { display: none !important; }
+      .section {
+        border: none;
+        box-shadow: none;
+        padding: 0;
+        margin: 0;
+      }
+      .section h2, .section .hint, .section-actions { display: none; }
+      .toolbar { display: none; }
+      .alert { display: none !important; }
+      .trbx-id { display: none; }
+      .stickers-grid {
+        display: block;
+      }
+      .sticker-card {
+        width: 58mm;
+        height: 40mm;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        page: sticker;
+        page-break-after: always;
+        break-after: page;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .tape-feed {
+        display: block;
+        max-width: none;
+        gap: 0;
+      }
+      .tape-label {
+        width: 58mm;
+        height: 40mm;
+        max-width: 58mm;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        border: none;
+        page: sticker;
+        page-break-after: always;
+        break-after: page;
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      .tape-label.product-label {
+        display: block;
+        line-height: normal;
+        padding: 1.5mm 2mm 0;
+        box-sizing: border-box;
+        font-family: Arial, Helvetica, sans-serif;
+        font-weight: 400;
+        text-align: center;
+        color: #000;
+        background: #fff;
+      }
+      .product-label .pl-barcode {
+        width: 100%;
+        line-height: 0;
+        margin: 0;
+        padding: 0;
+      }
+      .product-label .pl-barcode svg {
+        width: 100%;
+        height: 11mm;
+        max-height: 11mm;
+        display: block;
+        margin: 0 auto;
+      }
+      .product-label .pl-num {
+        font-size: 8pt;
+        font-weight: 400;
+        margin: 1.2mm 0 0;
+        padding: 0;
+        line-height: 1;
+        letter-spacing: 0.02em;
+      }
+      .product-label .pl-seller {
+        font-size: 7pt;
+        font-weight: 400;
+        margin: 4mm 0 0;
+        padding: 0;
+        line-height: 1.15;
+        max-width: 100%;
+        word-break: break-word;
+      }
+      .product-label .pl-title {
+        font-size: 7.5pt;
+        font-weight: 400;
+        margin: 1.5mm 0 0;
+        padding: 0;
+        line-height: 1.15;
+        max-width: 100%;
+        word-break: break-word;
+      }
+      .product-label .pl-title + .pl-title {
+        margin-top: 1mm;
+      }
+      .product-label .pl-row {
+        font-size: 6.5pt;
+        font-weight: 400;
+        margin: 1.1mm 0 0;
+        padding: 0;
+        line-height: 1.15;
+        max-width: 100%;
+        word-break: break-word;
+      }
+      .product-label .pl-row--cont {
+        margin-top: 0.7mm;
+      }
+      .product-label .pl-val {
+        font-weight: 400;
+      }
+      .label-img,
+      .tape-label img,
+      .sticker-card img {
+        width: 58mm;
+        height: 40mm;
+        max-width: 58mm;
+        max-height: 40mm;
+        object-fit: contain;
+        margin: 0;
+        padding: 0;
+      }
+      .qr-wrap img {
+        width: auto;
+        height: auto;
+        max-width: 80mm;
+        max-height: 80mm;
+        object-fit: contain;
+        margin: 0 auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar no-print">
+    <button type="button" id="printBtn">Печать</button>
+    <a class="btn-link" href="{{ url_for('fbs_supplies.fbs_supply_pick_list', supply_id=supply_id) }}">Скачать лист подбора</a>
+    <button type="button" class="secondary" onclick="window.close()">Закрыть</button>
+    <span class="muted" style="align-self:center;">Поставка {{ supply_id }} · заказов: {{ items_count }}</span>
+  </div>
+
+  <div id="printModal" class="print-modal no-print" hidden>
+    <div class="print-modal-backdrop" id="printModalBackdrop"></div>
+    <div class="print-modal-dialog" role="dialog" aria-labelledby="printModalTitle">
+      <h3 id="printModalTitle">Что печатать?</h3>
+      <ul class="print-modal-list">
+        <li>
+          <label>
+            <input type="checkbox" id="printOptQr" checked>
+            QR-код поставки
+          </label>
+        </li>
+        <li>
+          <label>
+            <input type="checkbox" id="printOptTrbx" checked>
+            Грузоместа для ПВЗ
+          </label>
+        </li>
+        <li>
+          <label>
+            <input type="checkbox" id="printOptStickers" checked>
+            Стикеры сборочных заданий
+          </label>
+        </li>
+        <li>
+          <label>
+            <input type="checkbox" id="printOptBarcodes" checked>
+            Штрихкоды товаров
+          </label>
+        </li>
+      </ul>
+      <div class="print-modal-actions">
+        <button type="button" id="printModalConfirm">Печать</button>
+        <button type="button" class="secondary" id="printModalCancel">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="pdfLoading" class="pdf-loading no-print" hidden>
+    <div class="pdf-loading-card" role="status" aria-live="polite">
+      <div class="pdf-loading-spinner" aria-hidden="true"></div>
+      <div class="pdf-loading-text" id="pdfLoadingText">Подготовка PDF…</div>
+    </div>
+  </div>
+
+  <div class="section" id="qr-section">
+    <h2 class="no-print">QR-код поставки</h2>
+    <p class="hint no-print">Для отгрузки на склад Wildberries ({{ supply_id }})</p>
+    {% if barcode and barcode.file %}
+      <div class="section-actions no-print">
+        <a class="pdf-link" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='qr') }}">Сохранить в PDF</a>
+      </div>
+      <div class="qr-wrap">
+        <img class="label-img" src="data:image/png;base64,{{ barcode.file }}" alt="">
+      </div>
+    {% else %}
+      <div class="alert no-print">Не удалось загрузить QR-код поставки.</div>
+    {% endif %}
+  </div>
+
+  <div class="section" id="trbx-section">
+    <h2 class="no-print">Грузоместа для ПВЗ</h2>
+    <p class="hint no-print">Создайте грузоместа, распечатайте QR и наклейте на коробки. С этими QR можно сдать поставку в любой ПВЗ Wildberries.</p>
+    <div class="section-actions no-print">
+      <button type="button" class="success" id="addTrbxBtn">+ Добавить грузоместо</button>
+      {% if trbx_items %}
+        <a class="pdf-link" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='trbx') }}">Сохранить в PDF</a>
+      {% endif %}
+    </div>
+    <div id="trbxList" class="stickers-grid">
+      {% for t in trbx_items %}
+        <div class="sticker-card" data-trbx-id="{{ t.id }}">
+          {% if t.file %}
+            <img class="label-img" src="data:image/png;base64,{{ t.file }}" alt="">
+          {% endif %}
+          <div class="trbx-id no-print-on-paper">{{ t.id }}</div>
+        </div>
+      {% endfor %}
+    </div>
+    {% if not trbx_items %}
+      <div class="muted no-print" id="trbxEmptyHint">Грузоместа ещё не созданы.</div>
+    {% endif %}
+  </div>
+
+  <div class="section" id="order-tape-section">
+    <h2 class="no-print">Лента стикеров</h2>
+    <p class="hint no-print">Штрихкод товара и стикер сборки идут парами — как в личном кабинете WB.</p>
+    {% if stickers_error and not order_tape_pairs %}
+      <div class="alert no-print">Не удалось загрузить стикеры: {{ stickers_error }}</div>
+    {% elif not order_tape_pairs %}
+      <div class="muted no-print">В поставке нет товаров для печати стикеров.</div>
+    {% else %}
+      <div class="section-actions no-print">
+        <a class="pdf-link" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='tape') }}">Сохранить в PDF</a>
+      </div>
+      <div class="tape-feed">
+        {% for pair in order_tape_pairs %}
+          {% if pair.label and pair.label.barcode %}
+            <div class="tape-label tape-label--barcode product-label" data-tape-type="barcode">
+              {% if pair.label.barcode_svg %}
+                <div class="pl-barcode">{{ pair.label.barcode_svg|safe }}</div>
+              {% endif %}
+              <div class="pl-num">{{ pair.label.barcode }}</div>
+              {% if pair.label.seller %}
+                <div class="pl-seller">{{ pair.label.seller }}</div>
+              {% endif %}
+              {% for line in pair.label.title_lines %}
+                <div class="pl-title">{{ line }}</div>
+              {% endfor %}
+              <div class="pl-row"><span class="pl-lbl">Бренд:</span> <span class="pl-val">{{ pair.label.brand }}</span></div>
+              <div class="pl-row"><span class="pl-lbl">Цвет:</span> <span class="pl-val">{{ pair.label.color }}</span></div>
+              <div class="pl-row"><span class="pl-lbl">Размер:</span> <span class="pl-val">{{ pair.label.size }}</span></div>
+              <div class="pl-row"><span class="pl-lbl">Артикул:</span> <span class="pl-val">{{ (pair.label.article_lines or [pair.label.article])[0] }}</span></div>
+              {% for line in (pair.label.article_lines or [])[1:] %}
+                <div class="pl-row pl-row--cont"><span class="pl-val">{{ line }}</span></div>
+              {% endfor %}
+            </div>
+          {% endif %}
+          {% if pair.sticker_file %}
+            <div class="tape-label tape-label--sticker" data-tape-type="sticker">
+              <img src="data:image/png;base64,{{ pair.sticker_file }}" alt="">
+            </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+
+  <script>
+    (function() {
+      const supplyId = {{ supply_id|tojson }};
+      const addBtn = document.getElementById('addTrbxBtn');
+      const trbxList = document.getElementById('trbxList');
+      const emptyHint = document.getElementById('trbxEmptyHint');
+
+      const printBtn = document.getElementById('printBtn');
+      const printModal = document.getElementById('printModal');
+      const printModalBackdrop = document.getElementById('printModalBackdrop');
+      const printModalConfirm = document.getElementById('printModalConfirm');
+      const printModalCancel = document.getElementById('printModalCancel');
+
+      const printOptQr = document.getElementById('printOptQr');
+      const printOptTrbx = document.getElementById('printOptTrbx');
+      const printOptStickers = document.getElementById('printOptStickers');
+      const printOptBarcodes = document.getElementById('printOptBarcodes');
+
+      function openPrintModal() {
+        if (printModal) printModal.hidden = false;
+      }
+
+      function closePrintModal() {
+        if (printModal) printModal.hidden = true;
+      }
+
+      const pdfLoading = document.getElementById('pdfLoading');
+      const pdfLoadingText = document.getElementById('pdfLoadingText');
+      let pdfLoadingDepth = 0;
+
+      function showPdfLoading(message) {
+        pdfLoadingDepth += 1;
+        if (pdfLoadingText) pdfLoadingText.textContent = message || 'Подготовка PDF…';
+        if (pdfLoading) pdfLoading.hidden = false;
+      }
+
+      function hidePdfLoading() {
+        pdfLoadingDepth = Math.max(0, pdfLoadingDepth - 1);
+        if (pdfLoadingDepth === 0 && pdfLoading) pdfLoading.hidden = true;
+      }
+
+      function filenameFromDisposition(header, fallback) {
+        if (!header) return fallback;
+        const utf = /filename\*=UTF-8''([^;]+)/i.exec(header);
+        if (utf && utf[1]) {
+          try { return decodeURIComponent(utf[1].trim()); } catch (e) { /* ignore */ }
+        }
+        const plain = /filename="?([^";]+)"?/i.exec(header);
+        return (plain && plain[1]) ? plain[1].trim() : fallback;
+      }
+
+      async function downloadPdf(url, message) {
+        showPdfLoading(message || 'Сохранение PDF…');
+        try {
+          const resp = await fetch(url, { credentials: 'include' });
+          if (!resp.ok) {
+            const text = await resp.text().catch(() => '');
+            throw new Error(text || ('Ошибка ' + resp.status));
+          }
+          const blob = await resp.blob();
+          const name = filenameFromDisposition(
+            resp.headers.get('Content-Disposition'),
+            'stickers.pdf'
+          );
+          const objectUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objectUrl;
+          a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 2000);
+        } catch (e) {
+          alert(e && e.message ? e.message : 'Не удалось сохранить PDF');
+        } finally {
+          hidePdfLoading();
+        }
+      }
+
+      function getPdfPrintFrame() {
+        let frame = document.getElementById('pdfPrintFrame');
+        if (!frame) {
+          frame = document.createElement('iframe');
+          frame.id = 'pdfPrintFrame';
+          frame.setAttribute('aria-hidden', 'true');
+          frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+          document.body.appendChild(frame);
+        }
+        return frame;
+      }
+
+      function printPdf(url) {
+        showPdfLoading('Подготовка к печати…');
+        const frame = getPdfPrintFrame();
+        let finished = false;
+        function done() {
+          if (finished) return;
+          finished = true;
+          hidePdfLoading();
+        }
+        frame.onload = function() {
+          try {
+            frame.contentWindow.focus();
+            frame.contentWindow.print();
+          } catch (e) {
+            window.open(url, '_blank');
+          } finally {
+            done();
+          }
+        };
+        frame.onerror = done;
+        setTimeout(done, 60000);
+        frame.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + '_ts=' + Date.now();
+      }
+
+      function runPrint() {
+        const showQr = printOptQr && printOptQr.checked;
+        const showTrbx = printOptTrbx && printOptTrbx.checked;
+        const showStickers = printOptStickers && printOptStickers.checked;
+        const showBarcodes = printOptBarcodes && printOptBarcodes.checked;
+
+        if (!showQr && !showTrbx && !showStickers && !showBarcodes) {
+          alert('Выберите хотя бы один тип стикеров для печати');
+          return;
+        }
+
+        const params = new URLSearchParams();
+        if (showQr) params.set('qr', '1');
+        if (showTrbx) params.set('trbx', '1');
+        if (showStickers) params.set('stickers', '1');
+        if (showBarcodes) params.set('barcodes', '1');
+
+        closePrintModal();
+        printPdf(`/fbs/supplies/${encodeURIComponent(supplyId)}/pdf/print?${params.toString()}`);
+      }
+
+      document.addEventListener('click', function(e) {
+        const link = e.target.closest('a.pdf-link');
+        if (!link || !link.href) return;
+        e.preventDefault();
+        downloadPdf(link.href, 'Сохранение PDF…');
+      });
+
+      if (printBtn) printBtn.addEventListener('click', openPrintModal);
+      if (printModalConfirm) printModalConfirm.addEventListener('click', runPrint);
+      if (printModalCancel) printModalCancel.addEventListener('click', closePrintModal);
+      if (printModalBackdrop) printModalBackdrop.addEventListener('click', closePrintModal);
+
+      function appendTrbxCard(item) {
+        if (!item || !item.id) return;
+        if (trbxList.querySelector(`[data-trbx-id="${CSS.escape(item.id)}"]`)) return;
+        const card = document.createElement('div');
+        card.className = 'sticker-card';
+        card.dataset.trbxId = item.id;
+        const imgHtml = item.file
+          ? `<img class="label-img" src="data:image/png;base64,${item.file}" alt="">`
+          : '';
+        card.innerHTML = `${imgHtml}<div class="trbx-id">${item.id}</div>`;
+        trbxList.appendChild(card);
+        if (emptyHint) emptyHint.style.display = 'none';
+        ensureTrbxPdfLink();
+      }
+
+      function ensureTrbxPdfLink() {
+        const actions = document.querySelector('#trbx-section .section-actions');
+        if (!actions || actions.querySelector('.pdf-link')) return;
+        const link = document.createElement('a');
+        link.className = 'pdf-link';
+        link.href = `/fbs/supplies/${encodeURIComponent(supplyId)}/pdf/trbx`;
+        link.textContent = 'Сохранить в PDF';
+        actions.appendChild(link);
+      }
+
+      if (addBtn) {
+        addBtn.addEventListener('click', async function() {
+          addBtn.disabled = true;
+          const oldText = addBtn.textContent;
+          addBtn.textContent = 'Создание...';
+          try {
+            const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(supplyId)}/trbx`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ amount: 1 }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              alert(data.error || 'Не удалось создать грузоместо');
+              return;
+            }
+            (data.items || []).forEach(appendTrbxCard);
+          } catch (e) {
+            alert('Ошибка сети');
+          } finally {
+            addBtn.disabled = false;
+            addBtn.textContent = oldText;
+          }
+        });
+      }
+
+      {% if autoprint %}
+      window.addEventListener('load', function() { setTimeout(openPrintModal, 400); });
+      {% endif %}
+    })();
+  </script>
+</body>
+</html>

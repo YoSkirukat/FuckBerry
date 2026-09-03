@@ -25,8 +25,42 @@
       font-size: 0.72rem;
       color: #6c757d;
     }
-    .supply-group-btn.active {
-      font-weight: 600;
+    .supply-group-switch {
+      display: inline-flex;
+      align-items: center;
+      margin: 0;
+      padding: 0.15rem 0.35rem;
+      min-height: 31px;
+      cursor: pointer;
+    }
+    .supply-group-switch .form-check-input {
+      margin: 0;
+      cursor: pointer;
+      float: none;
+    }
+    .supply-export-excel {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: transparent !important;
+      color: #198754 !important;
+      border-color: #198754 !important;
+    }
+    .supply-export-excel:hover,
+    .supply-export-excel:focus {
+      background: rgba(25, 135, 84, 0.08) !important;
+      color: #146c43 !important;
+      border-color: #146c43 !important;
+    }
+    .supply-print-stickers {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .supply-btn-icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
     }
     .supply-items-count {
       font-weight: 700;
@@ -293,19 +327,30 @@
       const btnWrap = document.createElement('div');
       btnWrap.className = 'd-flex gap-2 flex-wrap align-items-center';
 
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn btn-sm supply-group-btn ' + (grouped ? 'btn-primary active' : 'btn-outline-primary');
-      btn.textContent = 'Сгруппировать по товарам';
-      btn.addEventListener('click', (e) => {
+      const groupSwitchWrap = document.createElement('div');
+      groupSwitchWrap.className = 'form-check form-switch supply-group-switch';
+      groupSwitchWrap.title = 'Сгруппировать товары';
+
+      const groupSwitch = document.createElement('input');
+      groupSwitch.type = 'checkbox';
+      groupSwitch.className = 'form-check-input';
+      groupSwitch.role = 'switch';
+      groupSwitch.checked = !!grouped;
+      groupSwitch.setAttribute('aria-label', 'Сгруппировать товары');
+      groupSwitch.addEventListener('click', (e) => e.stopPropagation());
+      groupSwitch.addEventListener('change', (e) => {
         e.stopPropagation();
-        renderSupplyItemsContent(wrap, wrap._items || [], !wrap._grouped);
+        renderSupplyItemsContent(wrap, wrap._items || [], !!groupSwitch.checked);
       });
+      groupSwitchWrap.appendChild(groupSwitch);
+
+      const excelIcon = '<svg class="supply-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm1 7V3.5L19.5 9H15zM8.2 18l2.05-3.2L8.35 12h1.7l1.15 1.95L12.4 12h1.65l-1.9 2.8 2.05 3.2h-1.7l-1.25-2.1L10 18H8.2z"/></svg>';
+      const printerIcon = '<svg class="supply-btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 8H5a3 3 0 0 0-3 3v5a2 2 0 0 0 2 2h2v3h12v-3h2a2 2 0 0 0 2-2v-5a3 3 0 0 0-3-3zm-3 11H8v-4h8v4zm3-6.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zM17 3H7v4h10V3z"/></svg>';
 
       const exportBtn = document.createElement('button');
       exportBtn.type = 'button';
-      exportBtn.className = 'btn btn-success btn-sm';
-      exportBtn.textContent = 'Сохранить в Excel';
+      exportBtn.className = 'btn btn-sm supply-export-excel';
+      exportBtn.innerHTML = excelIcon + '<span>Сохранить в Excel</span>';
       exportBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const supplyId = wrap.dataset.supplyId;
@@ -313,8 +358,66 @@
         window.location.href = `/api/fbs/supplies/${encodeURIComponent(supplyId)}/export`;
       });
 
-      btnWrap.appendChild(btn);
+      const supplyStatus = wrap.dataset.supplyStatus || '';
+      let deliverBtn = null;
+      if (supplyStatus === 'Не отгружена') {
+        deliverBtn = document.createElement('button');
+        deliverBtn.type = 'button';
+        deliverBtn.className = 'btn btn-warning btn-sm';
+        deliverBtn.textContent = 'Передать в доставку';
+        deliverBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const supplyId = wrap.dataset.supplyId;
+          if (!supplyId) return;
+          if (!confirm(`Передать поставку ${supplyId} в доставку?`)) return;
+          deliverBtn.disabled = true;
+          deliverBtn.textContent = 'Отправка...';
+          try {
+            const r = await fetch(`/api/fbs/supplies/${encodeURIComponent(supplyId)}/deliver`, {
+              method: 'PATCH',
+              credentials: 'include',
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.success) {
+              showNotification(`Поставка ${supplyId} передана в доставку`, 'success');
+              wrap.dataset.supplyStatus = 'Отгружено';
+              const supplyRow = document.querySelector(`#suppliesTable tbody tr[data-supply-id="${CSS.escape(supplyId)}"]`);
+              if (supplyRow) {
+                const statusCell = supplyRow.children[3];
+                if (statusCell) {
+                  statusCell.innerHTML = '<span class="status-badge status-ok">Отгружено</span>';
+                }
+              }
+              renderSupplyItemsContent(wrap, wrap._items || items, wrap._grouped);
+            } else {
+              showNotification(data.error || 'Не удалось передать поставку в доставку', 'error');
+              deliverBtn.disabled = false;
+              deliverBtn.textContent = 'Передать в доставку';
+            }
+          } catch (err) {
+            console.error(err);
+            showNotification('Ошибка сети', 'error');
+            deliverBtn.disabled = false;
+            deliverBtn.textContent = 'Передать в доставку';
+          }
+        });
+      }
+
+      const printBtn = document.createElement('button');
+      printBtn.type = 'button';
+      printBtn.className = 'btn btn-outline-secondary btn-sm supply-print-stickers';
+      printBtn.innerHTML = printerIcon + '<span>Печать QR и стикеров</span>';
+      printBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const supplyId = wrap.dataset.supplyId;
+        if (!supplyId) return;
+        window.open(`/fbs/supplies/${encodeURIComponent(supplyId)}/print`, '_blank');
+      });
+
+      btnWrap.appendChild(groupSwitchWrap);
       btnWrap.appendChild(exportBtn);
+      if (deliverBtn) btnWrap.appendChild(deliverBtn);
+      btnWrap.appendChild(printBtn);
 
       const summary = document.createElement('span');
       summary.className = 'text-muted small';
@@ -419,7 +522,7 @@
         tbody.appendChild(tr);
         const details = document.createElement('tr');
         details.className = 'd-none supply-details-row';
-        details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\" data-supply-id=\"${s.supplyId}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
+        details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\" data-supply-id=\"${s.supplyId}\" data-supply-status=\"${(s.status || 'Не отгружена').replace(/\"/g, '&quot;')}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
         tbody.appendChild(details);
         tr.addEventListener('click', async () => {
           document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
@@ -439,7 +542,7 @@
             console.log(`Товаров в поставке ${s.supplyId}: ${items.length}`);
             if (!items.length){
               console.log(`Нет товаров в поставке ${s.supplyId}`);
-              wrap.innerHTML = '<div class="text-muted text-center">Нет товаров в поставке</div>';
+              renderSupplyItemsContent(wrap, [], false);
             } else {
               renderSupplyItemsContent(wrap, items, false);
             }
