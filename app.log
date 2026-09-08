@@ -194,3 +194,11 @@
 2026-09-08 11:34:11,838 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:34:11] "GET /api/notifications/count HTTP/1.1" 200 -
 2026-09-08 11:35:11,038 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:35:11] "GET /api/notifications/count HTTP/1.1" 200 -
 2026-09-08 11:35:11,404 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:35:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:36:11,045 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:36:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:36:11,438 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:36:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:37:10,920 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:37:10] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:37:11,340 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:37:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:38:11,094 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:38:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:38:11,572 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:38:11] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:39:10,855 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:39:10] "GET /api/notifications/count HTTP/1.1" 200 -
+2026-09-08 11:39:11,205 - werkzeug - INFO - 127.0.0.1 - - [08/Sep/2026 11:39:11] "GET /api/notifications/count HTTP/1.1" 200 -

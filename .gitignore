@@ -28,3 +28,4 @@ app.db
 #Developer Guide and Development Log
 DEVELOPER_GUIDE.md
 DEVELOPMENT_LOG.md
+app.log
