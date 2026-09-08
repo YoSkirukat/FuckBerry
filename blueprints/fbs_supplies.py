@@ -3,6 +3,7 @@
 
 import base64
 import io
+import math
 import re
 import requests
 from datetime import datetime
@@ -37,9 +38,35 @@ from utils.helpers import parse_wb_datetime, to_moscow
 
 fbs_supplies_bp = Blueprint("fbs_supplies", __name__)
 
+# Коробка для отправки товаров в ПВЗ: 60×40×40 см = 0,096 м³
+_FBS_BOX_DIMS_CM = (60.0, 40.0, 40.0)
+_FBS_BOX_LABEL = "60×40×40 см"
+_FBS_BOX_VOLUME_M3 = (
+    _FBS_BOX_DIMS_CM[0] * _FBS_BOX_DIMS_CM[1] * _FBS_BOX_DIMS_CM[2]
+) / 1_000_000
+# Плотно уложить товары без пустот нельзя: считаем коробку заполненной на 80%.
+_FBS_BOX_FILL_FACTOR = 0.8
+_FBS_BOX_USABLE_VOLUME_M3 = _FBS_BOX_VOLUME_M3 * _FBS_BOX_FILL_FACTOR
+
 
 def _wb_auth_headers(token: str) -> list[dict[str, str]]:
     return [{"Authorization": token}, {"Authorization": f"Bearer {token}"}]
+
+
+def _collect_nm_ids(items: list[dict[str, Any]]) -> set[int]:
+    """Множество nmId из сырых заказов поставки."""
+    nm_ids: set[int] = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        nm = it.get("nmId") or it.get("nmID")
+        if nm is None:
+            continue
+        try:
+            nm_ids.add(int(nm))
+        except (TypeError, ValueError):
+            continue
+    return nm_ids
 
 
 def _fetch_fbs_order_stickers(
@@ -1022,11 +1049,139 @@ def _load_seller_organization_name(user_id: int) -> str:
     return str(name or "").strip()
 
 
+def _to_positive_float(value: Any) -> float:
+    """Приводит значение к положительному float, иначе 0."""
+    try:
+        num = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+    return num if num > 0 else 0.0
+
+
+def _build_products_by_nm() -> dict[int, dict[str, Any]]:
+    """Кэш товаров, разложенный по nmId."""
+    prod_cached = load_products_cache() or {}
+    by_nm: dict[int, dict[str, Any]] = {}
+    for it in prod_cached.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        nmv = it.get("nm_id") or it.get("nmID")
+        if nmv is None:
+            continue
+        try:
+            by_nm[int(nmv)] = it
+        except (TypeError, ValueError):
+            continue
+    return by_nm
+
+
+def _resolve_item_dimensions(
+    nm_id: Any,
+    card_by_nm: dict[int, dict[str, Any]] | None,
+    by_nm_prod: dict[int, dict[str, Any]],
+) -> dict[str, float]:
+    """Габариты (см) и вес (кг) товара: сперва live-карточка WB, затем кэш товаров."""
+    try:
+        nm_i = int(nm_id)
+    except (TypeError, ValueError):
+        return {"length": 0.0, "width": 0.0, "height": 0.0, "weight": 0.0}
+
+    card = (card_by_nm or {}).get(nm_i)
+    card_dims = card.get("dimensions") if isinstance(card, dict) else None
+    if isinstance(card_dims, dict):
+        resolved = {
+            "length": _to_positive_float(card_dims.get("length")),
+            "width": _to_positive_float(card_dims.get("width")),
+            "height": _to_positive_float(card_dims.get("height")),
+            "weight": _to_positive_float(
+                card_dims.get("weightBrutto") or card_dims.get("weight")
+            ),
+        }
+        if any(resolved.values()):
+            return resolved
+
+    prod = by_nm_prod.get(nm_i)
+    prod_dims = prod.get("dimensions") if isinstance(prod, dict) else None
+    if isinstance(prod_dims, dict):
+        return {
+            "length": _to_positive_float(prod_dims.get("length")),
+            "width": _to_positive_float(prod_dims.get("width")),
+            "height": _to_positive_float(prod_dims.get("height")),
+            "weight": _to_positive_float(
+                prod_dims.get("weight") or prod_dims.get("weightBrutto")
+            ),
+        }
+
+    return {"length": 0.0, "width": 0.0, "height": 0.0, "weight": 0.0}
+
+
+def _fmt_ru_number(value: float, decimals: int) -> str:
+    """Число в русском формате: запятая-разделитель, без хвостовых нулей."""
+    text = f"{value:.{decimals}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return (text or "0").replace(".", ",")
+
+
+def _build_supply_cargo_summary(
+    norm_items: list[dict[str, Any]],
+    card_by_nm: dict[int, dict[str, Any]] | None = None,
+    by_nm_prod: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Считает вес, объём поставки и число коробок 60×40×40 см для ПВЗ."""
+    if by_nm_prod is None:
+        by_nm_prod = _build_products_by_nm()
+
+    total_weight_kg = 0.0
+    total_volume_cm3 = 0.0
+    no_volume_count = 0
+    no_weight_count = 0
+
+    for it in norm_items:
+        if not isinstance(it, dict):
+            continue
+        dims = _resolve_item_dimensions(it.get("nm_id"), card_by_nm, by_nm_prod)
+        volume_cm3 = dims["length"] * dims["width"] * dims["height"]
+        if volume_cm3 > 0:
+            total_volume_cm3 += volume_cm3
+        else:
+            no_volume_count += 1
+        if dims["weight"] > 0:
+            total_weight_kg += dims["weight"]
+        else:
+            no_weight_count += 1
+
+    total_volume_m3 = total_volume_cm3 / 1_000_000
+    # Делим на полезный объём, а не на геометрический: между товарами всегда есть пустоты.
+    boxes = (
+        math.ceil(total_volume_m3 / _FBS_BOX_USABLE_VOLUME_M3)
+        if total_volume_m3 > 0
+        else 0
+    )
+
+    return {
+        "items_count": len(norm_items),
+        "weight_kg": round(total_weight_kg, 3),
+        "weight_text": _fmt_ru_number(total_weight_kg, 2),
+        "volume_m3": round(total_volume_m3, 6),
+        "volume_text": _fmt_ru_number(total_volume_m3, 3),
+        "boxes": boxes,
+        "box_label": _FBS_BOX_LABEL,
+        "box_volume_text": _fmt_ru_number(_FBS_BOX_VOLUME_M3, 3),
+        "box_usable_volume_text": _fmt_ru_number(_FBS_BOX_USABLE_VOLUME_M3, 3),
+        "box_fill_percent": int(round(_FBS_BOX_FILL_FACTOR * 100)),
+        "no_volume_count": no_volume_count,
+        "no_weight_count": no_weight_count,
+    }
+
+
 def _build_product_barcode_labels(
     raw_items: list[dict[str, Any]],
     norm_items: list[dict[str, Any]],
     token: str,
     user_id: int,
+    card_by_nm: dict[int, dict[str, Any]] | None = None,
+    by_nm_prod: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Собирает данные для печати штрихкодов товаров (как в ЛК WB)."""
     seller = _load_seller_organization_name(user_id)
@@ -1036,27 +1191,11 @@ def _build_product_barcode_labels(
         if oid is not None:
             norm_by_id[oid] = it
 
-    prod_cached = load_products_cache() or {}
-    by_nm_prod: dict[int, dict[str, Any]] = {}
-    for it in prod_cached.get("items") or []:
-        nmv = it.get("nm_id") or it.get("nmID")
-        if nmv:
-            try:
-                by_nm_prod[int(nmv)] = it
-            except Exception:
-                continue
+    if by_nm_prod is None:
+        by_nm_prod = _build_products_by_nm()
 
-    nm_ids: set[int] = set()
-    for it in raw_items:
-        nm = it.get("nmId") or it.get("nmID")
-        if nm is None:
-            continue
-        try:
-            nm_ids.add(int(nm))
-        except Exception:
-            continue
-
-    card_by_nm = _build_card_lookup(token, nm_ids)
+    if card_by_nm is None:
+        card_by_nm = _build_card_lookup(token, _collect_nm_ids(raw_items))
     labels: list[dict[str, Any]] = []
 
     for raw in raw_items:
@@ -1430,8 +1569,14 @@ def _load_supply_print_context(token: str, supply_id: str, user_id: int) -> dict
 
     barcode = _resolve_supply_barcode(token, supply_id)
     trbx_items = _load_trbx_items(token, supply_id)
-    product_labels = _build_product_barcode_labels(raw_items, items, token, user_id)
+    # Карточки и кэш товаров тянем один раз — нужны и для стикеров, и для расчёта грузомест.
+    card_by_nm = _build_card_lookup(token, _collect_nm_ids(raw_items))
+    by_nm_prod = _build_products_by_nm()
+    product_labels = _build_product_barcode_labels(
+        raw_items, items, token, user_id, card_by_nm=card_by_nm, by_nm_prod=by_nm_prod
+    )
     order_tape_pairs = _build_order_tape_pairs(product_labels, stickers)
+    cargo_summary = _build_supply_cargo_summary(items, card_by_nm, by_nm_prod)
 
     return {
         "raw_items": raw_items,
@@ -1442,6 +1587,7 @@ def _load_supply_print_context(token: str, supply_id: str, user_id: int) -> dict
         "trbx_items": trbx_items,
         "product_labels": product_labels,
         "order_tape_pairs": order_tape_pairs,
+        "cargo_summary": cargo_summary,
         "items_count": len(items),
     }
 
@@ -1854,6 +2000,7 @@ def fbs_supply_print_page(supply_id: str):
         trbx_items=ctx["trbx_items"],
         product_labels=ctx["product_labels"],
         order_tape_pairs=ctx["order_tape_pairs"],
+        cargo_summary=ctx["cargo_summary"],
         items_count=ctx["items_count"],
         autoprint=request.args.get("autoprint") in ("1", "true", "True"),
     )

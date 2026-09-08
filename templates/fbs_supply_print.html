@@ -104,6 +104,38 @@
       font-weight: 600;
       word-break: break-all;
     }
+    .cargo-summary {
+      margin-bottom: 12px;
+      padding: 12px;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      background: #f8f9fa;
+    }
+    .cargo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+    }
+    .cargo-lbl {
+      color: #6c757d;
+      font-size: 0.82rem;
+      margin-bottom: 2px;
+    }
+    .cargo-val {
+      font-size: 1.15rem;
+      font-weight: 600;
+    }
+    .cargo-val--accent { color: #0d6efd; }
+    .cargo-note {
+      margin-top: 10px;
+      color: #6c757d;
+      font-size: 0.82rem;
+    }
+    .cargo-warn {
+      display: block;
+      margin-top: 4px;
+      color: #b35c00;
+    }
     .section-actions {
       margin-bottom: 12px;
       display: flex;
@@ -537,6 +569,42 @@
   <div class="section" id="trbx-section">
     <h2 class="no-print">Грузоместа для ПВЗ</h2>
     <p class="hint no-print">Создайте грузоместа, распечатайте QR и наклейте на коробки. С этими QR можно сдать поставку в любой ПВЗ Wildberries.</p>
+    {% if cargo_summary %}
+      <div class="cargo-summary no-print">
+        <div class="cargo-grid">
+          <div class="cargo-cell">
+            <div class="cargo-lbl">Товаров в поставке</div>
+            <div class="cargo-val">{{ cargo_summary.items_count }} шт.</div>
+          </div>
+          <div class="cargo-cell">
+            <div class="cargo-lbl">Вес товаров</div>
+            <div class="cargo-val">{{ cargo_summary.weight_text }} кг</div>
+          </div>
+          <div class="cargo-cell">
+            <div class="cargo-lbl">Объём</div>
+            <div class="cargo-val">{{ cargo_summary.volume_text }} м³</div>
+          </div>
+          <div class="cargo-cell">
+            <div class="cargo-lbl">Необходимо коробок</div>
+            <div class="cargo-val cargo-val--accent">{{ cargo_summary.boxes }}</div>
+          </div>
+        </div>
+        <div class="cargo-note">
+          Коробка {{ cargo_summary.box_label }} — {{ cargo_summary.box_volume_text }} м³.
+          С запасом на пустоты между товарами считаем заполнение {{ cargo_summary.box_fill_percent }}%,
+          то есть {{ cargo_summary.box_usable_volume_text }} м³ полезного объёма на коробку.
+          {% if cargo_summary.no_volume_count or cargo_summary.no_weight_count %}
+            <span class="cargo-warn">
+              Не хватает данных:
+              {% if cargo_summary.no_volume_count %}габариты не указаны у {{ cargo_summary.no_volume_count }} товар(ов){% endif %}
+              {%- if cargo_summary.no_volume_count and cargo_summary.no_weight_count %}, {% endif -%}
+              {% if cargo_summary.no_weight_count %}вес не указан у {{ cargo_summary.no_weight_count }} товар(ов){% endif %}.
+              Заполните их на странице «Товары» — иначе итог занижен.
+            </span>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
     <div class="section-actions no-print">
       <button type="button" class="success" id="addTrbxBtn">+ Добавить грузоместо</button>
       {% if trbx_items %}
