@@ -7366,7 +7366,13 @@ def api_fbw_planning_export_excel():
 @app.route("/api/fbw/planning/supplies", methods=["GET"])
 @login_required
 def api_fbw_planning_supplies():
-    """API для получения поставок со статусом 'Отгрузка разрешена' для планирования (оптимизированная версия)"""
+    """API для получения поставок со статусом 'Отгрузка разрешена' для планирования (оптимизированная версия)
+
+    Склад планирования (warehouse_name) больше не используется для фильтрации поставок:
+    заказы теперь всегда отправляются на разные физические склады, а продажи и планирование
+    всегда идут по виртуальному складу "Склад WB РФ". Поэтому проверяем непринятые поставки
+    по ВСЕМ складам назначения независимо от выбранного склада планирования.
+    """
     token = effective_wb_api_token(current_user)
     warehouse_name = request.args.get("warehouse_name")
     force_refresh = request.args.get("force_refresh", "false").lower() == "true"
@@ -7440,15 +7446,12 @@ def api_fbw_planning_supplies():
             # ВАЖНО: это только предварительная фильтрация, окончательная проверка будет с API
             cached_item = cached_supplies_map.get(supply_id_str)
             if cached_item:
-                cached_warehouse = cached_item.get("warehouse", "").strip()
                 cached_status = cached_item.get("status", "").strip()
                 cached_type = cached_item.get("type", "").strip()
-                
-                # Если склад указан и не совпадает - сразу пропускаем (с учетом переименований)
-                if cached_warehouse and warehouse_name:
-                    if not _warehouse_names_match(cached_warehouse, warehouse_name):
-                        continue  # Пропускаем поставки на другие склады
-                
+
+                # Склад назначения поставки больше не фильтруем: заказы уходят на разные склады,
+                # а проверка "поставок в пути" должна работать независимо от склада планирования.
+
                 # Если статус "Принято" в кэше - пропускаем предварительно (при force_refresh всё равно проверим через API)
                 if (
                     not force_refresh
@@ -7535,12 +7538,7 @@ def api_fbw_planning_supplies():
                         print(f"Поставка {supply_id}: нет названия склада в деталях, пропускаем")
                         continue
 
-                    if warehouse_name and not _warehouse_names_match(warehouse_from_details, warehouse_name):
-                        print(
-                            f"Поставка {supply_id} на другой склад "
-                            f"'{warehouse_from_details}' != '{warehouse_name}', пропускаем"
-                        )
-                        continue
+                    # Склад назначения не фильтруем - учитываем поставки на любой склад.
 
                     fact_date = details.get("factDate") or supply.get("factDate")
                     status_id = details.get("statusID") or supply.get("statusID")
@@ -7621,13 +7619,7 @@ def api_fbw_planning_supplies():
                 # Проверяем, что склад есть (проверка уже была выше для поставок без кэша)
                 if not warehouse_from_details:
                     continue
-                
-                # Для поставок из кэша проверяем совпадение склада еще раз (на всякий случай, с учетом переименований)
-                if cached_item and warehouse_name:
-                    if not _warehouse_names_match(warehouse_from_details, warehouse_name):
-                        print(f"Поставка {supply_id} из кэша на другой склад '{warehouse_from_details}' != '{warehouse_name}', пропускаем")
-                        continue
-                
+
                 # Получаем даты из кэша или деталей
                 planned_date_str = ""
                 if cached_item:

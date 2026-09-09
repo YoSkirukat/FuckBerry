@@ -828,7 +828,7 @@
           
           <div class="alert alert-info">
             <i class="bi bi-info-circle me-2"></i>
-            Если вы выберете "Да", то количество товара из этих поставок будет добавлено в колонку "В пути на склад".
+            Отметьте галочками нужные поставки. Если вы выберете "Да", количество товара из отмеченных поставок будет добавлено в колонку "В пути на склад".
           </div>
         </div>
         <div class="modal-footer">
@@ -3067,6 +3067,7 @@
       table.innerHTML = `
         <thead class="table-light">
           <tr>
+            <th style="width:36px;"><input type="checkbox" class="form-check-input" id="pendingSuppliesSelectAll" checked title="Выбрать все"></th>
             <th>№ поставки</th>
             <th>Направление</th>
             <th>Количество товара</th>
@@ -3076,6 +3077,7 @@
         <tbody>
           ${pendingSupplies.map(supply => `
             <tr>
+              <td><input type="checkbox" class="form-check-input pending-supply-checkbox" data-supply-id="${supply.supply_id}" checked></td>
               <td><strong>${supply.supply_id}</strong></td>
               <td>${supply.warehouse}</td>
               <td class="text-center">${supply.total_goods} шт.</td>
@@ -3084,9 +3086,27 @@
           `).join('')}
         </tbody>
       `;
-      
+
       suppliesList.appendChild(table);
-      
+
+      // Синхронизация чекбокса "Выбрать все" с чекбоксами отдельных поставок
+      const supplyCheckboxes = suppliesList.querySelectorAll('.pending-supply-checkbox');
+      const selectAllCheckbox = document.getElementById('pendingSuppliesSelectAll');
+      if (selectAllCheckbox) {
+        selectAllCheckbox.addEventListener('change', function() {
+          supplyCheckboxes.forEach(cb => { cb.checked = selectAllCheckbox.checked; });
+        });
+      }
+      supplyCheckboxes.forEach(cb => {
+        cb.addEventListener('change', function() {
+          const checkedCount = suppliesList.querySelectorAll('.pending-supply-checkbox:checked').length;
+          if (selectAllCheckbox) {
+            selectAllCheckbox.checked = checkedCount === supplyCheckboxes.length;
+            selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < supplyCheckboxes.length;
+          }
+        });
+      });
+
       // Показываем модальное окно
       pendingSuppliesModal.show();
     }
@@ -3096,24 +3116,32 @@
       console.log('Пользователь принял поставки, добавляем в "В пути на склад"');
       console.log('currentProducts в acceptPendingSupplies:', currentProducts.length);
       console.log('Примеры currentProducts в acceptPendingSupplies:', currentProducts.slice(0, 3));
-      
+
+      // Учитываем только поставки, отмеченные галочкой в модальном окне
+      const checkedIds = new Set(
+        Array.from(document.querySelectorAll('#pendingSuppliesList .pending-supply-checkbox:checked'))
+          .map(cb => String(cb.dataset.supplyId))
+      );
+      const selectedSupplies = pendingSupplies.filter(supply => checkedIds.has(String(supply.supply_id)));
+      console.log(`Выбрано поставок для учёта: ${selectedSupplies.length} из ${pendingSupplies.length}`);
+
       // Сначала обнуляем все значения "В пути на склад"
       currentProducts.forEach(product => {
         product.inTransit = 0;
       });
-      
+
       // Создаем карту товаров по баркодам для быстрого поиска
       const productsByBarcode = {};
       currentProducts.forEach(product => {
         productsByBarcode[product.barcode] = product;
       });
-      
+
       console.log('Карта товаров по баркодам:', Object.keys(productsByBarcode).length, 'товаров');
       console.log('Примеры баркодов в списке планирования:', Object.keys(productsByBarcode).slice(0, 5));
-      
-      // Обрабатываем каждую поставку
+
+      // Обрабатываем каждую выбранную поставку
       let totalAdded = 0;
-      pendingSupplies.forEach(supply => {
+      selectedSupplies.forEach(supply => {
         console.log(`Обрабатываем поставку ${supply.supply_id} с ${supply.goods ? supply.goods.length : 0} товарами`);
         
         if (supply.goods && supply.goods.length > 0) {
