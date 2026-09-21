@@ -505,9 +505,10 @@ def update_finance_srid_index_from_api(
     date_to: str,
 ) -> Dict[str, Dict[str, Any]]:
     """Тянет фин. отчёт за период и дописывает индекс по srid (эквайринг / к перечислению)."""
-    from utils.api import fetch_finance_report
+    # Новый finance-api (лимит 1 запрос/мин), при недоступности — старый statistics-api v5
+    from utils.api import fetch_finance_report_preferred
 
-    rows = fetch_finance_report(token, date_from, date_to)
+    rows = fetch_finance_report_preferred(token, date_from, date_to)
     existing = load_finance_srid_index(user_id)
     # Пересобираем только затронутые srid из этого ответа: сначала сгруппируем строки периода,
     # затем заменим записи этих srid целиком (чтобы не задвоить при повторном refresh).

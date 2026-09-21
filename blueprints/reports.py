@@ -6,7 +6,7 @@ from flask import Blueprint, render_template, request
 from flask_login import login_required, current_user
 
 from utils.cache import load_last_results
-from utils.api import fetch_finance_report
+from utils.api import fetch_finance_report_preferred as fetch_finance_report
 from utils.wb_token import effective_wb_api_token
 
 reports_bp = Blueprint('reports', __name__)

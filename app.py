@@ -118,7 +118,7 @@ from utils.constants import (
 )
 from utils.cache import period_cache_day_entry_is_fresh
 from utils.api import (
-    fetch_finance_report,
+    fetch_finance_report_preferred,
     fmt_wait_hint,
     rate_limit_message,
     RATE_LIMIT_FAIL_FAST_S,
@@ -2274,24 +2274,11 @@ def _fetch_finance_rows_for_page(
     Строки нового API приводятся к формату v5 (snake_case), поэтому расчёт сводки
     и страница работают без изменений.
     """
-    from utils.api import fetch_finance_report_detailed
+    from utils.api import fetch_finance_report_preferred
 
-    try:
-        rows = fetch_finance_report_detailed(
-            token, req_from, req_to, progress_callback=progress_callback
-        )
-    except Exception as exc:
-        logging.warning(
-            "finance-api недоступен (%s) — пробуем старый statistics-api v5", exc
-        )
-        rows = None
-
-    if rows:
-        logging.info("Финотчёт получен через finance-api: %s строк", len(rows))
-        return rows
-
-    logging.info("finance-api не вернул строк — используем statistics-api v5")
-    return fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+    return fetch_finance_report_preferred(
+        token, req_from, req_to, progress_callback=progress_callback
+    )
 
 
 def _process_finance_data(raw: List[Dict[str, Any]], req_from: str, req_to: str, user_id: int = None) -> Dict[str, Any]:
@@ -10503,8 +10490,10 @@ def export_finance_xls():
     if not (token and req_from and req_to):
         return ("Требуются даты и токен", 400)
     try:
-        # Always fetch fresh for export
-        rows = fetch_finance_report(token, req_from, req_to)
+        # Always fetch fresh for export (новый finance-api, при неудаче — старый v5)
+        from utils.api import fetch_finance_report_preferred
+
+        rows = fetch_finance_report_preferred(token, req_from, req_to)
         # Build XLS (not XLSX) to match requirement "XLS"
         try:
             import xlwt  # type: ignore

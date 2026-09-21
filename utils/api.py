@@ -850,6 +850,34 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
 
 
 # --- Новый финансовый API WB (finance-api v1, «Детализации к отчётам реализации») ---
+def fetch_finance_report_preferred(
+    token: str,
+    date_from: str,
+    date_to: str,
+    progress_callback=None,
+) -> List[Dict[str, Any]]:
+    """Финотчёт: сначала новый finance-api, при неудаче — старый statistics-api v5.
+
+    Строки нового API приводятся к формату v5 (snake_case), поэтому вызывающий код
+    (страница отчёта, экспорт XLS, индекс по srid для маржинальности) не меняется.
+    Старый v5 сейчас отдаёт 429 с паузой до ~33 часов, поэтому он именно резервный.
+    """
+    try:
+        rows = fetch_finance_report_detailed(
+            token, date_from, date_to, progress_callback=progress_callback
+        )
+    except Exception as exc:
+        logging.warning("finance-api недоступен (%s) — пробуем statistics-api v5", exc)
+        rows = None
+
+    if rows:
+        logging.info("Финотчёт получен через finance-api: %s строк", len(rows))
+        return rows
+
+    logging.info("finance-api не вернул строк — используем statistics-api v5")
+    return fetch_finance_report(token, date_from, date_to, progress_callback=progress_callback)
+
+
 def fetch_finance_report_detailed(
     token: str,
     date_from: str,
