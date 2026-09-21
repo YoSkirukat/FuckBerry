@@ -170,6 +170,60 @@ def _row_in_products_breakdown(row: Dict[str, Any], *, is_return_row: bool) -> b
     return _product_group_key(row) is not None
 
 
+def _product_identity_key(item: Dict[str, Any]) -> str | None:
+    """Итоговый ключ товара в таблице: баркод, иначе nm_id + артикул продавца."""
+    barcode = str(item.get("barcode") or "").strip()
+    if barcode:
+        return f"bc:{barcode}"
+    nm = item.get("nm_id")
+    nm_empty = nm is None or str(nm).strip() == ""
+    sa = str(item.get("sa_name") or "").strip().lower()
+    if nm_empty and not sa:
+        return None
+    return f"nm:{nm if not nm_empty else ''}|sa:{sa}"
+
+
+def _merge_products_by_identity(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Склеивает строки одного товара в одну (итоговые данные по товару).
+
+    Нужно потому, что часть операций WB приходит БЕЗ баркода (например, отдельные
+    строки «Продажа»/«Коррекция продаж»). Такие строки группируются по nm_id+артикулу,
+    а имя и баркод потом подтягиваются из каталога товаров — из-за этого один и тот же
+    товар показывался в таблице двумя строками (с баркодом и без него).
+    """
+    merged: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    rest: List[Dict[str, Any]] = []
+
+    for item in products or []:
+        if not isinstance(item, dict):
+            continue
+        key = _product_identity_key(item)
+        if key is None:
+            rest.append(item)
+            continue
+        current = merged.get(key)
+        if current is None:
+            merged[key] = dict(item)
+            order.append(key)
+            continue
+
+        current["sales_qty"] = _i(current.get("sales_qty")) + _i(item.get("sales_qty"))
+        for field in ("for_pay", "logistics", "storage", "acceptance", "promotion"):
+            if item.get(field) is None and current.get(field) is None:
+                continue
+            current[field] = round(_f(current.get(field)) + _f(item.get(field)), 2)
+        for field in ("barcode", "nm_id", "sa_name"):
+            if (not current.get(field) or str(current.get(field)).strip() == "") and item.get(field):
+                current[field] = item.get(field)
+        if str(current.get("name") or "").strip() in ("", "—") and item.get("name"):
+            current["name"] = item.get("name")
+        # Если у товара есть продажи — он уже не «только хранение»
+        current["storage_only"] = bool(current.get("storage_only")) and bool(item.get("storage_only"))
+
+    return [merged[key] for key in order] + rest
+
+
 def _build_products_breakdown(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Сводка по товарам без возвратов:
@@ -1044,6 +1098,9 @@ def compute_finance_dashboard(
 
     products = _build_products_breakdown(raw)
     products = _enrich_products_from_catalog(products, products_catalog)
+    # Часть операций WB приходит без баркода: после подстановки баркода из каталога
+    # склеиваем такие строки с основными — товар должен быть одной строкой с итогами
+    products = _merge_products_by_identity(products)
     products = _apply_product_expense_columns(
         products,
         raw,
@@ -1052,6 +1109,8 @@ def compute_finance_dashboard(
     )
     # Дообогащаем имена/баркоды у строк «только хранение»
     products = _enrich_products_from_catalog(products, products_catalog)
+    # И склеиваем возможные дубли (например, если строка хранения осталась без баркода)
+    products = _merge_products_by_identity(products)
     other_details_final = _finalize_details(other_details)
     promotion_total = _promotion_total_from_details(other_details_final)
     products, promotion_by_product, advert_api_sum = _apply_promotion_allocation(

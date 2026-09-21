@@ -117,6 +117,13 @@ from utils.constants import (
     ORDERS_TODAY_CACHE_TTL_SECONDS,
 )
 from utils.cache import period_cache_day_entry_is_fresh
+from utils.api import (
+    fetch_finance_report,
+    fmt_wait_hint,
+    rate_limit_message,
+    RATE_LIMIT_FAIL_FAST_S,
+    RATE_LIMIT_MAX_WAIT_S,
+)
 
 # --- Throttling for WB supplies API ---
 _last_supplies_api_call_ts: float = 0.0
@@ -2045,15 +2052,29 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
             last_resp = resp
             if resp.status_code in (429, 500, 502, 503, 504):
                 sleep_s = None
+                retry_after_s: float | None = None
                 if resp.status_code == 429:
                     # Для ошибки 429 проверяем заголовки X-Ratelimit-Retry (WB API) и Retry-After (стандартный)
                     retry_header = resp.headers.get("X-Ratelimit-Retry") or resp.headers.get("Retry-After")
                     if retry_header is not None:
                         try:
-                            sleep_s = float(retry_header)
+                            retry_after_s = float(retry_header)
+                            sleep_s = retry_after_s
                         except ValueError:
+                            retry_after_s = None
                             sleep_s = None
-                
+                    if retry_after_s is not None and retry_after_s > RATE_LIMIT_FAIL_FAST_S:
+                        # WB может попросить подождать часы: спать в HTTP-запросе нельзя —
+                        # страница «зависнет» навсегда, поэтому сразу отдаём понятную ошибку.
+                        logging.warning(
+                            "GET %s: HTTP 429, WB просит повторить через %s — прерываем запрос",
+                            url, fmt_wait_hint(retry_after_s),
+                        )
+                        raise requests.HTTPError(
+                            f"HTTP 429 after {attempt + 1} attempt(s): {rate_limit_message(retry_after_s)}",
+                            response=resp,
+                        )
+
                 if sleep_s is None:
                     # Если заголовков нет, используем экспоненциальную задержку
                     if resp.status_code == 429:
@@ -2061,19 +2082,33 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
                         sleep_s = min(120, 30 * (attempt + 1))
                     else:
                         sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
-                
+
+                # Ограничиваем паузу: длинные Retry-After (часы) не должны усыплять поток
+                sleep_s = min(RATE_LIMIT_MAX_WAIT_S, max(0.5, float(sleep_s)))
+                logging.warning(
+                    "GET %s: HTTP %s, попытка %s/%s, пауза %.0f с",
+                    url, resp.status_code, attempt + 1, max_retries, sleep_s,
+                )
+
                 time.sleep(sleep_s)
                 continue
             resp.raise_for_status()
             return resp
         except requests.RequestException as exc:  # network or HTTP error
+            if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code == 429:
+                # 429 уже разобран выше с понятным сообщением — не затираем его
+                raise
             last_exc = exc
             time.sleep(min(8, 0.5 * (2 ** attempt) + random.uniform(0, 0.5)))
             continue
     if last_exc:
         raise last_exc
     if last_resp is not None:
-        raise requests.HTTPError(f"HTTP {last_resp.status_code} after {max_retries} retries", response=last_resp)
+        hint = ""
+        if last_resp.status_code == 429:
+            wait_s = last_resp.headers.get("X-Ratelimit-Retry") or last_resp.headers.get("Retry-After")
+            hint = f" — {rate_limit_message(wait_s)}"
+        raise requests.HTTPError(f"HTTP {last_resp.status_code} after {max_retries} retries{hint}", response=last_resp)
     raise RuntimeError("Request failed after retries")
 
 
@@ -2222,221 +2257,42 @@ def fetch_sales_range(token: str, start_date: str, end_date: str) -> List[Dict[s
     return collected
 
 
-def _split_date_range(date_from: str, date_to: str, days_per_chunk: int = 7) -> List[tuple[str, str]]:
-    """Разбивает период на интервалы по указанному количеству дней.
-    
-    Returns:
-        List of tuples (start_date, end_date) in YYYY-MM-DD format
+# Финотчёт грузится общей функцией fetch_finance_report из utils.api:
+# постраничная пагинация (rrdid), heartbeat-прогресс и понятные ошибки при 429.
+def _fetch_finance_rows_for_page(
+    token: str,
+    req_from: str,
+    req_to: str,
+    progress_callback=None,
+) -> List[Dict[str, Any]]:
+    """Строки финотчёта для страницы /report/finance.
+
+    Основной источник — новый finance-api WB (POST /api/finance/v1/sales-reports/detailed,
+    лимит 1 запрос/мин). Резервный — старый statistics-api v5: там WB сейчас отдаёт 429
+    с паузой до ~33 часов, но для аккаунтов без доступа к новому API он остаётся рабочим.
+
+    Строки нового API приводятся к формату v5 (snake_case), поэтому расчёт сводки
+    и страница работают без изменений.
     """
+    from utils.api import fetch_finance_report_detailed
+
     try:
-        start = datetime.strptime(date_from, "%Y-%m-%d").date()
-        end = datetime.strptime(date_to, "%Y-%m-%d").date()
-    except Exception:
-        return [(date_from, date_to)]
-    
-    intervals = []
-    current_start = start
-    
-    while current_start <= end:
-        current_end = min(current_start + timedelta(days=days_per_chunk - 1), end)
-        intervals.append((
-            current_start.strftime("%Y-%m-%d"),
-            current_end.strftime("%Y-%m-%d")
-        ))
-        current_start = current_end + timedelta(days=1)
-    
-    return intervals
+        rows = fetch_finance_report_detailed(
+            token, req_from, req_to, progress_callback=progress_callback
+        )
+    except Exception as exc:
+        logging.warning(
+            "finance-api недоступен (%s) — пробуем старый statistics-api v5", exc
+        )
+        rows = None
 
+    if rows:
+        logging.info("Финотчёт получен через finance-api: %s строк", len(rows))
+        return rows
 
-def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 100000, progress_callback=None) -> List[Dict[str, Any]]:
-    """Fetch financial report details v5 with rrdid pagination.
-    
-    Разбивает период на интервалы по 7 дней для избежания лимитов API.
+    logging.info("finance-api не вернул строк — используем statistics-api v5")
+    return fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
 
-    According to docs, start with rrdid=0 and then pass last row's rrd_id until empty list is returned.
-    date_from must be RFC3339 in MSK; we'll accept YYYY-MM-DD and convert to T00:00:00.
-    date_to is YYYY-MM-DD (end date).
-    
-    Args:
-        token: API token
-        date_from: Start date in YYYY-MM-DD format
-        date_to: End date in YYYY-MM-DD format
-        limit: Maximum rows per request
-        progress_callback: Optional callback function(current, total, current_period) for progress updates
-    """
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    # Разбиваем период на интервалы по 7 дней
-    intervals = _split_date_range(date_from, date_to, days_per_chunk=7)
-    total_intervals = len(intervals)
-    all_rows: List[Dict[str, Any]] = []
-    
-    logging.info(f"Начинаем загрузку финансового отчета за период {date_from} - {date_to}, интервалов: {total_intervals}")
-    for idx, (interval_from, interval_to) in enumerate(intervals, 1):
-        logging.info(f"Загрузка интервала {idx}/{total_intervals}: {interval_from} - {interval_to}")
-        
-        # Вызываем callback для обновления прогресса
-        if progress_callback:
-            progress_callback(idx, total_intervals, f"{interval_from} - {interval_to}")
-        
-        # Compose RFC3339-like dateFrom in MSK start of day
-        try:
-            df_iso = datetime.strptime(interval_from, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00")
-        except Exception:
-            df_iso = f"{interval_from}T00:00:00"
-        
-        params_base: Dict[str, Any] = {"dateFrom": df_iso, "dateTo": interval_to, "limit": max(1, min(100000, int(limit)))}
-        interval_rows: List[Dict[str, Any]] = []
-        rrdid = 0
-        interval_error = None
-        page_count = 0
-        
-        while True:
-            page_count += 1
-            params = dict(params_base)
-            params["rrdid"] = rrdid
-            try:
-                # Используем get_with_retry напрямую для доступа к заголовкам при ошибке 429
-                resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=3, timeout_s=30)
-                data = resp.json()
-            except requests.HTTPError as e:
-                # Обрабатываем HTTP ошибки, включая 429
-                interval_error = str(e)
-                error_str = str(e)
-                is_429 = "429" in error_str or "Too Many Requests" in error_str or (hasattr(e, 'response') and e.response is not None and e.response.status_code == 429)
-                
-                if is_429:
-                    # Для ошибки 429 используем несколько попыток с увеличивающейся паузой
-                    # Пытаемся получить время ожидания из заголовка ответа
-                    retry_after = 60  # По умолчанию 60 секунд
-                    if hasattr(e, 'response') and e.response is not None:
-                        retry_header = e.response.headers.get('X-Ratelimit-Retry') or e.response.headers.get('Retry-After')
-                        if retry_header:
-                            try:
-                                retry_after = int(float(retry_header))
-                                logging.info(f"Получено время ожидания из заголовка: {retry_after} секунд")
-                            except (ValueError, TypeError):
-                                pass
-                    
-                    # Делаем несколько попыток с увеличивающейся паузой
-                    max_429_retries = 3
-                    retry_success = False
-                    for retry_attempt in range(1, max_429_retries + 1):
-                        wait_time = retry_after * retry_attempt  # Увеличиваем паузу с каждой попыткой
-                        logging.warning(f"Ошибка 429 (лимит API) для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}). Попытка {retry_attempt}/{max_429_retries}, пауза {wait_time} секунд...")
-                        time.sleep(wait_time)
-                        
-                        # Повторяем попытку
-                        try:
-                            resp = get_with_retry(FIN_REPORT_URL, headers, params, max_retries=1, timeout_s=30)
-                            data = resp.json()
-                            logging.info(f"Повторная попытка {retry_attempt} после 429 успешна для интервала {interval_from} - {interval_to}")
-                            interval_error = None  # Сбрасываем ошибку, так как повторная попытка успешна
-                            retry_success = True
-                            break  # Выходим из цикла повторных попыток
-                        except Exception as e2:
-                            error_str2 = str(e2)
-                            is_429_2 = "429" in error_str2 or "Too Many Requests" in error_str2 or (hasattr(e2, 'response') and e2.response is not None and e2.response.status_code == 429)
-                            if retry_attempt < max_429_retries:
-                                logging.warning(f"Повторная попытка {retry_attempt} после 429 не удалась, продолжаем...")
-                                continue
-                            else:
-                                logging.error(f"Все {max_429_retries} попытки после 429 не удались для интервала {interval_from} - {interval_to}: {e2}")
-                                interval_error = str(e2)
-                    
-                    if not retry_success:
-                        # Если все попытки не удались, пропускаем интервал
-                        if rrdid == 0:
-                            logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки 429 при первой загрузке после {max_429_retries} попыток")
-                            break
-                        # Если это не первая страница, пробуем продолжить
-                        time.sleep(5)
-                        continue
-                else:
-                    # Для других ошибок
-                    logging.warning(f"Ошибка загрузки данных для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}): {e}")
-                    # Если это первая страница (rrdid=0), пропускаем весь интервал
-                    if rrdid == 0:
-                        logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки при первой загрузке")
-                        break
-                    # Если это не первая страница, пробуем продолжить (может быть временная ошибка)
-                    time.sleep(2)  # Пауза перед повторной попыткой
-                    continue
-            except Exception as e:
-                # Обрабатываем другие исключения
-                interval_error = str(e)
-                logging.warning(f"Ошибка загрузки данных для интервала {interval_from} - {interval_to}, страница {page_count} (rrdid={rrdid}): {e}")
-                # Если это первая страница (rrdid=0), пропускаем весь интервал
-                if rrdid == 0:
-                    logging.error(f"Пропускаем интервал {interval_from} - {interval_to} из-за ошибки при первой загрузке")
-                    break
-                # Если это не первая страница, пробуем продолжить
-                time.sleep(2)
-                continue
-            
-            if not isinstance(data, list) or not data:
-                logging.info(f"Интервал {interval_from} - {interval_to}: получен пустой ответ на странице {page_count}")
-                break
-            interval_rows.extend(data)
-            logging.debug(f"Интервал {interval_from} - {interval_to}, страница {page_count}: загружено {len(data)} записей")
-            
-            try:
-                last = data[-1]
-                rrdid = int(last.get("rrd_id") or last.get("rrdid") or last.get("rrdId") or 0)
-            except Exception:
-                logging.warning(f"Интервал {interval_from} - {interval_to}: не удалось получить rrd_id из последней записи")
-                break
-            # If received less than limit rows, it's the last page
-            try:
-                if len(data) < params_base.get("limit", 100000):
-                    logging.info(f"Интервал {interval_from} - {interval_to}: получено меньше записей чем лимит ({len(data)} < {params_base.get('limit', 100000)}), это последняя страница")
-                    break
-            except Exception:
-                pass
-            # Небольшая пауза между страницами
-            time.sleep(0.5)
-        
-        if interval_rows:
-            all_rows.extend(interval_rows)
-            # Проверяем диапазон дат в загруженных данных
-            dates_in_interval = set()
-            for row in interval_rows:
-                try:
-                    # Пытаемся найти дату в различных полях
-                    date_str = row.get("doc_date") or row.get("date") or row.get("operation_date")
-                    if date_str:
-                        dates_in_interval.add(str(date_str)[:10])
-                except Exception:
-                    pass
-            
-            logging.info(f"Интервал {interval_from} - {interval_to}: загружено {len(interval_rows)} записей за {page_count} страниц(ы)")
-            if dates_in_interval:
-                min_date = min(dates_in_interval) if dates_in_interval else "неизвестно"
-                max_date = max(dates_in_interval) if dates_in_interval else "неизвестно"
-                logging.info(f"Интервал {interval_from} - {interval_to}: даты в данных от {min_date} до {max_date}")
-        elif interval_error:
-            logging.error(f"ВНИМАНИЕ: Интервал {interval_from} - {interval_to} не загружен из-за ошибки: {interval_error}")
-        else:
-            logging.warning(f"Интервал {interval_from} - {interval_to}: не загружено ни одной записи")
-        
-        # Пауза между интервалами для избежания лимитов
-        # Увеличиваем паузу, особенно после интервалов с большим количеством данных
-        if idx < total_intervals:
-            # Чем больше данных загружено, тем больше пауза
-            if interval_rows and len(interval_rows) > 15000:
-                pause_time = 5  # Большая пауза после интервалов с большим объемом данных
-            elif interval_rows and len(interval_rows) > 10000:
-                pause_time = 3
-            elif interval_rows and len(interval_rows) > 5000:
-                pause_time = 2.5
-            else:
-                pause_time = 2
-            logging.debug(f"Пауза {pause_time} сек перед следующим интервалом (загружено {len(interval_rows) if interval_rows else 0} записей)")
-            time.sleep(pause_time)
-    
-    logging.info(f"Загрузка финансового отчета завершена. Всего загружено {len(all_rows)} записей за {total_intervals} интервалов")
-    
-    return all_rows
 
 def _process_finance_data(raw: List[Dict[str, Any]], req_from: str, req_to: str, user_id: int = None) -> Dict[str, Any]:
     """Обрабатывает сырые данные финансового отчета и возвращает вычисленные метрики.
@@ -2562,7 +2418,9 @@ def _process_finance_data(raw: List[Dict[str, Any]], req_from: str, req_to: str,
             oper_l = _norm_text(r.get("supplier_oper_name"))
             doc_l = _norm_text(r.get("doc_type_name"))
             pay_val = float(r.get("ppvz_for_pay") or 0.0)
-            if "логистик" in oper_l and pay_val > 0:
+            if ("логистик" in oper_l or "платная доставка" in oper_l) and pay_val > 0:
+                # В отчёте WB операция компенсации называется «Услуга платная доставка»
+                # (в новом finance-api так же) — учитываем её наряду с «логистикой».
                 total_paid_delivery += pay_val
             if oper_l == "добровольная компенсация при возврате" and _is_sale_doc(doc_l):
                 x1 += pay_val
@@ -9906,7 +9764,7 @@ def report_finance_page():
     req_from = (request.args.get("date_from") or "").strip()
     req_to = (request.args.get("date_to") or "").strip()
     try:
-        raw = fetch_finance_report(token, req_from, req_to)
+        raw = _fetch_finance_rows_for_page(token, req_from, req_to)
         date_from_fmt = datetime.strptime(req_from, "%Y-%m-%d").strftime("%d.%m.%Y")
         date_to_fmt = datetime.strptime(req_to, "%Y-%m-%d").strftime("%d.%m.%Y")
     except Exception as exc:
@@ -10165,7 +10023,11 @@ def api_finance_breakdown():
                 with progress_lock:
                     progress_callback(current, total, period)
 
-        raw = fetch_finance_report(token, req_from, req_to, progress_callback=safe_progress)
+        # Основной источник — новый finance-api (лимит 1 запрос/мин),
+        # резервный — старый statistics-api v5 (WB сейчас отдаёт на нём 429 надолго).
+        raw = _fetch_finance_rows_for_page(
+            token, req_from, req_to, progress_callback=safe_progress
+        )
 
         paid_storage: list = []
         paid_storage_error = None
@@ -10303,7 +10165,9 @@ def api_report_finance():
                     _set_finance_progress(user_id, current, total, period)
                 
                 # Загружаем данные
-                raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+                raw = _fetch_finance_rows_for_page(
+                    token, req_from, req_to, progress_callback=progress_callback
+                )
                 
                 # Обрабатываем данные (копируем логику из основного потока)
                 result = _process_finance_data(raw, req_from, req_to, user_id)
@@ -10318,9 +10182,15 @@ def api_report_finance():
                 logging.info(f"Фоновая загрузка финансового отчета завершена для пользователя {user_id}")
             except Exception as e:
                 logging.error(f"Ошибка фоновой загрузки финансового отчета: {e}")
+                # Важно: сохраняем ошибку как результат, иначе фронтенд будет
+                # вечно ждать данные и «крутить» индикатор загрузки.
+                FINANCE_RESULTS[user_id] = {
+                    "items": [],
+                    "rows": [],
+                    "error": f"Не удалось загрузить финансовый отчёт: {e}",
+                    "success": False,
+                }
                 FINANCE_LOADING[user_id] = False
-                if user_id in FINANCE_RESULTS:
-                    del FINANCE_RESULTS[user_id]
                 _clear_finance_progress(user_id)
         
         thread = threading.Thread(target=load_finance_background)
@@ -10342,8 +10212,10 @@ def api_report_finance():
                 _set_finance_progress(current_user.id, current, total, period)
         
         # Always fetch fresh report for the period (не кэшируем данные отчёта)
-        # Теперь с разбиением на интервалы по 7 дней
-        raw = fetch_finance_report(token, req_from, req_to, progress_callback=progress_callback)
+        # Основной источник — новый finance-api, резервный — statistics-api v5
+        raw = _fetch_finance_rows_for_page(
+            token, req_from, req_to, progress_callback=progress_callback
+        )
         
         # Очищаем прогресс после завершения
         if current_user.is_authenticated:
@@ -10355,7 +10227,8 @@ def api_report_finance():
         
         return jsonify(result), 200
     except Exception as exc:
-        return jsonify({"items": [], "error": str(exc)}), 200
+        logging.error(f"Ошибка загрузки финансового отчёта: {exc}")
+        return jsonify({"items": [], "rows": [], "error": str(exc), "success": False}), 200
         # WB реализовал (по retail_amount с фильтрами по основаниям оплаты)
         wbr_plus = 0.0
         wbr_minus = 0.0

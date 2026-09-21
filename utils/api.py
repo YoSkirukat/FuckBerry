@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Функции для работы с API Wildberries"""
+import os
 import time
 import random
 import logging
@@ -32,6 +33,203 @@ logger = logging.getLogger(__name__)
 
 # Размер страницы финотчёта: 100k одним ответом слишком долго качается без прогресса
 FIN_REPORT_PAGE_LIMIT = 10000
+
+# Максимальная пауза перед повтором после 429, сек.
+# WB в заголовке X-Ratelimit-Retry может вернуть десятки тысяч секунд (часы) —
+# столько «спать» нельзя: HTTP-запрос и страница в браузере зависнут навсегда.
+RATE_LIMIT_MAX_WAIT_S = 60.0
+# Если WB просит подождать дольше — не ждём вообще, а сразу отдаём понятную ошибку.
+RATE_LIMIT_FAIL_FAST_S = 300.0
+
+
+def fmt_wait_hint(seconds: Any) -> str:
+    """Человекочитаемое время ожидания («45 с», «5 мин», «32 ч 35 мин»)."""
+    try:
+        total = max(0, int(float(seconds or 0)))
+    except (TypeError, ValueError):
+        return ""
+    if total < 90:
+        return f"{total} с"
+    hours, rem = divmod(total, 3600)
+    minutes = rem // 60
+    if hours:
+        return f"{hours} ч {minutes:02d} мин"
+    return f"{minutes} мин"
+
+
+def rate_limit_message(retry_after_s: Any = None) -> str:
+    """Понятное пользователю сообщение о лимите запросов WB (429)."""
+    hint = fmt_wait_hint(retry_after_s)
+    text = "Wildberries ограничил частоту запросов к отчёту реализации (HTTP 429)."
+    if hint:
+        text += f" Следующая попытка возможна примерно через {hint}."
+    else:
+        text += " Попробуйте повторить запрос позже."
+    return text
+
+
+# Отчёт реализации: WB может «забанить» токен на часы. Запоминаем, до какого момента
+# запросы заведомо не пройдут, чтобы не долбить API (и не продлевать ограничение).
+# Ключ включает эндпоинт: лимиты старого v5 и нового finance-api считаются отдельно.
+_FIN_RATE_LIMIT_UNTIL: Dict[str, float] = {}
+
+# Новый финансовый API WB (finance-api): «Детализации к отчётам реализации за период».
+# Лимит персонального/сервисного токена — 1 запрос/мин, поэтому между запросами пауза.
+NEW_FIN_REPORT_URL = os.getenv(
+    "WB_NEW_FIN_REPORT_URL",
+    "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed",
+)
+NEW_FIN_REPORT_PAGE_LIMIT = int(os.getenv("WB_NEW_FIN_REPORT_PAGE_LIMIT", "100000"))
+FIN_NEW_API_MIN_INTERVAL_S = float(os.getenv("FIN_NEW_API_MIN_INTERVAL_S", "61.0"))
+FIN_NEW_MAX_DAYS_PER_REQUEST = int(os.getenv("FIN_NEW_MAX_DAYS_PER_REQUEST", "31"))
+FIN_NEW_MAX_PAGE_ATTEMPTS = int(os.getenv("FIN_NEW_MAX_PAGE_ATTEMPTS", "3"))
+# token -> время последнего запроса (для соблюдения интервала 1 запрос/мин)
+_FIN_NEW_API_LAST_CALL: Dict[str, float] = {}
+
+
+def _fin_rate_limit_key(token: str, endpoint: str = "v5") -> str:
+    return f"{endpoint}|{(token or '')[-16:]}"
+
+
+def _fin_rate_limit_deadline(token: str, endpoint: str = "v5") -> float:
+    return _FIN_RATE_LIMIT_UNTIL.get(_fin_rate_limit_key(token, endpoint), 0.0)
+
+
+def _set_fin_rate_limit(token: str, retry_after_s: Any, endpoint: str = "v5") -> None:
+    try:
+        wait_s = max(0.0, min(float(retry_after_s or 0), 24 * 3600.0))
+    except (TypeError, ValueError):
+        return
+    if wait_s <= 0:
+        return
+    key = _fin_rate_limit_key(token, endpoint)
+    _FIN_RATE_LIMIT_UNTIL[key] = max(time.time() + wait_s, _FIN_RATE_LIMIT_UNTIL.get(key, 0.0))
+
+
+def _retry_after_hint(headers: Any) -> Optional[float]:
+    """Значение X-Ratelimit-Retry / Retry-After из заголовков ответа WB."""
+    try:
+        raw = headers.get("X-Ratelimit-Retry") or headers.get("Retry-After")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _throttle_fin_new_api(token: str, progress_callback=None, meta: tuple | None = None) -> None:
+    """Держим интервал между запросами к новому финан. API (по умолчанию 61 с)."""
+    if FIN_NEW_API_MIN_INTERVAL_S <= 0:
+        return
+    key = _fin_rate_limit_key(token, "v1")
+    last_ts = _FIN_NEW_API_LAST_CALL.get(key) or 0.0
+    if not last_ts:
+        return
+    wait_left = FIN_NEW_API_MIN_INTERVAL_S - (time.time() - last_ts)
+    if wait_left <= 0:
+        return
+    seconds = int(wait_left) + 1
+    if progress_callback and meta:
+        current, total, base = meta
+        progress_callback(current, total, f"{base} · пауза API {seconds} с")
+    logging.info("Пауза %s с перед запросом к finance-api (лимит WB 1 запрос/мин)", seconds)
+    time.sleep(wait_left + 0.5)
+
+
+def _fin_new_api_mark_call(token: str) -> None:
+    _FIN_NEW_API_LAST_CALL[_fin_rate_limit_key(token, "v1")] = time.time()
+
+
+# Соответствие полей нового API (camelCase) полям старого v5 (snake_case).
+# Остальной код (расчёт сводки, карточки на странице) читает именно v5-названия,
+# поэтому новый отчёт приводим к тому же виду. Пары проверены на реальных данных:
+# логистика — deliveryService→delivery_rub, хранение — paidStorage→storage_fee,
+# приёмка — paidAcceptance→acceptance, к перечислению — forPay→ppvz_for_pay и т.д.
+_NEW_FIN_FIELD_MAP: Dict[str, str] = {
+    "rrdId": "rrd_id",
+    "reportId": "realizationreport_id",
+    "dateFrom": "date_from",
+    "dateTo": "date_to",
+    "createDate": "create_dt",
+    "currency": "currency_name",
+    "reportType": "report_type",
+    "giId": "gi_id",
+    "dlvPrc": "dlv_prc",
+    "fixTariffDateFrom": "fix_tariff_date_from",
+    "fixTariffDateTo": "fix_tariff_date_to",
+    "subjectName": "subject_name",
+    "nmId": "nm_id",
+    "brandName": "brand_name",
+    "vendorCode": "sa_name",
+    "techSize": "ts_name",
+    "sku": "barcode",
+    "docTypeName": "doc_type_name",
+    "sellerOperName": "supplier_oper_name",
+    "quantity": "quantity",
+    "retailPrice": "retail_price",
+    "retailAmount": "retail_amount",
+    "salePercent": "sale_percent",
+    "commissionPercent": "commission_percent",
+    "officeName": "office_name",
+    "orderDt": "order_dt",
+    "saleDt": "sale_dt",
+    "rrDate": "rr_dt",
+    "shkId": "shk_id",
+    "retailPriceWithDisc": "retail_price_withdisc_rub",
+    "deliveryAmount": "delivery_amount",
+    "returnAmount": "return_amount",
+    "deliveryService": "delivery_rub",
+    "giBoxTypeName": "gi_box_type_name",
+    "productDiscountForReport": "product_discount_for_report",
+    "sellerPromo": "supplier_promo",
+    "spp": "ppvz_spp_prc",
+    "kvwBase": "ppvz_kvw_prc_base",
+    "kvw": "ppvz_kvw_prc",
+    "supRatingUp": "sup_rating_prc_up",
+    "isKgvpV2": "is_kgvp_v2",
+    "ppvzSalesCommission": "ppvz_sales_commission",
+    "forPay": "ppvz_for_pay",
+    "ppvzReward": "ppvz_reward",
+    "acquiringFee": "acquiring_fee",
+    "acquiringPercent": "acquiring_percent",
+    "paymentProcessing": "payment_processing",
+    "acquiringBank": "acquiring_bank",
+    "vw": "ppvz_vw",
+    "vwNds": "ppvz_vw_nds",
+    "ppvzOfficeName": "ppvz_office_name",
+    "ppvzOfficeId": "ppvz_office_id",
+    "ppvzSupplierName": "ppvz_supplier_name",
+    "ppvzSupplierInn": "ppvz_inn",
+    "declarationNumber": "declaration_number",
+    "bonusTypeName": "bonus_type_name",
+    "stickerId": "sticker_id",
+    "country": "site_country",
+    "srvDbs": "srv_dbs",
+    "penalty": "penalty",
+    "additionalPayment": "additional_payment",
+    "rebillLogisticCost": "rebill_logistic_cost",
+    "paidStorage": "storage_fee",
+    "deduction": "deduction",
+    "paidAcceptance": "acceptance",
+    "trbxId": "trbx_id",
+    "srid": "srid",
+    "isB2b": "is_legal_entity",
+    "installmentCofinancingAmount": "installment_cofinancing_amount",
+    "wibesDiscountPercent": "wibes_wb_discount_percent",
+    "cashbackAmount": "cashback_amount",
+    "cashbackDiscount": "cashback_discount",
+}
+
+
+def map_detailed_finance_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Приводит строку нового API (camelCase) к формату старого v5 (snake_case)."""
+    mapped: Dict[str, Any] = {}
+    for new_key, value in (row or {}).items():
+        mapped[_NEW_FIN_FIELD_MAP.get(new_key, new_key)] = value
+    return mapped
 
 # --- Throttling for WB supplies API ---
 _last_supplies_api_call_ts: float = 0.0
@@ -93,14 +291,27 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
             last_resp = resp
             if resp.status_code in (429, 500, 502, 503, 504):
                 sleep_s = None
+                retry_after_s: float | None = None
                 if resp.status_code == 429:
                     # Для ошибки 429 проверяем заголовки X-Ratelimit-Retry (WB API) и Retry-After (стандартный)
                     retry_header = resp.headers.get("X-Ratelimit-Retry") or resp.headers.get("Retry-After")
                     if retry_header is not None:
                         try:
-                            sleep_s = float(retry_header)
+                            retry_after_s = float(retry_header)
+                            sleep_s = retry_after_s
                         except ValueError:
+                            retry_after_s = None
                             sleep_s = None
+                    if retry_after_s is not None and retry_after_s > RATE_LIMIT_FAIL_FAST_S:
+                        # WB просит подождать минуты/часы — ждать бессмысленно, сразу отдаём ошибку
+                        logger.warning(
+                            "GET %s: HTTP 429, WB просит повторить через %s — прерываем запрос",
+                            url, fmt_wait_hint(retry_after_s),
+                        )
+                        raise requests.HTTPError(
+                            f"HTTP 429 after {attempt + 1} attempt(s): {rate_limit_message(retry_after_s)}",
+                            response=resp,
+                        )
                 
                 if sleep_s is None:
                     # Если заголовков нет, используем экспоненциальную задержку
@@ -109,20 +320,31 @@ def get_with_retry(url: str, headers: Dict[str, str], params: Dict[str, Any], ma
                     else:
                         sleep_s = min(15, 0.8 * (2 ** attempt) + random.uniform(0, 0.7))
                 # Не даём Retry-After увести поток в многоминутный сон без прогресса
-                sleep_s = min(60.0, max(0.5, float(sleep_s)))
+                sleep_s = min(RATE_LIMIT_MAX_WAIT_S, max(0.5, float(sleep_s)))
+                logger.warning(
+                    "GET %s: HTTP %s, попытка %s, пауза %.0f с",
+                    url, resp.status_code, attempt + 1, sleep_s,
+                )
                 
                 time.sleep(sleep_s)
                 continue
             resp.raise_for_status()
             return resp
         except requests.RequestException as exc:  # network or HTTP error
+            if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code == 429:
+                # 429 уже разобран выше (с понятным сообщением) — не затираем его
+                raise
             last_exc = exc
             time.sleep(min(8, 0.5 * (2 ** attempt) + random.uniform(0, 0.5)))
             continue
     if last_exc:
         raise last_exc
     if last_resp is not None:
-        raise requests.HTTPError(f"HTTP {last_resp.status_code} after {max_retries} retries", response=last_resp)
+        hint = ""
+        if last_resp.status_code == 429:
+            wait_s = last_resp.headers.get("X-Ratelimit-Retry") or last_resp.headers.get("Retry-After")
+            hint = f" — {rate_limit_message(wait_s)}"
+        raise requests.HTTPError(f"HTTP {last_resp.status_code} after {max_retries} retries{hint}", response=last_resp)
     raise RuntimeError("Request failed after retries")
 
 
@@ -377,6 +599,11 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
     """Получает финансовый отчет с разбивкой по интервалам"""
     headers = {"Authorization": f"Bearer {token}"}
     
+    # Если WB уже сообщал, что лимит не сброшен, — не дёргаем API повторно
+    cooldown_left = _fin_rate_limit_deadline(token) - time.time()
+    if cooldown_left > 0:
+        raise RuntimeError(rate_limit_message(cooldown_left))
+
     # Разбиваем период на интервалы по 7 дней
     intervals = _split_date_range(date_from, date_to, days_per_chunk=7)
     total_intervals = len(intervals)
@@ -384,6 +611,8 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
     
     logging.info(f"Начинаем загрузку финансового отчета за период {date_from} - {date_to}, интервалов: {total_intervals}")
     failed_intervals: List[str] = []
+    # Сообщение о лимите WB (429 с длинной паузой): отчёт целиком недоступен сейчас
+    rate_limited_message: str | None = None
     for idx, (interval_from, interval_to) in enumerate(intervals, 1):
         logging.info(f"Загрузка интервала {idx}/{total_intervals}: {interval_from} - {interval_to}")
         
@@ -469,19 +698,27 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
                 is_429 = "429" in error_str or "Too Many Requests" in error_str or (hasattr(e, 'response') and e.response is not None and e.response.status_code == 429)
                 
                 if is_429:
-                    retry_after = 60
+                    retry_header = None
                     if hasattr(e, 'response') and e.response is not None:
                         retry_header = e.response.headers.get('X-Ratelimit-Retry') or e.response.headers.get('Retry-After')
-                        if retry_header:
-                            try:
-                                retry_after = int(float(retry_header))
-                            except (ValueError, TypeError):
-                                pass
-                    
+                    try:
+                        retry_after = int(float(retry_header)) if retry_header else 60
+                    except (ValueError, TypeError):
+                        retry_after = 60
+
+                    if retry_after > RATE_LIMIT_FAIL_FAST_S:
+                        # WB просит подождать часы: ждать в HTTP-запросе нельзя,
+                        # иначе страница «зависнет» на неопределённое время.
+                        rate_limited_message = rate_limit_message(retry_after)
+                        interval_error = rate_limited_message
+                        _set_fin_rate_limit(token, retry_after)
+                        logging.error(rate_limited_message)
+                        break
+
                     max_429_retries = 3
                     retry_success = False
                     for retry_attempt in range(1, max_429_retries + 1):
-                        wait_time = retry_after * retry_attempt
+                        wait_time = min(RATE_LIMIT_MAX_WAIT_S, float(retry_after)) * retry_attempt
                         logging.warning(f"Ошибка 429 для интервала {interval_from} - {interval_to}, попытка {retry_attempt}/{max_429_retries}, пауза {wait_time} секунд...")
                         time.sleep(wait_time)
                         
@@ -583,6 +820,11 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
         elif interval_error:
             failed_intervals.append(f"{interval_from} — {interval_to}: {interval_error}")
             logging.error(f"ВНИМАНИЕ: Интервал {interval_from} - {interval_to} не загружен из-за ошибки: {interval_error}")
+
+        if rate_limited_message:
+            # Лимит WB общий для всего отчёта — остальные интервалы тоже не загрузятся
+            logging.error("Прерываем загрузку финансового отчёта: %s", rate_limited_message)
+            break
         
         if idx < total_intervals:
             pause_time = 2
@@ -593,12 +835,186 @@ def fetch_finance_report(token: str, date_from: str, date_to: str, limit: int = 
             time.sleep(pause_time)
     
     logging.info(f"Загрузка финансового отчета завершена. Всего загружено {len(all_rows)} записей")
+    if rate_limited_message:
+        # Никаких частичных данных: пользователю нужен понятный текст, что отчёт
+        # недоступен из-за лимита WB, а не «половина» отчёта.
+        raise RuntimeError(rate_limited_message)
     # Если ни одной строки и все интервалы упали с ошибкой — не продолжаем (иначе
     # уйдём в хранение/продвижение на десятки тысяч строк и «зависнет» UI).
     if not all_rows and failed_intervals:
         raise RuntimeError(
             "Не удалось загрузить финансовый отчёт Wildberries. "
             f"{failed_intervals[0]}. Попробуйте ещё раз через минуту."
+        )
+    return all_rows
+
+
+# --- Новый финансовый API WB (finance-api v1, «Детализации к отчётам реализации») ---
+def fetch_finance_report_detailed(
+    token: str,
+    date_from: str,
+    date_to: str,
+    progress_callback=None,
+    limit: int = NEW_FIN_REPORT_PAGE_LIMIT,
+) -> List[Dict[str, Any]]:
+    """Финотчёт через новый API WB (POST /api/finance/v1/sales-reports/detailed).
+
+    Возвращает строки в формате старого v5 (snake_case) благодаря map_detailed_finance_row,
+    поэтому расчёт сводки, страница и экспорт работают без изменений.
+
+    Лимит персонального/сервисного токена — 1 запрос/мин, поэтому между запросами
+    выдерживаем паузу; при 429 с длинной паузой падаем быстро с понятным текстом,
+    а не «спим» часами, как со старым v5.
+    """
+    if not token:
+        return []
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    cooldown_left = _fin_rate_limit_deadline(token, "v1") - time.time()
+    if cooldown_left > 0:
+        raise RuntimeError(rate_limit_message(cooldown_left))
+
+    chunks = _split_date_range(date_from, date_to, days_per_chunk=FIN_NEW_MAX_DAYS_PER_REQUEST)
+    total_chunks = len(chunks)
+    all_rows: List[Dict[str, Any]] = []
+    failed_chunks: List[str] = []
+    rate_limited_message: str | None = None
+
+    logging.info(
+        "Загрузка финотчёта через finance-api: %s — %s, периодов: %s",
+        date_from, date_to, total_chunks,
+    )
+
+    for idx, (chunk_from, chunk_to) in enumerate(chunks, 1):
+        base_period = f"{chunk_from} - {chunk_to}"
+        if progress_callback:
+            progress_callback(idx, total_chunks, base_period)
+
+        chunk_rows: List[Dict[str, Any]] = []
+        chunk_error: str | None = None
+        page = 0
+        rrd_id = 0
+        seen_rrd_ids: set[int] = set()
+        page_failed = False
+
+        while True:
+            page += 1
+            _throttle_fin_new_api(token, progress_callback, (idx, total_chunks, base_period))
+            body = {"dateFrom": chunk_from, "dateTo": chunk_to, "limit": int(limit), "rrdId": rrd_id}
+            resp = None
+            for attempt in range(1, FIN_NEW_MAX_PAGE_ATTEMPTS + 1):
+                try:
+                    resp = _with_progress_heartbeat(
+                        progress_callback,
+                        idx,
+                        total_chunks,
+                        f"{base_period} · стр. {page}",
+                        lambda b=dict(body): requests.post(
+                            NEW_FIN_REPORT_URL, headers=headers, json=b, timeout=180
+                        ),
+                    )
+                except requests.RequestException as exc:
+                    _fin_new_api_mark_call(token)
+                    resp = None
+                    if attempt >= FIN_NEW_MAX_PAGE_ATTEMPTS:
+                        chunk_error = f"ошибка запроса: {exc}"
+                        break
+                    logging.warning("finance-api: ошибка запроса (%s), попытка %s", exc, attempt)
+                    time.sleep(min(10.0, 2.0 * attempt))
+                    continue
+
+                _fin_new_api_mark_call(token)
+
+                if resp.status_code == 429:
+                    retry_hint = _retry_after_hint(resp.headers)
+                    if retry_hint is not None and retry_hint > RATE_LIMIT_FAIL_FAST_S:
+                        rate_limited_message = rate_limit_message(retry_hint)
+                        _set_fin_rate_limit(token, retry_hint, "v1")
+                        logging.error(rate_limited_message)
+                        break
+                    wait_s = min(RATE_LIMIT_MAX_WAIT_S, max(1.0, float(retry_hint or 5.0)))
+                    if attempt >= FIN_NEW_MAX_PAGE_ATTEMPTS:
+                        chunk_error = rate_limit_message(retry_hint)
+                        resp = None
+                        break
+                    logging.warning(
+                        "finance-api: HTTP 429 (лимит 1 запрос/мин), попытка %s, пауза %s с",
+                        attempt, wait_s,
+                    )
+                    if progress_callback:
+                        progress_callback(
+                            idx, total_chunks,
+                            f"{base_period} · лимит WB, повтор через {int(wait_s)} с",
+                        )
+                    time.sleep(wait_s)
+                    continue
+
+                if resp.status_code != 200:
+                    chunk_error = f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+                    resp = None
+                    logging.warning("finance-api: %s (период %s)", chunk_error, base_period)
+                    break
+                break
+
+            if rate_limited_message:
+                break
+
+            if resp is None:
+                page_failed = True
+                break
+
+            try:
+                data = resp.json()
+            except ValueError as json_err:
+                chunk_error = f"ошибка разбора JSON: {json_err}"
+                page_failed = True
+                break
+
+            if not isinstance(data, list) or not data:
+                break  # данных за период больше нет
+
+            chunk_rows.extend(map_detailed_finance_row(r) for r in data if isinstance(r, dict))
+            if progress_callback:
+                progress_callback(
+                    idx, total_chunks,
+                    f"{base_period} · стр. {page} ({len(chunk_rows)} зап.)",
+                )
+            logging.info(
+                "finance-api %s: стр. %s, +%s записей (итого %s)",
+                base_period, page, len(data), len(chunk_rows),
+            )
+
+            try:
+                new_rrd_id = int(data[-1].get("rrdId") or data[-1].get("rrd_id") or 0)
+            except Exception:
+                break
+            if not new_rrd_id or new_rrd_id in seen_rrd_ids:
+                break  # пагинация не двигается — дальше нет смысла
+            seen_rrd_ids.add(new_rrd_id)
+            rrd_id = new_rrd_id
+            if len(data) < int(limit):
+                break  # последняя страница
+
+        if chunk_rows:
+            all_rows.extend(chunk_rows)
+        elif chunk_error or page_failed:
+            failed_chunks.append(f"{base_period}: {chunk_error or 'страница не получена'}")
+        if rate_limited_message:
+            logging.error("Прерываем загрузку финотчёта (finance-api): %s", rate_limited_message)
+            break
+
+    logging.info(
+        "finance-api: загружено %s строк (периодов: %s)",
+        len(all_rows), total_chunks,
+    )
+
+    if rate_limited_message:
+        raise RuntimeError(rate_limited_message)
+    if not all_rows and failed_chunks:
+        raise RuntimeError(
+            "Не удалось загрузить финансовый отчёт Wildberries (finance-api). "
+            f"{failed_chunks[0]}. Попробуйте ещё раз через минуту."
         )
     return all_rows
 
