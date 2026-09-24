@@ -113,7 +113,7 @@
               {% for r in rows %}
                 <tr>
                   <td class="text-center">
-                    <input type="checkbox" class="form-check-input task-checkbox" data-order-id="{{ r.get('orderId', '') }}">
+                    <input type="checkbox" class="form-check-input task-checkbox" data-order-id="{{ r.get('orderId', '') }}" data-office-id="{{ r.get('officeId') or '' }}" data-warehouse="{{ r['Склад'] or '' }}">
                   </td>
                   <td class="text-center">{{ loop.index }}</td>
                   <td>
@@ -174,11 +174,12 @@
                 <th class="text-center" style="width:60px;">#</th>
                 <th class="text-center">Номер поставки</th>
                 <th class="text-center">Кол-во товаров</th>
+                <th class="text-center">Склад</th>
                 <th class="text-center">Статус</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td colspan="4" class="text-muted">Загрузка...</td></tr>
+              <tr><td colspan="5" class="text-muted">Загрузка...</td></tr>
             </tbody>
           </table>
         </div>
@@ -383,7 +384,7 @@
               wrap.dataset.supplyStatus = 'Отгружено';
               const supplyRow = document.querySelector(`#suppliesTable tbody tr[data-supply-id="${CSS.escape(supplyId)}"]`);
               if (supplyRow) {
-                const statusCell = supplyRow.children[3];
+                const statusCell = supplyRow.children[4];
                 if (statusCell) {
                   statusCell.innerHTML = '<span class="status-badge status-ok">Отгружено</span>';
                 }
@@ -492,14 +493,16 @@
         const tr = document.createElement('tr');
         tr.setAttribute('data-supply-id', s.supplyId || '');
         tr.style.cursor = 'pointer';
-        tr.innerHTML = `<td class=\"text-center\"></td>
-                        <td class=\"text-center\"></td>
-                        <td class=\"text-center\"></td>
-                        <td class=\"text-center\"></td>`;
+        tr.innerHTML = `<td class="text-center"></td>
+                        <td class="text-center"></td>
+                        <td class="text-center"></td>
+                        <td class="text-center"></td>
+                        <td class="text-center"></td>`;
         tr.children[0].textContent = (displayedSuppliesCount + idx + 1).toString();
-        tr.children[1].innerHTML = `${(s.supplyId || '')}<div class=\"supply-date\">${(s.date || '')}</div>`;
+        tr.children[1].innerHTML = `${(s.supplyId || '')}<div class="supply-date">${(s.date || '')}</div>`;
         tr.children[2].textContent = s.count != null ? s.count : '';
-        const statusCell = tr.children[3];
+        tr.children[3].textContent = s.warehouse || '—';
+        const statusCell = tr.children[4];
         if (s.status === 'Отгружено'){
           const badge = document.createElement('span');
           badge.className = 'status-badge status-ok';
@@ -522,7 +525,7 @@
         tbody.appendChild(tr);
         const details = document.createElement('tr');
         details.className = 'd-none supply-details-row';
-        details.innerHTML = `<td></td><td colspan=\"3\"><div class=\"py-2\" id=\"details-${s.supplyId}\" data-supply-id=\"${s.supplyId}\" data-supply-status=\"${(s.status || 'Не отгружена').replace(/\"/g, '&quot;')}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
+        details.innerHTML = `<td></td><td colspan="4"><div class=\"py-2\" id=\"details-${s.supplyId}\" data-supply-id=\"${s.supplyId}\" data-supply-status=\"${(s.status || 'Не отгружена').replace(/\"/g, '&quot;')}\"><div class=\"text-muted\">Загрузка...</div></div></td>`;
         tbody.appendChild(details);
         tr.addEventListener('click', async () => {
           document.querySelectorAll('#suppliesTable tbody tr.supply-details-row').forEach(row => {
@@ -558,7 +561,7 @@
       displayedSuppliesCount += (data.items || []).length;
       
       if ((data.items || []).length === 0){
-        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Нет данных</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-muted">Нет данных</td></tr>';
       }
       if (moreBtn){
         if (hasMoreSupplies){
@@ -587,7 +590,7 @@
           const tr = document.createElement('tr');
           const parts = String(r['Номер и дата задания']||'').split(' | ');
           const num = parts[0]||''; const dt = parts[1]||'';
-          tr.innerHTML = `<td class=\"text-center\"><input type=\"checkbox\" class=\"form-check-input task-checkbox\" data-order-id=\"${r.orderId || ''}\"></td>
+          tr.innerHTML = `<td class="text-center"><input type="checkbox" class="form-check-input task-checkbox" data-order-id="${r.orderId || ''}" data-office-id="${r.officeId || ''}" data-warehouse="${r['Склад'] || ''}"></td>
             <td class=\"text-center\">${idx+1}</td>
             <td><div>${num}</div>${dt?`<div class='text-muted' style='font-size:0.68rem;'>${dt}</div>`:''}</td>
             <td class=\"text-center\">${r.photo ? `<img src='${r.photo}' class='product-thumb' style='width:31px;height:42px;object-fit:cover;'>` : '—'}</td>
@@ -630,7 +633,7 @@
       }catch(e){
         console.error(e);
         const tbody = document.querySelector('#suppliesTable tbody');
-        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">Ошибка загрузки</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-muted">Ошибка загрузки</td></tr>';
       } finally {
         console.log('loadSupplies завершена');
         setSuppliesLoading(false);
@@ -721,35 +724,91 @@
       if (selectedTasks.size === 0) return;
 
       try {
-        // Получаем список поставок со статусом "Не отгружена" (только последние 10)
-        const response = await fetch('/api/fbs/supplies?limit=10&next=0', {
+        // Неотгруженные поставки нужны, чтобы добавить задания в поставку того же склада
+        const response = await fetch('/api/fbs/supplies?limit=50&next=0', {
           credentials: 'include'
         });
         const data = await response.json();
-        const supplies = data.items || [];
-        
-        // Фильтруем поставки со статусом "Не отгружена"
-        const availableSupplies = supplies.filter(supply => supply.status === 'Не отгружена');
-        
-        if (availableSupplies.length === 0) {
-          // Показываем модальное окно для создания новой поставки
-          const modal = new bootstrap.Modal(document.getElementById('createSupplyModal'));
-          modal.show();
-          return;
+        const openSupplies = (data.items || []).filter(supply => supply.status === 'Не отгружена');
+
+        // Разбиваем выбранные задания по складам: одна поставка — один склад (правило WB)
+        const plan = buildSupplyPlan(groupSelectedTasksByWarehouse(), openSupplies);
+
+        // Один склад — оставляем привычный сценарий (добавить в существующую / создать новую)
+        if (plan.length === 1) {
+          const item = plan[0];
+          if (item.matches.length === 1) {
+            showSingleSupplyModal(item.matches[0]);
+            return;
+          }
+          if (item.matches.length > 1) {
+            showSupplySelectionModal(item.matches);
+            return;
+          }
+          if (openSupplies.length === 0) {
+            // Показываем модальное окно для создания новой поставки
+            const modal = new bootstrap.Modal(document.getElementById('createSupplyModal'));
+            modal.show();
+            return;
+          }
         }
 
-        if (availableSupplies.length === 1) {
-          // Если только одна поставка, показываем модальное окно с вопросом
-          showSingleSupplyModal(availableSupplies[0]);
-        } else {
-          // Если несколько поставок, показываем модальное окно выбора
-          showSupplySelectionModal(availableSupplies);
-        }
+        // Несколько складов (или нет неотгруженной поставки на нужный склад) — показываем план
+        showSupplyPlanModal(plan);
       } catch (error) {
         console.error('Ошибка при получении списка поставок:', error);
         showNotification('Ошибка при получении списка поставок', 'error');
       }
     });
+
+    // Экранирование значений, которые приходят из API, для вставки в HTML
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    // Склад выбранного задания — из data-атрибутов строки (заполняются в шаблоне и в loadTasks)
+    function getTaskMeta(orderId) {
+      const checkbox = document.querySelector(`.task-checkbox[data-order-id="${CSS.escape(String(orderId))}"]`);
+      return {
+        officeId: checkbox && checkbox.dataset.officeId ? String(checkbox.dataset.officeId) : '',
+        warehouse: checkbox && checkbox.dataset.warehouse ? String(checkbox.dataset.warehouse) : '',
+      };
+    }
+
+    // Группируем выбранные задания по складу отгрузки
+    function groupSelectedTasksByWarehouse() {
+      const groups = new Map();
+      selectedTasks.forEach(orderId => {
+        const meta = getTaskMeta(orderId);
+        const key = meta.officeId
+          ? `id:${meta.officeId}`
+          : (meta.warehouse ? `name:${meta.warehouse.toLowerCase()}` : 'unknown');
+        let group = groups.get(key);
+        if (!group) {
+          group = { officeId: meta.officeId, warehouse: meta.warehouse, orderIds: [] };
+          groups.set(key, group);
+        }
+        group.orderIds.push(orderId);
+      });
+      return Array.from(groups.values());
+    }
+
+    // Для каждого склада подбираем неотгруженную поставку этого же склада (иначе нужна новая)
+    function buildSupplyPlan(groups, openSupplies) {
+      const normalize = (value) => String(value || '').trim().toLowerCase();
+      return groups.map(group => {
+        const matches = (openSupplies || []).filter(supply => {
+          if (group.officeId && supply.officeId != null && String(supply.officeId) === String(group.officeId)) {
+            return true;
+          }
+          // Резерв для старых заданий без officeId — сравнение по названию склада
+          return !group.officeId && !!group.warehouse && normalize(supply.warehouse) === normalize(group.warehouse);
+        });
+        return { ...group, matches, target: matches[0] || null };
+      });
+    }
 
     // Показать модальное окно с вопросом для одной поставки
     function showSingleSupplyModal(supply) {
@@ -762,10 +821,11 @@
       // Заполняем информацию о поставке
       supplyInfo.innerHTML = `
         <div class="mb-2">
-          <strong>${supply.supplyId}</strong>
+          <strong>${escapeHtml(supply.supplyId)}</strong>
         </div>
         <div class="text-muted small">
-          Дата создания: ${supply.date}<br>
+          Склад: ${escapeHtml(supply.warehouse || '—')}<br>
+          Дата создания: ${escapeHtml(supply.date)}<br>
           Товаров: ${supply.count || 0}
         </div>
       `;
@@ -808,10 +868,11 @@
         item.className = 'list-group-item list-group-item-action';
         item.innerHTML = `
           <div class="d-flex w-100 justify-content-between">
-            <h6 class="mb-1">${supply.supplyId}</h6>
-            <small>${supply.date}</small>
+            <h6 class="mb-1">${escapeHtml(supply.supplyId)}</h6>
+            <small>${escapeHtml(supply.date)}</small>
           </div>
           <p class="mb-1">Товаров: ${supply.count}</p>
+          <p class="mb-0 text-muted small">Склад: ${escapeHtml(supply.warehouse || '—')}</p>
         `;
         
         item.addEventListener('click', function() {
@@ -832,6 +893,44 @@
 
       // Показываем модальное окно
       const modal = new bootstrap.Modal(document.getElementById('selectSupplyModal'));
+      modal.show();
+    }
+
+    // Показать модальное окно с планом: сколько поставок будет создано/использовано
+    function showSupplyPlanModal(plan) {
+      const list = document.getElementById('supplyPlanList');
+      const title = document.getElementById('supplyPlanModalLabel');
+      const confirmBtn = document.getElementById('confirmSupplyPlan');
+      if (!list || !confirmBtn) return;
+
+      const newSupplies = plan.filter(item => !item.target).length;
+      if (title) {
+        title.textContent = newSupplies
+          ? `Будет создано поставок: ${newSupplies}`
+          : 'Задания будут добавлены в существующие поставки';
+      }
+
+      list.innerHTML = '';
+      plan.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'd-flex justify-content-between align-items-center border-bottom py-2';
+        const target = item.target
+          ? `в поставку ${escapeHtml(item.target.supplyId)}`
+          : '<span class="text-success">новая поставка</span>';
+        row.innerHTML = `
+          <span>Склад: <strong>${escapeHtml(item.warehouse || 'не определён')}</strong></span>
+          <span class="text-muted text-end">${item.orderIds.length} заданий<br>${target}</span>
+        `;
+        list.appendChild(row);
+      });
+
+      confirmBtn.onclick = async function() {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('supplyPlanModal'));
+        if (modal) modal.hide();
+        await executeSupplyPlan(plan);
+      };
+
+      const modal = new bootstrap.Modal(document.getElementById('supplyPlanModal'));
       modal.show();
     }
 
@@ -891,90 +990,148 @@
       }
     });
 
-    // Добавление заданий в поставку
-    async function addTasksToSupply(supplyId) {
-      console.log('addTasksToSupply вызвана с supplyId:', supplyId, 'selectedTasks:', selectedTasks.size);
-      if (selectedTasks.size === 0) return;
+    // Батч-добавление заданий в поставку (сервер делит на пачки по 100 — лимит WB)
+    async function addOrdersBatch(supplyId, orderIds) {
+      const resp = await fetch(`/api/fbs/supplies/${encodeURIComponent(supplyId)}/orders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ orders: orderIds.map(String) })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        return { added: 0, failedIds: orderIds.map(String), error: data.error || `HTTP ${resp.status}` };
+      }
+      const failedIds = (data.failed || []).map(item => String(item.orderId));
+      return {
+        added: Number(data.added || 0),
+        failedIds,
+        error: (data.failed && data.failed.length && data.failed[0].error) ? String(data.failed[0].error) : ''
+      };
+    }
 
+    // Кнопка «Добавить в поставку»: заблокировать/разблокировать и показать прогресс
+    function setAddButtonBusy(busy) {
+      const addBtn = document.getElementById('addToSupplyBtn');
+      if (!addBtn) return;
+      addBtn.disabled = busy || selectedTasks.size === 0;
+      addBtn.innerHTML = busy
+        ? 'Добавление... <span class="spinner-border spinner-border-sm ms-1" role="status"></span>'
+        : `Добавить в поставку (<span id="selectedTasksCount">${selectedTasks.size}</span>)`;
+    }
+
+    // Итог добавления: обновляем списки, выделенными оставляем только неуспешные задания
+    async function afterTasksAdded(failedIds) {
+      selectedTasks = new Set((failedIds || []).map(String));
+      document.querySelectorAll('.task-checkbox').forEach(cb => { cb.checked = false; });
+      const selectAll = document.getElementById('selectAllTasks');
+      if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+      }
       try {
-        const addBtn = document.getElementById('addToSupplyBtn');
-        if (addBtn) {
-          addBtn.disabled = true;
-          addBtn.innerHTML = 'Добавление... <span class="spinner-border spinner-border-sm ms-1" role="status"></span>';
+        console.log('=== ОБНОВЛЯЕМ СПИСКИ ЗАДАНИЙ И ПОСТАВОК ===');
+        await loadTasks({ refresh: true });
+        await loadSupplies({ refresh: true });
+      } catch (updateError) {
+        console.error('Ошибка при обновлении списков:', updateError);
+      }
+      // Возвращаем выделение тем заданиям, которые не удалось добавить
+      selectedTasks.forEach(orderId => {
+        const cb = document.querySelector(`.task-checkbox[data-order-id="${CSS.escape(String(orderId))}"]`);
+        if (cb) cb.checked = true;
+      });
+      updateAddToSupplyButton();
+      updateSelectAllCheckbox();
+      setAddButtonBusy(false);
+    }
+
+    // Добавление выбранных заданий в конкретную поставку (один запрос на все задания)
+    async function addTasksToSupply(supplyId, orderIds) {
+      const ids = ((orderIds && orderIds.length) ? orderIds : Array.from(selectedTasks)).map(String);
+      console.log('addTasksToSupply:', supplyId, 'заданий:', ids.length);
+      if (!ids.length) return;
+
+      setAddButtonBusy(true);
+      const failedIds = [];
+      try {
+        const result = await addOrdersBatch(supplyId, ids);
+        const notAdded = result.failedIds.length ? result.failedIds : (result.added === 0 ? ids : []);
+        failedIds.push(...notAdded);
+
+        if (result.added > 0) {
+          showNotification(`Добавлено ${result.added} заданий в поставку ${supplyId}`, 'success');
         }
-
-        let successCount = 0;
-        let errorCount = 0;
-
-        // Добавляем каждое задание в поставку
-        // Используем POST вместо PATCH, так как PATCH устарел
-        for (const orderId of selectedTasks) {
-          try {
-            const response = await fetch(`/api/fbs/supplies/${supplyId}/orders/${orderId}`, {
-              method: 'POST',  // Используем POST вместо PATCH
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              credentials: 'include'
-            });
-
-            if (response.ok) {
-              successCount++;
-            } else {
-              errorCount++;
-              const errorData = await response.json().catch(() => ({}));
-              const errorMsg = errorData.error || `HTTP ${response.status}`;
-              console.error(`Ошибка добавления задания ${orderId}: ${response.status} - ${errorMsg}`);
-              // Не показываем уведомление для каждого задания, чтобы не спамить
-              // showNotification(`Ошибка добавления задания ${orderId}: ${errorMsg}`, 'error');
-            }
-          } catch (error) {
-            errorCount++;
-            console.error(`Ошибка добавления задания ${orderId}:`, error);
-            // Не показываем уведомление для каждого задания
-            // showNotification(`Ошибка добавления задания ${orderId}: ${error.message || error}`, 'error');
-          }
+        if (notAdded.length) {
+          showNotification(
+            `Не удалось добавить ${notAdded.length} заданий${result.error ? ': ' + result.error : ''}`,
+            result.added > 0 ? 'warning' : 'error'
+          );
         }
-
-        // Показываем результат
-        if (successCount > 0) {
-          showNotification(`Успешно добавлено ${successCount} заданий в поставку ${supplyId}`, 'success');
-          // Очищаем выбор
-          selectedTasks.clear();
-          document.querySelectorAll('.task-checkbox').forEach(cb => cb.checked = false);
-          document.getElementById('selectAllTasks').checked = false;
-          updateAddToSupplyButton();
-          // Обновляем списки (сначала задания, потом поставки)
-          try {
-            console.log('=== НАЧИНАЕМ ОБНОВЛЕНИЕ СПИСКОВ ===');
-            // Без лишних ожиданий: просто дергаем оба обновления последовательно
-            console.log('Обновляем список заданий...');
-            await loadTasks({refresh: true});
-            console.log('Обновляем список поставок...');
-            await loadSupplies({refresh: true});
-            console.log('=== СПИСКИ ОБНОВЛЕНЫ ===');
-          } catch (updateError) {
-            console.error('Ошибка при обновлении списков:', updateError);
-          }
-        }
-
-        if (errorCount > 0 && successCount === 0) {
-          // Показываем ошибку только если не было успешных добавлений
-          showNotification(`Ошибка при добавлении ${errorCount} заданий`, 'error');
-        } else if (errorCount > 0 && successCount > 0) {
-          // Если были и успехи, и ошибки - показываем предупреждение
-          showNotification(`Добавлено ${successCount} заданий, но ${errorCount} заданий не удалось добавить`, 'warning');
-        }
-
       } catch (error) {
         console.error('Ошибка при добавлении заданий в поставку:', error);
+        failedIds.push(...ids);
         showNotification('Ошибка при добавлении заданий в поставку', 'error');
       } finally {
-        const addBtn = document.getElementById('addToSupplyBtn');
-        if (addBtn) {
-          addBtn.disabled = selectedTasks.size === 0;
-          addBtn.innerHTML = `Добавить в поставку (<span id="selectedTasksCount">${selectedTasks.size}</span>)`;
+        await afterTasksAdded(failedIds);
+      }
+    }
+
+    // Выполнение плана: на каждый склад — своя поставка (существующая неотгруженная или новая)
+    async function executeSupplyPlan(plan) {
+      console.log('executeSupplyPlan: складов', plan.length);
+      setAddButtonBusy(true);
+      const failedIds = [];
+      try {
+        for (const item of plan) {
+          const warehouseLabel = item.warehouse || 'склад не определён';
+          let supplyId = item.target ? item.target.supplyId : null;
+
+          if (!supplyId) {
+            // Создаём поставку под этот склад: склад она унаследует от первого добавленного задания
+            try {
+              const createdResp = await fetch('/api/fbs/supplies/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include'
+              });
+              const createdData = await createdResp.json().catch(() => ({}));
+              if (!createdResp.ok || !createdData.success) {
+                failedIds.push(...item.orderIds.map(String));
+                showNotification(
+                  `${warehouseLabel}: не удалось создать поставку${createdData.error ? ' (' + createdData.error + ')' : ''}`,
+                  'error'
+                );
+                continue;
+              }
+              supplyId = createdData.supplyId;
+            } catch (error) {
+              console.error('Ошибка при создании поставки:', error);
+              failedIds.push(...item.orderIds.map(String));
+              showNotification(`${warehouseLabel}: ошибка при создании поставки`, 'error');
+              continue;
+            }
+          }
+
+          try {
+            const result = await addOrdersBatch(supplyId, item.orderIds);
+            const notAdded = result.failedIds.length ? result.failedIds : (result.added === 0 ? item.orderIds.map(String) : []);
+            failedIds.push(...notAdded);
+            showNotification(
+              `${warehouseLabel} → ${supplyId}: добавлено ${result.added}${notAdded.length ? `, ошибок ${notAdded.length}` : ''}`,
+              notAdded.length ? (result.added > 0 ? 'warning' : 'error') : 'success'
+            );
+            if (notAdded.length && result.error) {
+              console.warn(`${warehouseLabel}: ${result.error}`);
+            }
+          } catch (error) {
+            console.error('Ошибка при добавлении заданий:', error);
+            failedIds.push(...item.orderIds.map(String));
+            showNotification(`${warehouseLabel}: ошибка при добавлении заданий`, 'error');
+          }
         }
+      } finally {
+        await afterTasksAdded(failedIds);
       }
     }
   </script>
@@ -1043,6 +1200,28 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
           <button type="button" class="btn btn-primary" id="confirmAddToSupply" disabled>Добавить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно с планом поставок по складам -->
+  <div class="modal fade" id="supplyPlanModal" tabindex="-1" aria-labelledby="supplyPlanModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="supplyPlanModalLabel">План поставок</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-2">Все задания одной поставки должны быть с одного склада (правило WB), поэтому для каждого склада будет своя поставка:</p>
+          <div id="supplyPlanList" class="border rounded p-2">
+            <!-- План будет загружен динамически -->
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="button" class="btn btn-primary" id="confirmSupplyPlan">Продолжить</button>
         </div>
       </div>
     </div>

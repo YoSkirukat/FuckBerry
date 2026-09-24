@@ -1256,6 +1256,36 @@ def fetch_fbw_supply_packages(token: str, supply_id: int | str) -> list[dict[str
 
 
 # --- FBS API ---
+def fetch_wb_offices(token: str) -> List[Dict[str, Any]]:
+    """Справочник складов WB (нужен для колонки «Склад» в поставках FBS).
+
+    Ответ WB: массив объектов {"id": 3104033, "name": "Тверь (Эммауссское)", "city": "Тверь", ...}
+    """
+    if not token:
+        return []
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    last_err: Exception | None = None
+    for headers in headers_list:
+        try:
+            resp = get_with_retry(WB_OFFICES_URL, headers, params={}, max_retries=2, timeout_s=10)
+            data = resp.json()
+            items: Any = data
+            if isinstance(data, dict):
+                items = data.get("offices") or data.get("data") or []
+            if isinstance(items, list):
+                return [it for it in items if isinstance(it, dict)]
+            return []
+        except Exception as exc:
+            last_err = exc
+            continue
+    if last_err:
+        logger.warning("fetch_wb_offices failed: %s", last_err)
+    return []
+
+
 def fetch_fbs_new_orders(token: str) -> List[Dict[str, Any]]:
     """Получает новые сборочные задания FBS. Ответ WB: {\"orders\": [...]}."""
     if not token:
@@ -1279,16 +1309,90 @@ def fetch_fbs_new_orders(token: str) -> List[Dict[str, Any]]:
 
 
 def fetch_fbs_orders(token: str, limit: int = 100, next_cursor: str | None = None) -> Dict[str, Any]:
-    """Получает заказы FBS с пагинацией"""
+    """Получает заказы FBS с пагинацией (next обязателен: WB без него отдаёт 400)"""
     headers = {"Authorization": f"Bearer {token}"}
-    params: Dict[str, Any] = {"limit": limit}
-    if next_cursor:
-        params["next"] = next_cursor
+    params: Dict[str, Any] = {"limit": limit, "next": next_cursor or 0}
     try:
         resp = get_with_retry(FBS_ORDERS_URL, headers, params=params)
         return resp.json() or {}
     except Exception:
         return {}
+
+
+# WB отдаёт /api/v3/orders страницами не более 1000 заказов и по возрастанию даты создания.
+# Без прокрутки `next` теряются самые свежие задания: они попадают на последнюю страницу,
+# из-за чего состав поставки и «Кол-во товаров» выглядят неполными.
+FBS_ORDERS_PAGE_LIMIT = 1000
+FBS_ORDERS_MAX_PAGES = int(os.getenv("FBS_ORDERS_MAX_PAGES", "50"))
+
+
+def fetch_all_fbs_orders(
+    token: str,
+    limit: int = FBS_ORDERS_PAGE_LIMIT,
+    max_pages: int = FBS_ORDERS_MAX_PAGES,
+) -> List[Dict[str, Any]]:
+    """Все сборочные задания FBS с прокруткой страниц (WB: максимум 1000 за страницу).
+
+    Важно: WB обязательно ждёт параметр `next` (для первой страницы — `next=0`),
+    без него возвращается 400 IncorrectParameter.
+    """
+    if not token:
+        return []
+
+    headers_list = [
+        {"Authorization": f"{token}"},
+        {"Authorization": f"Bearer {token}"},
+    ]
+    for headers in headers_list:
+        orders: List[Dict[str, Any]] = []
+        seen_ids: set = set()
+        next_cursor: Any = 0
+        got_first_page = False
+        hit_page_limit = True
+
+        for _ in range(max(1, max_pages)):
+            params: Dict[str, Any] = {"limit": limit, "next": next_cursor or 0}
+            try:
+                resp = get_with_retry(FBS_ORDERS_URL, headers, params=params, max_retries=2, timeout_s=30)
+                data = resp.json()
+            except Exception as exc:
+                logger.warning("fetch_all_fbs_orders: страница не получена: %s", exc)
+                hit_page_limit = False
+                break
+
+            chunk = data.get("orders") if isinstance(data, dict) else data
+            if not isinstance(chunk, list) or not chunk:
+                hit_page_limit = False
+                break
+            got_first_page = True
+
+            added = 0
+            for it in chunk:
+                if not isinstance(it, dict):
+                    continue
+                oid = it.get("id")
+                if oid is not None:
+                    if oid in seen_ids:
+                        continue
+                    seen_ids.add(oid)
+                orders.append(it)
+                added += 1
+
+            next_cursor = (data.get("next") or 0) if isinstance(data, dict) else 0
+            if not next_cursor or added == 0:
+                hit_page_limit = False
+                break
+
+        # Первую страницу получили этим вариантом заголовков — дальше смысла пробовать другой нет
+        if got_first_page:
+            if hit_page_limit:
+                logger.warning(
+                    "fetch_all_fbs_orders: достигнут лимит страниц (%s), заказов получено %s",
+                    max_pages, len(orders),
+                )
+            return orders
+
+    return []
 
 
 def fetch_fbs_statuses(token: str, order_ids: List[int]) -> Dict[str, Any]:

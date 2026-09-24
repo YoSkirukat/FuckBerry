@@ -54,6 +54,81 @@ def _extract_created_at(obj: Any) -> datetime:
         return datetime.min
 
 
+def office_short_names_from_orders(orders: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Собирает короткие названия складов отгрузки из сборочных заданий FBS.
+
+    WB отдаёт в заказе ``officeId`` (ID склада) и ``offices`` — список коротких названий
+    складов («Тверь», «Краснодар»). Именно это название показывается в блоке
+    «Задания на сборку», поэтому оно используется в приоритете.
+    """
+    names: Dict[int, str] = {}
+    for order in orders or []:
+        if not isinstance(order, dict):
+            continue
+        office_id = order.get("officeId")
+        office_list = order.get("offices")
+        if office_id is None or not isinstance(office_list, list) or not office_list:
+            continue
+        first_office = office_list[0]
+        if isinstance(first_office, dict):
+            name = str(first_office.get("name") or first_office.get("officeName") or "").strip()
+        else:
+            name = str(first_office or "").strip()
+        if not name:
+            continue
+        try:
+            names.setdefault(int(office_id), name)
+        except (TypeError, ValueError):
+            continue
+    return names
+
+
+def offices_names_map(items: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Справочник складов WB (ответ ``/api/v3/offices``) → {officeId: название}.
+
+    Если у склада нет названия — используется город.
+    """
+    names: Dict[int, str] = {}
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            office_id = int(it.get("id"))
+        except (TypeError, ValueError):
+            continue
+        name = str(it.get("name") or it.get("city") or "").strip()
+        if name:
+            names[office_id] = name
+    return names
+
+
+def supply_office_id(supply: Dict[str, Any]) -> int | None:
+    """ID склада WB, на который едет поставка FBS (``destinationOfficeId``)."""
+    if not isinstance(supply, dict):
+        return None
+    raw = supply.get("destinationOfficeId") or supply.get("destinationOfficeID")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def supply_warehouse_name(
+    supply: Dict[str, Any],
+    office_short_names: Dict[int, str] | None = None,
+    offices_names: Dict[int, str] | None = None,
+) -> str:
+    """Название склада отгрузки поставки FBS.
+
+    Сначала берём короткое название из заказов (как в «Заданиях на сборку»),
+    если его нет — название склада WB из справочника ``/api/v3/offices``.
+    """
+    office_id = supply_office_id(supply)
+    if office_id is None:
+        return ""
+    return (office_short_names or {}).get(office_id) or (offices_names or {}).get(office_id) or ""
+
+
 def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Преобразует заказы FBS в строки для таблицы"""
     rows: List[Dict[str, Any]] = []
@@ -65,6 +140,7 @@ def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "Наименование товара": "",
                 "Стоимость товара": 0,
                 "Склад": "",
+                "officeId": None,
             })
             continue
         # Номер задания — ID
@@ -106,6 +182,7 @@ def to_fbs_rows(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "Наименование товара": article,
             "Стоимость товара": price_value,
             "Склад": warehouse,
+            "officeId": o.get("officeId"),
             "nm_id": o.get("nmId") or o.get("nmID"),
             "ID": order_id,
         })

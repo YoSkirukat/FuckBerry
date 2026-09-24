@@ -5,6 +5,7 @@ import base64
 import io
 import math
 import re
+import time
 import requests
 from datetime import datetime
 from flask import Blueprint, jsonify, request, render_template, send_file
@@ -12,12 +13,14 @@ from flask_login import login_required, current_user
 from utils.wb_token import effective_wb_api_token
 from typing import Dict, Any, List
 
-from utils.api import get_with_retry
+from utils.api import get_with_retry, fetch_wb_offices, fetch_all_fbs_orders
 from utils.cache import (
     load_fbs_supplies_cache,
     save_fbs_supplies_cache,
     load_products_cache,
     load_seller_info_cache_for_user,
+    load_wb_offices_cache,
+    save_wb_offices_cache,
 )
 from utils.api import fetch_all_cards
 from utils.constants import (
@@ -35,6 +38,12 @@ from utils.constants import (
     MOSCOW_TZ,
 )
 from utils.helpers import parse_wb_datetime, to_moscow
+from utils.fbs_dbs_processing import (
+    office_short_names_from_orders,
+    offices_names_map,
+    supply_office_id,
+    supply_warehouse_name,
+)
 
 fbs_supplies_bp = Blueprint("fbs_supplies", __name__)
 
@@ -47,6 +56,9 @@ _FBS_BOX_VOLUME_M3 = (
 # Плотно уложить товары без пустот нельзя: считаем коробку заполненной на 80%.
 _FBS_BOX_FILL_FACTOR = 0.8
 _FBS_BOX_USABLE_VOLUME_M3 = _FBS_BOX_VOLUME_M3 * _FBS_BOX_FILL_FACTOR
+
+# WB принимает не больше 100 сборочных заданий в одном запросе добавления в поставку
+FBS_SUPPLY_ADD_ORDERS_BATCH = 100
 
 
 def _wb_auth_headers(token: str) -> list[dict[str, str]]:
@@ -1592,6 +1604,36 @@ def _load_supply_print_context(token: str, supply_id: str, user_id: int) -> dict
     }
 
 
+# Справочник складов WB меняется редко — обновляем его не чаще одного раза в 12 часов
+WB_OFFICES_CACHE_TTL_S = 12 * 3600
+
+
+def _wb_offices_names(token: str) -> Dict[int, str]:
+    """ID склада WB → название склада.
+
+    Нужно для колонки «Склад» в поставках FBS: у поставки есть только
+    destinationOfficeId (куда едет поставка). Используется как резерв, когда
+    склад нельзя определить по заказам поставки.
+    """
+    cached = load_wb_offices_cache() or {}
+    items = cached.get("items") if isinstance(cached, dict) else None
+    try:
+        updated_ts = float(cached.get("updated_ts") or 0) if isinstance(cached, dict) else 0.0
+    except (TypeError, ValueError):
+        updated_ts = 0.0
+
+    if not items or (time.time() - updated_ts) > WB_OFFICES_CACHE_TTL_S:
+        fresh = fetch_wb_offices(token)
+        if fresh:
+            items = fresh
+            try:
+                save_wb_offices_cache({"items": items, "updated_ts": time.time()})
+            except Exception:
+                pass
+
+    return offices_names_map(items or [])
+
+
 @fbs_supplies_bp.route("/api/fbs/supplies", methods=["GET"])
 @login_required
 def api_fbs_supplies():
@@ -1658,45 +1700,28 @@ def api_fbs_supplies():
     except Exception:
         pass
 
-    # Получаем все заказы и считаем количество для каждой поставки
+    # Получаем все заказы (с пагинацией — WB отдаёт максимум 1000 за страницу)
+    # и считаем количество для каждой поставки. Без прокрутки страниц теряются
+    # самые свежие задания, поэтому состав поставки выглядит неполным.
     supply_counts: Dict[str, int] = {}
-    try:
-        headers_list = [
-            {"Authorization": f"{token}"},
-            {"Authorization": f"Bearer {token}"},
-        ]
-        for hdrs in headers_list:
-            try:
-                orders_url = FBS_ORDERS_URL
-                orders_params = {"limit": 1000, "next": 0}
-                orders_resp = requests.get(orders_url, headers=hdrs, params=orders_params, timeout=30)
-                if orders_resp.status_code == 200:
-                    orders_data = orders_resp.json()
-                    all_orders: List[Dict[str, Any]] = []
-                    if isinstance(orders_data, dict):
-                        if isinstance(orders_data.get("orders"), list):
-                            all_orders = orders_data["orders"]
-                    elif isinstance(orders_data, list):
-                        all_orders = [it for it in orders_data if isinstance(it, dict)]
-                    
-                    # Группируем заказы по supplyId
-                    for order in all_orders:
-                        if not isinstance(order, dict):
-                            continue
-                        order_supply_id = None
-                        for field in ["supplyId", "supply_id", "supplyID", "supply"]:
-                            if field in order:
-                                order_supply_id = str(order[field])
-                                break
-                        if order_supply_id:
-                            supply_counts[order_supply_id] = supply_counts.get(order_supply_id, 0) + 1
-                    break
-            except Exception:
-                continue
-    except Exception:
-        pass
+    orders_with_supply: List[Dict[str, Any]] = fetch_all_fbs_orders(token)
+    for order in orders_with_supply:
+        order_supply_id = None
+        for field in ["supplyId", "supply_id", "supplyID", "supply"]:
+            if field in order:
+                order_supply_id = str(order[field])
+                break
+        if order_supply_id:
+            supply_counts[order_supply_id] = supply_counts.get(order_supply_id, 0) + 1
+
+    # Короткие названия складов отгрузки из заказов: то же значение, что в «Заданиях на сборку»
+    office_short_names: Dict[int, str] = office_short_names_from_orders(orders_with_supply)
 
     supplies_to_process = all_supplies_raw[offset_i : offset_i + limit_i]
+
+    # Справочник складов WB запрашиваем лениво — только если по заказам склад не определить
+    offices_by_id: Dict[int, str] = {}
+    offices_loaded = False
 
     # Нормализуем для фронтенда
     norm_items: List[Dict[str, Any]] = []
@@ -1747,11 +1772,22 @@ def api_fbs_supplies():
             status_label = "Не отгружена"
             status_dt_str = ""
 
+        # Склад отгрузки: сначала короткое имя из заказов (как в «Заданиях на сборку»),
+        # затем — название склада WB из справочника по destinationOfficeId
+        office_id = supply_office_id(it)
+        warehouse = supply_warehouse_name(it, office_short_names, offices_by_id)
+        if not warehouse and office_id is not None and not offices_loaded:
+            offices_by_id = _wb_offices_names(token)
+            offices_loaded = True
+            warehouse = supply_warehouse_name(it, office_short_names, offices_by_id)
+
         norm_items.append(
             {
                 "supplyId": supply_id,
                 "date": created_str,
                 "count": count,
+                "warehouse": warehouse,
+                "officeId": office_id,
                 "status": status_label,
                 "statusDt": status_dt_str,
             }
@@ -1778,54 +1814,35 @@ def api_fbs_supplies():
 
 
 def _fetch_supply_orders_raw(token: str, supply_id: str) -> tuple[List[Dict[str, Any]], str | None]:
-    """Загружает сырые заказы поставки FBS через /api/v3/orders."""
-    headers_list = [
-        {"Authorization": f"{token}"},
-        {"Authorization": f"Bearer {token}"},
-    ]
-    last_err: str | None = None
-    items: List[Dict[str, Any]] = []
+    """Загружает сырые заказы поставки FBS через /api/v3/orders (с пагинацией).
+
+    Пагинация обязательна: WB отдаёт максимум 1000 заказов за страницу и по
+    возрастанию даты создания, поэтому без прокрутки `next` состав поставки
+    оказывается без самых свежих заданий.
+    """
+    if not token:
+        return [], "Нет API токена"
+
     supply_id_fields = ["supplyId", "supply_id", "supplyID", "supply"]
+    all_orders = fetch_all_fbs_orders(token)
 
-    for idx, hdrs in enumerate(headers_list):
-        try:
-            orders_params = {"limit": 1000, "next": 0}
-            orders_resp = requests.get(
-                FBS_ORDERS_URL, headers=hdrs, params=orders_params, timeout=30
-            )
-            if orders_resp.status_code != 200:
-                continue
-
-            orders_data = orders_resp.json()
-            all_orders: List[Dict[str, Any]] = []
-            if isinstance(orders_data, dict):
-                if isinstance(orders_data.get("orders"), list):
-                    all_orders = orders_data["orders"]
-                elif isinstance(orders_data.get("data"), list):
-                    all_orders = orders_data["data"]
-            elif isinstance(orders_data, list):
-                all_orders = [it for it in orders_data if isinstance(it, dict)]
-
-            filtered_items: List[Dict[str, Any]] = []
-            for order in all_orders:
-                if not isinstance(order, dict):
-                    continue
-                order_supply_id = None
-                for field in supply_id_fields:
-                    if field in order:
-                        order_supply_id = order[field]
-                        break
-                if order_supply_id and str(order_supply_id) == str(supply_id):
-                    filtered_items.append(order)
-
-            if filtered_items:
-                return filtered_items, None
-            items = filtered_items
-        except Exception as e:
-            last_err = str(e)
+    filtered_items: List[Dict[str, Any]] = []
+    for order in all_orders:
+        if not isinstance(order, dict):
             continue
+        order_supply_id = None
+        for field in supply_id_fields:
+            if field in order:
+                order_supply_id = order[field]
+                break
+        if order_supply_id and str(order_supply_id) == str(supply_id):
+            filtered_items.append(order)
 
-    return items, last_err
+    if filtered_items:
+        return filtered_items, None
+    if not all_orders:
+        return [], "Не удалось получить список сборочных заданий"
+    return [], "В поставке нет сборочных заданий"
 
 
 def _normalize_supply_order_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2237,5 +2254,68 @@ def api_fbs_add_order_to_supply(supply_id: str, order_id: str):
             traceback.print_exc()
 
     return jsonify({"error": last_err or "Unknown error"}), 500
+
+
+@fbs_supplies_bp.route("/api/fbs/supplies/<supply_id>/orders", methods=["POST"])
+@login_required
+def api_fbs_add_orders_to_supply(supply_id: str):
+    """Добавить несколько сборочных заданий в поставку (пачками по 100 — лимит WB).
+
+    WB требует, чтобы все задания одной поставки были с одного склада, поэтому
+    фронт формирует отдельную поставку на каждый склад и присылает задания
+    сгруппированно. Один запрос вместо N запросов по одному заданию.
+    """
+    token = effective_wb_api_token(current_user)
+    if not token:
+        return jsonify({"error": "No token"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    raw_orders = payload.get("orders")
+    if not isinstance(raw_orders, list):
+        return jsonify({"error": "Ожидается список orders"}), 400
+
+    order_ids: List[int] = []
+    for value in raw_orders:
+        try:
+            oid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if oid not in order_ids:
+            order_ids.append(oid)
+    if not order_ids:
+        return jsonify({"error": "Не переданы ID сборочных заданий"}), 400
+
+    url = FBS_SUPPLY_ADD_ORDERS_URL.replace("{supplyId}", str(supply_id))
+    headers_list = [
+        {"Authorization": f"{token}", "Content-Type": "application/json"},
+        {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    ]
+
+    added = 0
+    failed: List[Dict[str, Any]] = []
+
+    for start in range(0, len(order_ids), FBS_SUPPLY_ADD_ORDERS_BATCH):
+        chunk = order_ids[start:start + FBS_SUPPLY_ADD_ORDERS_BATCH]
+        chunk_added = False
+        last_err = "Unknown error"
+        for hdrs in headers_list:
+            try:
+                resp = requests.patch(url, headers=hdrs, json={"orders": chunk}, timeout=20)
+                if resp.status_code in (200, 201, 204):
+                    added += len(chunk)
+                    chunk_added = True
+                    break
+                if resp.status_code == 409:
+                    # Задания уже привязаны к поставке — повтор с другим заголовком не поможет
+                    last_err = "Задания уже добавлены в поставку"
+                    break
+                last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            except Exception as exc:
+                last_err = str(exc)
+
+        if not chunk_added:
+            failed.extend({"orderId": oid, "error": last_err} for oid in chunk)
+
+    return jsonify({"success": added > 0, "added": added, "failed": failed}), 200
 
 

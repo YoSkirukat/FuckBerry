@@ -322,6 +322,39 @@ def save_fbs_supplies_cache(payload: Dict[str, Any]) -> None:
         pass
 
 
+# WB offices cache helpers (per user) — справочник складов WB для колонки «Склад» поставок FBS
+def _wb_offices_cache_path_for_user() -> str:
+    """Путь к кэшу справочника складов WB для текущего пользователя"""
+    if current_user.is_authenticated:
+        return os.path.join(CACHE_DIR, f"wb_offices_user_{current_user.id}.json")
+    return os.path.join(CACHE_DIR, "wb_offices_anon.json")
+
+
+def load_wb_offices_cache() -> Dict[str, Any] | None:
+    """Загружает кэш справочника складов WB"""
+    path = _wb_offices_cache_path_for_user()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_wb_offices_cache(payload: Dict[str, Any]) -> None:
+    """Сохраняет кэш справочника складов WB"""
+    path = _wb_offices_cache_path_for_user()
+    try:
+        enriched = dict(payload)
+        if current_user.is_authenticated:
+            enriched["_user_id"] = current_user.id
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(enriched, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 # FBW supplies cache helpers (per user)
 def _fbw_supplies_cache_path_for_user() -> str:
     """Путь к кэшу поставок FBW для текущего пользователя"""
