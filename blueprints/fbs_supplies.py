@@ -2099,6 +2099,24 @@ def fbs_supply_pdf(supply_id: str, block: str):
         return "Требуется API токен Wildberries", 400
 
     block_key = str(block or "").strip().lower()
+    if block_key not in ("qr", "trbx", "tape"):
+        return ("Неизвестный тип PDF", 400)
+
+    # Переключатели «Стикер товара»/«Стикер поставки» блока «Лента стикеров».
+    # Если параметры не переданы (старые ссылки) — печатаем оба типа, как раньше.
+    type_flags_passed = (
+        request.args.get("barcodes") is not None or request.args.get("stickers") is not None
+    )
+    if type_flags_passed:
+        include_barcodes = _truthy_arg(request.args.get("barcodes"))
+        include_stickers = _truthy_arg(request.args.get("stickers"))
+    else:
+        include_barcodes = True
+        include_stickers = True
+
+    if block_key == "tape" and not (include_barcodes or include_stickers):
+        return ("Выберите хотя бы один тип стикеров для сохранения", 400)
+
     ctx = _load_supply_print_context(token, supply_id, current_user.id)
     images_b64: list[str] = []
     suffix = block_key
@@ -2115,19 +2133,31 @@ def fbs_supply_pdf(supply_id: str, block: str):
         pairs = ctx.get("order_tape_pairs") or []
         if not pairs:
             return ("Нет стикеров для сохранения в PDF", 400)
+
         try:
-            pdf_buf = _build_tape_pdf(pairs)
+            pdf_buf = _build_tape_pdf(
+                pairs,
+                include_barcodes=include_barcodes,
+                include_stickers=include_stickers,
+            )
+        except ValueError as exc:
+            return (str(exc), 400)
         except Exception as exc:
             return (f"Ошибка создания PDF: {exc}", 500)
-        filename = _dated_download_name("Стикеры и ШК товаров", "pdf")
+
+        if include_barcodes and include_stickers:
+            download_name = "Стикеры и ШК товаров"
+        elif include_stickers:
+            download_name = "Стикеры поставки"
+        else:
+            download_name = "Стикеры товара"
+        filename = _dated_download_name(download_name, "pdf")
         return send_file(
             pdf_buf,
             mimetype="application/pdf",
             as_attachment=True,
             download_name=filename,
         )
-    else:
-        return ("Неизвестный тип PDF", 400)
 
     if not images_b64:
         return ("Нет стикеров для сохранения в PDF", 400)

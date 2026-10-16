@@ -158,6 +158,39 @@
       background: #f1f3f5;
       color: #212529;
     }
+    .pdf-link.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      background: #fff;
+      color: #6c757d;
+    }
+    .tape-toggles {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .tape-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 14px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tape-toggle input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    /* Переключатели «Стикер товара» / «Стикер поставки»: выключенный тип не показываем
+       ни на экране, ни при печати страницы, ни в PDF (см. «Сохранить в PDF») */
+    .tape-feed.tape-hide-product .product-label,
+    .tape-feed.tape-hide-sticker .tape-label--sticker {
+      display: none !important;
+    }
     /* Лента стикеров как в ЛК WB: штрихкод → QR сборки → штрихкод → … */
     .tape-feed {
       display: flex;
@@ -628,15 +661,26 @@
 
   <div class="section" id="order-tape-section">
     <h2 class="no-print">Лента стикеров</h2>
-    <p class="hint no-print">Штрихкод товара и стикер сборки идут парами — как в личном кабинете WB.</p>
+    <p class="hint no-print">Штрихкод товара и стикер сборки идут парами — как в личном кабинете WB. Ненужные наклейки можно выключить переключателями: они исчезнут и с экрана, и из PDF.</p>
     {% if stickers_error and not order_tape_pairs %}
       <div class="alert no-print">Не удалось загрузить стикеры: {{ stickers_error }}</div>
     {% elif not order_tape_pairs %}
       <div class="muted no-print">В поставке нет товаров для печати стикеров.</div>
     {% else %}
       <div class="section-actions no-print">
-        <a class="pdf-link" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='tape') }}">Сохранить в PDF</a>
+        <div class="tape-toggles">
+          <label class="tape-toggle" title="Штрихкод и данные товара (этикетка с баркодом)">
+            <input type="checkbox" id="tapeOptProduct" checked>
+            Стикер товара
+          </label>
+          <label class="tape-toggle" title="QR-стикер сборочного задания из Wildberries">
+            <input type="checkbox" id="tapeOptSticker" checked>
+            Стикер поставки
+          </label>
+        </div>
+        <a class="pdf-link" id="tapePdfLink" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='tape') }}">Сохранить в PDF</a>
       </div>
+      <div class="muted no-print" id="tapeFilterHint" hidden>Выберите хотя бы один тип стикеров — сейчас отключены оба.</div>
       <div class="tape-feed">
         {% for pair in order_tape_pairs %}
           {% if pair.label and pair.label.barcode %}
@@ -688,7 +732,44 @@
       const printOptStickers = document.getElementById('printOptStickers');
       const printOptBarcodes = document.getElementById('printOptBarcodes');
 
+      // Переключатели блока «Лента стикеров»: какие наклейки показывать и печатать
+      const tapeFeed = document.querySelector('#order-tape-section .tape-feed');
+      const tapeOptProduct = document.getElementById('tapeOptProduct');
+      const tapeOptSticker = document.getElementById('tapeOptSticker');
+      const tapePdfLink = document.getElementById('tapePdfLink');
+      const tapeFilterHint = document.getElementById('tapeFilterHint');
+
+      function tapePdfUrl() {
+        const params = new URLSearchParams();
+        params.set('barcodes', tapeOptProduct && tapeOptProduct.checked ? '1' : '0');
+        params.set('stickers', tapeOptSticker && tapeOptSticker.checked ? '1' : '0');
+        return `/fbs/supplies/${encodeURIComponent(supplyId)}/pdf/tape?${params.toString()}`;
+      }
+
+      function applyTapeFilters() {
+        const showProduct = tapeOptProduct ? tapeOptProduct.checked : true;
+        const showSticker = tapeOptSticker ? tapeOptSticker.checked : true;
+        if (tapeFeed) {
+          tapeFeed.classList.toggle('tape-hide-product', !showProduct);
+          tapeFeed.classList.toggle('tape-hide-sticker', !showSticker);
+        }
+        const nothingSelected = !showProduct && !showSticker;
+        if (tapeFilterHint) tapeFilterHint.hidden = !nothingSelected;
+        if (tapePdfLink) {
+          tapePdfLink.href = tapePdfUrl();
+          tapePdfLink.classList.toggle('disabled', nothingSelected);
+          tapePdfLink.setAttribute('aria-disabled', nothingSelected ? 'true' : 'false');
+        }
+      }
+
+      if (tapeOptProduct) tapeOptProduct.addEventListener('change', applyTapeFilters);
+      if (tapeOptSticker) tapeOptSticker.addEventListener('change', applyTapeFilters);
+      applyTapeFilters();
+
       function openPrintModal() {
+        // «Печать» печатает то же, что включено переключателями «Ленты стикеров»
+        if (printOptBarcodes && tapeOptProduct) printOptBarcodes.checked = tapeOptProduct.checked;
+        if (printOptStickers && tapeOptSticker) printOptStickers.checked = tapeOptSticker.checked;
         if (printModal) printModal.hidden = false;
       }
 
@@ -810,6 +891,10 @@
         const link = e.target.closest('a.pdf-link');
         if (!link || !link.href) return;
         e.preventDefault();
+        if (link.classList.contains('disabled')) {
+          alert('Выберите хотя бы один тип стикеров');
+          return;
+        }
         downloadPdf(link.href, 'Сохранение PDF…');
       });
 
