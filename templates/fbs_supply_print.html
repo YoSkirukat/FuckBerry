@@ -352,6 +352,9 @@
       align-items: center;
       justify-content: center;
       background: rgba(255, 255, 255, 0.72);
+      /* Подсказка «Готовим PDF…» не должна перехватывать клики: скачивание
+         запускает сам браузер, и пользователь может нажать ссылку повторно. */
+      pointer-events: none;
     }
     .pdf-loading[hidden] {
       display: none !important;
@@ -589,7 +592,7 @@
     <p class="hint no-print">Для отгрузки на склад Wildberries ({{ supply_id }})</p>
     {% if barcode and barcode.file %}
       <div class="section-actions no-print">
-        <a class="pdf-link" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='qr') }}">Сохранить в PDF</a>
+        <a class="pdf-link" download href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='qr') }}">Сохранить в PDF</a>
       </div>
       <div class="qr-wrap">
         <img class="label-img" src="data:image/png;base64,{{ barcode.file }}" alt="">
@@ -641,7 +644,7 @@
     <div class="section-actions no-print">
       <button type="button" class="success" id="addTrbxBtn">+ Добавить грузоместо</button>
       {% if trbx_items %}
-        <a class="pdf-link" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='trbx') }}">Сохранить в PDF</a>
+        <a class="pdf-link" download href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='trbx') }}">Сохранить в PDF</a>
       {% endif %}
     </div>
     <div id="trbxList" class="stickers-grid">
@@ -678,7 +681,7 @@
             Стикер поставки
           </label>
         </div>
-        <a class="pdf-link" id="tapePdfLink" href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='tape') }}">Сохранить в PDF</a>
+        <a class="pdf-link" id="tapePdfLink" download href="{{ url_for('fbs_supplies.fbs_supply_pdf', supply_id=supply_id, block='tape') }}">Сохранить в PDF</a>
       </div>
       <div class="muted no-print" id="tapeFilterHint" hidden>Выберите хотя бы один тип стикеров — сейчас отключены оба.</div>
       <div class="tape-feed">
@@ -792,42 +795,17 @@
         if (pdfLoadingDepth === 0 && pdfLoading) pdfLoading.hidden = true;
       }
 
-      function filenameFromDisposition(header, fallback) {
-        if (!header) return fallback;
-        const utf = /filename\*=UTF-8''([^;]+)/i.exec(header);
-        if (utf && utf[1]) {
-          try { return decodeURIComponent(utf[1].trim()); } catch (e) { /* ignore */ }
-        }
-        const plain = /filename="?([^";]+)"?/i.exec(header);
-        return (plain && plain[1]) ? plain[1].trim() : fallback;
-      }
-
-      async function downloadPdf(url, message) {
-        showPdfLoading(message || 'Сохранение PDF…');
-        try {
-          const resp = await fetch(url, { credentials: 'include' });
-          if (!resp.ok) {
-            const text = await resp.text().catch(() => '');
-            throw new Error(text || ('Ошибка ' + resp.status));
-          }
-          const blob = await resp.blob();
-          const name = filenameFromDisposition(
-            resp.headers.get('Content-Disposition'),
-            'stickers.pdf'
-          );
-          const objectUrl = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = objectUrl;
-          a.download = name;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 2000);
-        } catch (e) {
-          alert(e && e.message ? e.message : 'Не удалось сохранить PDF');
-        } finally {
-          hidePdfLoading();
-        }
+      /* «Сохранить в PDF» — обычная ссылка с атрибутом download: файл отдаёт
+         сервер по «Content-Disposition: attachment», поэтому страница остаётся на
+         месте, а браузер скачивает PDF сам, прямо внутри клика. Раньше PDF тянулся
+         через fetch + blob и сохранялся программным кликом: пока приходил ответ
+         (сборка занимает несколько секунд), браузер терял контекст клика и
+         отбрасывал такую загрузку как «автоматическую» — файл сохранялся через раз
+         и помогала только перезагрузка страницы. Полноэкранный оверлей при этом
+         глотал клики, теперь он мышь не перехватывает и скрывается сам. */
+      function pdfDownloadHint() {
+        showPdfLoading('Готовим PDF…');
+        setTimeout(hidePdfLoading, 3000);
       }
 
       function getPdfPrintFrame() {
@@ -890,12 +868,15 @@
       document.addEventListener('click', function(e) {
         const link = e.target.closest('a.pdf-link');
         if (!link || !link.href) return;
-        e.preventDefault();
         if (link.classList.contains('disabled')) {
+          // Оба переключателя ленты выключены — собирать PDF не из чего.
+          e.preventDefault();
           alert('Выберите хотя бы один тип стикеров');
           return;
         }
-        downloadPdf(link.href, 'Сохранение PDF…');
+        // Клик не перехватываем: ссылка ведёт на PDF с «Content-Disposition:
+        // attachment», поэтому браузер скачает файл сам — ровно в рамках клика.
+        pdfDownloadHint();
       });
 
       if (printBtn) printBtn.addEventListener('click', openPrintModal);
@@ -924,6 +905,7 @@
         const link = document.createElement('a');
         link.className = 'pdf-link';
         link.href = `/fbs/supplies/${encodeURIComponent(supplyId)}/pdf/trbx`;
+        link.setAttribute('download', '');
         link.textContent = 'Сохранить в PDF';
         actions.appendChild(link);
       }

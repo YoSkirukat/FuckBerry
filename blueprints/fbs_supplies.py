@@ -8,7 +8,7 @@ import re
 import time
 import requests
 from datetime import datetime
-from flask import Blueprint, jsonify, request, render_template, send_file
+from flask import Blueprint, jsonify, request, render_template, send_file, url_for
 from flask_login import login_required, current_user
 from utils.wb_token import effective_wb_api_token
 from typing import Dict, Any, List
@@ -279,6 +279,30 @@ def _load_trbx_items(token: str, supply_id: str) -> list[dict[str, Any]]:
     if not ids:
         return []
     return _fetch_fbs_trbx_stickers(token, supply_id, ids)
+
+
+# WB отдаёт картинку стикера не мгновенно после создания грузоместа: сразу после
+# нажатия «Добавить грузоместо» файл на стороне WB ещё может быть пустым. Поэтому
+# перед сохранением PDF несколько секунд ждём готовности — иначе первая же попытка
+# «Сохранить в PDF» заканчивалась сообщением, что стикеров нет.
+TRBX_STICKER_WAIT_ATTEMPTS = 4
+TRBX_STICKER_WAIT_DELAY_S = 1.5
+
+
+def _load_trbx_items_ready(
+    token: str,
+    supply_id: str,
+    attempts: int = TRBX_STICKER_WAIT_ATTEMPTS,
+    delay_s: float = TRBX_STICKER_WAIT_DELAY_S,
+) -> list[dict[str, Any]]:
+    """Грузоместа поставки, у которых картинка QR уже готова на стороне WB."""
+    items = _load_trbx_items(token, supply_id)
+    tries = 0
+    while tries < attempts and items and any(not (it.get("file") or "") for it in items):
+        time.sleep(delay_s)
+        tries += 1
+        items = _load_trbx_items(token, supply_id)
+    return items
 
 
 def _char_value_to_str(value: Any) -> str:
@@ -1353,6 +1377,31 @@ def _dated_download_name(title: str, ext: str) -> str:
     return f"{title} {_download_date_label()}.{ext.lstrip('.')}"
 
 
+def _pdf_error(message: str, supply_id: str | None = None, status: int = 400):
+    """Ошибка вместо PDF.
+
+    «Сохранить в PDF» — обычная ссылка: файл отдаёт браузер по
+    «Content-Disposition: attachment». Значит и ошибку нужно показывать страницей
+    с понятным текстом, а не голым сообщением, иначе вкладка со страницей печати
+    превращалась бы в строку текста без объяснений.
+    """
+    print_url = None
+    if supply_id:
+        try:
+            print_url = url_for("fbs_supplies.fbs_supply_print_page", supply_id=supply_id)
+        except Exception:
+            print_url = None
+    return (
+        render_template(
+            "fbs_supply_pdf_error.html",
+            message=message,
+            supply_id=supply_id,
+            print_url=print_url,
+        ),
+        status,
+    )
+
+
 def _build_images_pdf(images_b64: list[str]) -> io.BytesIO:
     """Собирает PDF: одно изображение на страницу (размер страницы = размеру картинки)."""
     import img2pdf  # type: ignore
@@ -2096,11 +2145,11 @@ def fbs_supply_pdf(supply_id: str, block: str):
     """Скачивание PDF для блока печати: qr, trbx, tape."""
     token = effective_wb_api_token(current_user)
     if not token:
-        return "Требуется API токен Wildberries", 400
+        return _pdf_error("Требуется API токен Wildberries", supply_id=supply_id)
 
     block_key = str(block or "").strip().lower()
     if block_key not in ("qr", "trbx", "tape"):
-        return ("Неизвестный тип PDF", 400)
+        return _pdf_error("Неизвестный тип PDF", supply_id=supply_id)
 
     # Переключатели «Стикер товара»/«Стикер поставки» блока «Лента стикеров».
     # Если параметры не переданы (старые ссылки) — печатаем оба типа, как раньше.
@@ -2115,24 +2164,29 @@ def fbs_supply_pdf(supply_id: str, block: str):
         include_stickers = True
 
     if block_key == "tape" and not (include_barcodes or include_stickers):
-        return ("Выберите хотя бы один тип стикеров для сохранения", 400)
+        return _pdf_error(
+            "Выберите хотя бы один тип стикеров для сохранения", supply_id=supply_id
+        )
 
-    ctx = _load_supply_print_context(token, supply_id, current_user.id)
+    # Тяжёлый контекст печати (заказы поставки, стикеры всех сборочных заданий,
+    # этикетки товаров) нужен только ленте стикеров. Для QR поставки и грузомест он
+    # не нужен: сборка занимала 8-10 секунд на каждый клик по ссылке, и браузер за
+    # это время терял контекст клика — скачивание отбрасывалось как «автоматическое».
     images_b64: list[str] = []
-    suffix = block_key
 
     if block_key == "qr":
-        barcode = ctx.get("barcode") or {}
+        barcode = _resolve_supply_barcode(token, supply_id) or {}
         if barcode.get("file"):
             images_b64.append(barcode["file"])
     elif block_key == "trbx":
-        for item in ctx.get("trbx_items") or []:
+        for item in _load_trbx_items_ready(token, supply_id):
             if isinstance(item, dict) and item.get("file"):
                 images_b64.append(item["file"])
-    elif block_key == "tape":
+    else:  # tape
+        ctx = _load_supply_print_context(token, supply_id, current_user.id)
         pairs = ctx.get("order_tape_pairs") or []
         if not pairs:
-            return ("Нет стикеров для сохранения в PDF", 400)
+            return _pdf_error("Нет стикеров для сохранения в PDF", supply_id=supply_id)
 
         try:
             pdf_buf = _build_tape_pdf(
@@ -2141,40 +2195,46 @@ def fbs_supply_pdf(supply_id: str, block: str):
                 include_stickers=include_stickers,
             )
         except ValueError as exc:
-            return (str(exc), 400)
+            return _pdf_error(str(exc), supply_id=supply_id)
         except Exception as exc:
-            return (f"Ошибка создания PDF: {exc}", 500)
+            return _pdf_error(
+                f"Ошибка создания PDF: {exc}", supply_id=supply_id, status=500
+            )
 
         if include_barcodes and include_stickers:
-            download_name = "Стикеры и ШК товаров"
+            name_title = "Стикеры и ШК товаров"
         elif include_stickers:
-            download_name = "Стикеры поставки"
+            name_title = "Стикеры поставки"
         else:
-            download_name = "Стикеры товара"
-        filename = _dated_download_name(download_name, "pdf")
+            name_title = "Стикеры товара"
         return send_file(
             pdf_buf,
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=filename,
+            download_name=_dated_download_name(name_title, "pdf"),
         )
 
     if not images_b64:
-        return ("Нет стикеров для сохранения в PDF", 400)
+        if block_key == "trbx":
+            message = (
+                "Wildberries ещё не отдаёт стикер грузоместа — "
+                "подождите пару секунд и нажмите «Сохранить в PDF» снова"
+            )
+        else:
+            message = "Нет стикеров для сохранения в PDF"
+        return _pdf_error(message, supply_id=supply_id)
 
     try:
         pdf_buf = _build_images_pdf(images_b64)
     except ValueError as exc:
-        return (str(exc), 400)
+        return _pdf_error(str(exc), supply_id=supply_id)
     except Exception as exc:
-        return (f"Ошибка создания PDF: {exc}", 500)
+        return _pdf_error(f"Ошибка создания PDF: {exc}", supply_id=supply_id, status=500)
 
     if block_key == "trbx":
         filename = _dated_download_name("QR грузоместа", "pdf")
-    elif block_key == "qr":
-        filename = _dated_download_name("QR поставки", "pdf")
     else:
-        filename = _dated_download_name(f"fbs_supply_{_safe_supply_filename_part(supply_id)}_{suffix}", "pdf")
+        filename = _dated_download_name("QR поставки", "pdf")
     return send_file(
         pdf_buf,
         mimetype="application/pdf",
