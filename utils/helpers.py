@@ -768,6 +768,20 @@ def extract_transit_filter_options(items: List[Dict[str, Any]] | None) -> tuple[
     return transit_names, destination_names
 
 
+def _card_characteristic_text(card: Dict[str, Any], needle: str) -> str:
+    """Текст характеристики карточки WB по части названия (например, «цвет»)."""
+    for ch in card.get("characteristics") or []:
+        if not isinstance(ch, dict):
+            continue
+        name = str(ch.get("name") or "").strip().lower()
+        if needle in name and "количество" not in name:
+            value = ch.get("value")
+            if isinstance(value, list):
+                return ", ".join(str(x) for x in value if x is not None and str(x).strip())
+            return str(value or "").strip()
+    return ""
+
+
 def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Нормализует ответ API карточек товаров"""
     items: List[Dict[str, Any]] = []
@@ -794,6 +808,7 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 photo = None
             barcode = None
             size_info = None
+            size_value = ""
             try:
                 sizes = c.get("sizes") or []
                 for s in sizes:
@@ -801,11 +816,15 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                     skus = s.get("skus") or s.get("barcodes") or []
                     if skus and not barcode:
                         barcode = str(skus[0])
+                        # Размер, к которому относится выбранный баркод — нужен для этикетки
+                        size_value = str(s.get("techSize") or s.get("wbSize") or "").strip()
                     if chrt_id:
                         size_info = {
                             "chrtID": chrt_id,
                             "skus": [str(x) for x in (s.get("skus") or [])]
                         }
+                        if not size_value:
+                            size_value = str(s.get("techSize") or s.get("wbSize") or "").strip()
                         break
             except Exception:
                 barcode = None
@@ -825,6 +844,9 @@ def normalize_cards_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "barcode": barcode,
                 "chrt_id": size_info.get("chrtID") if size_info else None,
                 "name": name,
+                "brand": str(c.get("brand") or "").strip(),
+                "color": _card_characteristic_text(c, "цвет"),
+                "size": size_value,
                 "subject_id": subject_id,
                 "dimensions": {
                     "length": length,

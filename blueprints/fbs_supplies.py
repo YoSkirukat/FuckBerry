@@ -672,6 +672,24 @@ def _draw_product_label_pdf_page(c: Any, label: dict[str, Any], page_w: float, p
         _pdf_draw_centered(c, article_lines[1], baseline, page_w, font, attr_size)
 
 
+def build_product_label_pdf(label: dict[str, Any]) -> io.BytesIO:
+    """PDF одной этикетки товара 58×40 мм — та же вёрстка, что в «Ленте стикеров».
+
+    Нужен вне поставок: со страницы «Товары» по кнопке у баркода.
+    """
+    from reportlab.lib.units import mm  # type: ignore
+    from reportlab.pdfgen import canvas  # type: ignore
+
+    page_w, page_h = 58 * mm, 40 * mm
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(page_w, page_h))
+    _draw_product_label_pdf_page(c, _build_product_label_view(label), page_w, page_h)
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf
+
+
 def _build_tape_pdf(
     pairs: list[dict[str, Any]],
     *,
@@ -1083,6 +1101,11 @@ def _load_seller_organization_name(user_id: int) -> str:
     if not name and isinstance(cached.get("seller_info"), dict):
         name = cached["seller_info"].get("name")
     return str(name or "").strip()
+
+
+def load_seller_organization_name(user_id: int) -> str:
+    """Название организации продавца — используется и вне поставок (этикетка на «Товарах»)."""
+    return _load_seller_organization_name(user_id)
 
 
 def _to_positive_float(value: Any) -> float:

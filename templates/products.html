@@ -79,7 +79,14 @@
                     <div class="small text-muted mt-1">
                       {% if it.nm_id %}Артикул WB: {{ it.nm_id }}{% endif %}
                       {% if it.nm_id and it.barcode %} | {% endif %}
-                      {% if it.barcode %}Баркод: {{ it.barcode }}{% endif %}
+                      {% if it.barcode %}
+                        Баркод: {{ it.barcode }}
+                        {% if it.nm_id %}
+                          <a href="{{ url_for('products.product_barcode_pdf', nm_id=it.nm_id, barcode=it.barcode) }}"
+                             class="btn btn-outline-secondary btn-sm py-0 px-1 ms-1 align-baseline"
+                             title="Скачать PDF с баркодом"><i class="fas fa-barcode"></i> PDF</a>
+                        {% endif %}
+                      {% endif %}
                     </div>
                   {% endif %}
                 </td>
